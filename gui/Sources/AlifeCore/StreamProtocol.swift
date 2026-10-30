@@ -219,6 +219,10 @@ package struct StreamHeader: Equatable, Sendable, Decodable {
         guard (1...64).contains(bondSlots) else { throw bad("B \(bondSlots) is outside [1, 64]") }
         guard (1...Self.maxFieldGrid).contains(fieldLayers) else { throw bad("FZ \(fieldLayers) is outside [1, 1024]") }
         guard sphere.planetRadius.isFinite, sphere.planetRadius > 0 else { throw bad("planet_radius is not positive") }
+        // the engine's exact-sum limit (`FZ * 12 * Nf^2 <= 2^20`, DESIGN 46.9) bounds the field: a corrupt header cannot ask for 50 M cells
+        guard fieldLayers * 12 * sphere.nsideField * sphere.nsideField <= 1 << 20 else {
+            throw bad("FZ \(fieldLayers) layers of \(sphere.fieldCells) cells exceed the engine's limit of 2^20 field cells")
+        }
         let edges = sphere.shellEdges
         guard edges.count == fieldLayers + 1, edges.allSatisfy(\.isFinite) else {
             throw bad("shell_edges has \(edges.count) values, not FZ + 1 = \(fieldLayers + 1)")

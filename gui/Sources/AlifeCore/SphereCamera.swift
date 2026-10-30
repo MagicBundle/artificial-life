@@ -56,6 +56,19 @@ package struct SpherePose: Equatable, Sendable {
     /// Whether the heading is north (to a milliradian).
     package var isNorthUp: Bool { simd_length(heading - SphereFrame.basis(at: up).north) < 1e-3 }
 
+    /// The heading `fraction` (0...1) of the way from `from` to north about `up`, by the signed angle between them (the shorter way round, as the box's
+    /// `HeadingEase` does by angle): a blend of the two vectors would stay put when they are opposite and then flip. `from` is taken
+    /// at the point looked at now (its part along `up` dropped); a heading with no tangent part goes straight to north.
+    package static func easedHeading(from: SIMD3<Float>, up: SIMD3<Float>, fraction: Float) -> SIMD3<Float> {
+        let north = SphereFrame.basis(at: up).north
+        let tangent = from - simd_dot(from, up) * up
+        guard simd_length(tangent) > 1e-6 else { return north }
+        let h = simd_normalize(tangent)
+        let angle = atan2(simd_dot(simd_cross(h, north), up), simd_dot(h, north))  // signed, in (-pi, pi]
+        let q = simd_quatf(angle: angle * min(max(fraction, 0), 1), axis: up)
+        return simd_normalize(q.act(h))
+    }
+
     /// The pose with `heading` turned to north (`n`, Keep north up). At a pole north is the engine's (east is (1, 0, 0)).
     package func northUp() -> SpherePose {
         var p = self

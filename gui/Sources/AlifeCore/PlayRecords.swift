@@ -1549,6 +1549,10 @@ enum RecordDecoder {
         let pos: [Float] = r.copy(count: 3 * n, at: offset)
         offset += 12 * n
         let orient: [UInt16] = r.copy(count: 2 * n, at: offset)
+        if header.sphere != nil {  // a planet's positions are finite (the independent decoder checks them too): a NaN would be a NaN billboard
+            guard pos.allSatisfy(\.isFinite) else { throw malformed(tag, "a position is not finite") }
+            guard orient.allSatisfy({ $0 & 0x7C00 != 0x7C00 }) else { throw malformed(tag, "a bearing is not finite") }
+        }
         offset += 4 * n
         let rgb: [UInt32] = r.copy(count: n, at: offset)
         offset += 4 * n

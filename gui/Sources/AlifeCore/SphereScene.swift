@@ -7,8 +7,10 @@ package struct SphereScene: Equatable, Sendable {
     package var floor: [SIMD4<Float>]
     package var cloud: [SIMD4<Float>]
     package var territory: [SIMD4<Float>]
-    /// Storms, pools and the wind.
+    /// The pools and the wind: under the cloud.
     package var overlay: [SphereLine]
+    /// The storms' rings, tracks and predictions: drawn after the cloud shell, so that it never veils them.
+    package var top: [SphereLine] = []
 
     /// The layers of the map as the player sees them.
     package struct Options: Equatable, Sendable {
@@ -32,14 +34,15 @@ package struct SphereScene: Equatable, Sendable {
         let cloud = SphereColours.cloud(sphere: sphere, map: store.sphereMap, display: display)
         let territory = SphereColours.territory(store.territory, nside: store.territory?.nside ?? sphere.nsideTerritory, highlight: options.selectedKin)
         var lines: [SphereLine] = []
-        if let storms = store.storms?.storms.storms { lines += SphereOverlay.storms(storms, sphere: sphere, selected: options.selectedStorm) }
+        var top: [SphereLine] = []
+        if let storms = store.storms?.storms.storms { top = SphereOverlay.storms(storms, sphere: sphere, selected: options.selectedStorm) }
         if let pools = store.environment?.environment.pools {
             lines += SphereOverlay.pools(pools, sphere: sphere, selected: options.selectedPool)
         }
         if options.wind, display.map, let map = store.sphereMap, map.npix == sphere.fieldCells {
-            lines += SphereOverlay.streamlines(map, sphere: sphere, layer: 0, seeds: 450, lift: Float(sphere.shellHeight) * 0.3)
+            lines += SphereOverlay.streamlines(map, sphere: sphere, layer: 0, seeds: 450, lift: Float(sphere.shellHeight) * 0.1)
         }
-        return SphereScene(floor: floor, cloud: cloud, territory: territory, overlay: lines)
+        return SphereScene(floor: floor, cloud: cloud, territory: territory, overlay: lines, top: top)
     }
 
     /// The Home view: the planet whole, north up, centred on the populated side (the mean direction of the organisms, the equator at

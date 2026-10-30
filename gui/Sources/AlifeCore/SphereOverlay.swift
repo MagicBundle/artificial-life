@@ -178,6 +178,26 @@ package enum SphereOverlay {
         return strip(points, widthFrom: 2, widthTo: 2, colorFrom: selection, colorTo: selection)
     }
 
+    // MARK: Height cue
+
+    /// A thin line from each organism aloft (above `minHeight` over the floor) straight down to the floor under it: the depth cue that the
+    /// floor alone does not give (an organism 10 units up reads as hovering beside the limb, not as being above it). At most `cap` lines,
+    /// the highest first. Pale at the organism, fainter at the floor.
+    package static func drops(_ frame: PlayFrame, planetRadius: Float, minHeight: Float = 2, cap: Int = 2500) -> [SphereLine] {
+        var aloft: [(height: Float, row: Int)] = []
+        for i in 0..<frame.n {
+            let p = frame.position(i)
+            let h = simd_length(p) - planetRadius
+            if h > minHeight { aloft.append((h, i)) }
+        }
+        if aloft.count > cap { aloft = Array(aloft.sorted { $0.height > $1.height }.prefix(cap)) }
+        return aloft.map { entry in
+            let p = frame.position(entry.row)
+            let foot = simd_normalize(p) * planetRadius
+            return SphereLine(a: p, b: foot, widthA: 0.8, widthB: 0.6, colorA: SIMD4(1, 1, 1, 0.30), colorB: SIMD4(1, 1, 1, 0.08))
+        }
+    }
+
     // MARK: Bonds
 
     /// The chords of the bonds of a frame; with the bond flow, each half takes the colour of what it does (`BondFlowLook`).

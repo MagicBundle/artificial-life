@@ -36,6 +36,9 @@ final class SphereController {
     private(set) var minimapSerial = 0
 
     private var scene: SphereScene?
+    /// The storms' lines and the selection's marker: drawn after the cloud (`SphereRenderer.setTop`).
+    private var sceneTop: [SphereLine] = []
+    private var markerLines: [SphereLine] = []
     private var sceneDisplay = WorldDisplay()
     private var configuredFor: StreamHeader?
     private var follow = SphereFollow()
@@ -134,6 +137,8 @@ final class SphereController {
         renderer?.setCloud(composed.cloud)
         renderer?.setTerritory(composed.territory)
         renderer?.setOverlay(composed.overlay)
+        sceneTop = composed.top
+        pushTop()
         rebuildMinimap()
         overlay.invalidate()
         view?.needsDisplay = true
@@ -180,16 +185,19 @@ final class SphereController {
         guard let renderer, let frame = play.store.frame, let sphere else { return }
         var lines: [SphereLine] = []
         if model.display.bonds, frame.nBonds > 0 { lines += SphereOverlay.bonds(frame, flow: model.display.bondFlow) }
-        if let uid = model.selection.organismUID, let index = play.store.listedIndex(ofUID: uid), true {
+        lines += SphereOverlay.drops(frame, planetRadius: Float(sphere.planetRadius))
+        markerLines = []
+        if let uid = model.selection.organismUID, let index = play.store.listedIndex(ofUID: uid) {
             let p = frame.position(index)
-            let eye = camera.eye
-            let distance = simd_length(eye - p)
+            let distance = simd_length(camera.eye - p)
             let radius = max(Float(play.store.header?.radius ?? 1) * 2.4, distance * 0.012)
-            lines += SphereOverlay.marker(at: p, eye: eye, radius: radius)
+            markerLines = SphereOverlay.marker(at: p, eye: camera.eye, radius: radius)
         }
-        _ = sphere
         renderer.setDynamic(lines)
+        pushTop()
     }
+
+    private func pushTop() { renderer?.setTop(sceneTop + markerLines) }
 
     // MARK: Pushing the camera
 
@@ -423,11 +431,10 @@ final class SphereController {
         if var ease = northEase {
             ease.elapsed += step
             let t = min(ease.elapsed / HeadingEase.duration, 1)
-            let north = SphereFrame.basis(at: camera.pose.up).north
             let e = t * t * (3 - 2 * t)
-            let from = ease.from - simd_dot(ease.from, camera.pose.up) * camera.pose.up
-            let blended = simd_normalize(simd_mix(simd_length(from) > 1e-6 ? simd_normalize(from) : north, north, SIMD3(repeating: e)))
-            edit(keepsHome: true) { $0.pose.heading = simd_length(blended) > 1e-6 ? blended : north }
+            // by the signed angle about the point looked at, the shorter way round (a blend of the vectors snaps at 180 degrees)
+            let heading = SpherePose.easedHeading(from: ease.from, up: camera.pose.up, fraction: e)
+            edit(keepsHome: true) { $0.pose.heading = heading }
             northEase = t >= 1 ? nil : ease
             easing = t < 1
         }

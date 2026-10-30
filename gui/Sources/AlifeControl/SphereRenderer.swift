@@ -131,6 +131,9 @@ final class SphereRenderer: NSObject, MTKViewDelegate {
     private var overlayCount = 0
     private var dynamic: (any MTLBuffer)?
     private var dynamicCount = 0
+    /// The lines drawn after the lid, so that the cloud never veils them: the storms' rings and the marker of the selection.
+    private var top: (any MTLBuffer)?
+    private var topCount = 0
     private var territoryNside = 2
     private var fieldNside = 2
     /// The cloud shell's opacity (1: as the weather says).
@@ -220,6 +223,7 @@ final class SphereRenderer: NSObject, MTKViewDelegate {
             agentCount = 0
             overlayCount = 0
             dynamicCount = 0
+            topCount = 0
             return
         }
         fieldNside = sphere.nsideField
@@ -293,6 +297,7 @@ final class SphereRenderer: NSObject, MTKViewDelegate {
     /// The lines that change slowly (storms, pools, winds), and the ones that change with each frame (bonds, the selection).
     func setOverlay(_ lines: [SphereLine]) { (overlay, overlayCount) = segments(lines) }
     func setDynamic(_ lines: [SphereLine]) { (dynamic, dynamicCount) = segments(lines) }
+    func setTop(_ lines: [SphereLine]) { (top, topCount) = segments(lines) }
 
     // MARK: Uniforms
 
@@ -308,7 +313,7 @@ final class SphereRenderer: NSObject, MTKViewDelegate {
         u.forward = SIMD4(camera.forward, 0)
         u.planet = SIMD4(Float(sphere.planetRadius), Float(sphere.lidRadius), bodyRadius, tan(camera.pose.fovY / 2))
         u.viewport = SIMD4(Float(size.width), Float(size.height), aspect, cloudAlpha)
-        u.nsides = SIMD4(Int32(fieldNside), Int32(territoryNside), Int32(agentCount), Int32(overlayCount + dynamicCount))
+        u.nsides = SIMD4(Int32(fieldNside), Int32(territoryNside), Int32(agentCount), Int32(overlayCount + dynamicCount + topCount))
         let display = draw.display
         let ppp = draw.pixelsPerPoint
         var flags: UInt32 = 0
@@ -337,7 +342,8 @@ final class SphereRenderer: NSObject, MTKViewDelegate {
         // the light comes from over the camera's left shoulder
         let l = simd_normalize(-camera.forward * 0.8 - camera.right * 0.45 + camera.screenUp * 0.5)
         u.sun = SIMD4(l, 0.5)
-        u.colours = SIMD4(Float(sphere.shellHeight), 0, 0, 0)
+        let planes = camera.clipPlanes
+        u.colours = SIMD4(Float(sphere.shellHeight), planes.near, planes.far, 0)
         return u
     }
 
@@ -392,6 +398,15 @@ final class SphereRenderer: NSObject, MTKViewDelegate {
         encoder.setFragmentBytes(&u, length: uniformSize, index: 0)
         encoder.setFragmentBuffer(cloudColours, offset: 0, index: 1)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+
+        // the storms' rings and the marker of the selection, over the cloud
+        if topCount > 0, let top {
+            encoder.setRenderPipelineState(segmentPipeline)
+            encoder.setDepthStencilState(testDepth)
+            encoder.setVertexBytes(&u, length: uniformSize, index: 0)
+            encoder.setVertexBuffer(top, offset: 0, index: 1)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: topCount)
+        }
     }
 
     // MARK: MTKViewDelegate

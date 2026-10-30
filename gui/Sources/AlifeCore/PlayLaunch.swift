@@ -95,6 +95,15 @@ package struct PlanetSpec: Equatable, Sendable {
         dims == 2 ? "The weather runs only in a 3D world: this source is 2D. Turn the weather off, or choose a 3D source." : nil
     }
 
+    /// The spin-up of a planet. The engine has no sphere-specific value (the storm calibration, S4c, is open: the S4b tests spin up 40 000 steps for
+    /// stability, the rest state needs only N >= 1), so this is the box's 320 world's, keyed on the geometry so that S4c changes one constant and
+    /// the size of a sphere (`world.size` is only its image length there) never picks the mini world's.
+    package static let sphereSpinup = 20_000
+
+    package static func defaultSpinup(forGeometry geometry: String?, worldSize size: Double?) -> Int {
+        geometry == "sphere" ? sphereSpinup : defaultSpinup(forWorldSize: size)
+    }
+
     package static func defaultSpinup(forWorldSize size: Double?) -> Int {
         size == miniWorldSize ? miniSpinup : defaultSpinup
     }

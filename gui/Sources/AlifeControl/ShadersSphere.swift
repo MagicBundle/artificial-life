@@ -51,7 +51,7 @@ enum ShadersSphere {
         uint4 flags;       // x: bit 0 floor map, 1 cloud shell, 2 territory tint, 3 territory borders, 4 graticule, 5 height colour
                            // y: the selected field pixel (0xFFFFFFFF none), zw: reserved
         float4 sun;        // xyz: the direction to the sun, w: the ambient light
-        float4 colours;    // x: the shell's height H, yzw: reserved
+        float4 colours;    // x: the shell's height H, y: the near plane, z: the far plane, w: reserved
     };
 
     constant float kPi = 3.14159265358979;
@@ -332,7 +332,11 @@ enum ShadersSphere {
         float rim = pow(1.0 - ndv, 4.0);
         float3 shade = c.rgb * (0.45 + 0.55 * lightAt(n, u)) * u.look.x;
         float3 glow = float3(0.18, 0.40, 0.85);
-        float ca = clamp(c.a * u.viewport.w, 0.0, 1.0);
+        // the cloud is a veil, never a lid: at most 45 % of it over what is under (the organisms and the storms are what the player is
+        // there for), and it fades towards the limb of the shell, where a cell of the lid would stand alone in the dark annulus
+        // (from outside, a cell of the lid beyond the floor's silhouette (|n.d| under sqrt(1 - (Rp / lid)^2)) is a tile in the dark annulus: it fades out)
+        float edge = inside ? 0.12 : sqrt(max(1.0 - (u.planet.x * u.planet.x) / (lid * lid), 0.0));
+        float ca = min(c.a * u.viewport.w, 0.45) * smoothstep(edge, edge + (inside ? 0.48 : 0.2), ndv);
         float ra = clamp(rim * 0.6, 0.0, 1.0);
         // premultiplied: the cloud over the glow
         out.color = float4(shade * ca + glow * ra * (1.0 - ca), ca + ra * (1.0 - ca));
@@ -368,7 +372,29 @@ enum ShadersSphere {
         Seg s = segs[iid];
         float4 ca = u.viewProjection * float4(float3(s.a), 1.0);
         float4 cb = u.viewProjection * float4(float3(s.b), 1.0);
-        if (ca.w <= 0.01 || cb.w <= 0.01) { return out; }
+        // a segment with an end behind the eye is clipped at the near plane (not dropped: a long track passes the camera at a hover)
+        float nearW = max(u.colours.y, 0.05);
+        if (ca.w < nearW && cb.w < nearW) { return out; }
+        float3 qa = float3(s.a), qb = float3(s.b);
+        float4 colA = s.colorA, colB = s.colorB;
+        if (ca.w < nearW) {
+            float t = (nearW - ca.w) / (cb.w - ca.w);
+            ca = mix(ca, cb, t);
+            qa = mix(qa, qb, t);
+            colA = mix(colA, colB, t);
+        } else if (cb.w < nearW) {
+            float t = (nearW - cb.w) / (ca.w - cb.w);
+            cb = mix(cb, ca, t);
+            qb = mix(qb, qa, t);
+            colB = mix(colB, colA, t);
+        }
+        // a line fades with its end's facing: beyond the floor's horizon seen from the eye it is the far side's (a wind line over the far
+        // hemisphere would read as an orbit round the limb); 1 at the point under the eye, 0 at the horizon
+        float eyeR = length(u.eye.xyz);
+        float3 eyeDir = u.eye.xyz / max(eyeR, 1e-3);
+        float horizon = u.planet.x / max(eyeR, u.planet.x + 1e-3);
+        colA.a *= smoothstep(0.0, 0.35, (dot(normalize(qa), eyeDir) - horizon) / max(1.0 - horizon, 1e-3));
+        colB.a *= smoothstep(0.0, 0.35, (dot(normalize(qb), eyeDir) - horizon) / max(1.0 - horizon, 1e-3));
         float2 pa = ca.xy / ca.w * u.viewport.xy * 0.5;
         float2 pb = cb.xy / cb.w * u.viewport.xy * 0.5;
         float2 dir = pb - pa;
@@ -382,9 +408,11 @@ enum ShadersSphere {
         float2 offset = (nrm * side + dir * (second ? 1.0 : -1.0) * 0.5) * (0.5 * w + 0.75);
         float2 ndcOffset = offset / (u.viewport.xy * 0.5);
         // a small bias towards the eye keeps a line on the floor from fighting the floor's depth
-        float4 clip = float4(c.xy + ndcOffset * c.w, c.z - 0.0004 * c.w, c.w);
+        // (a bias of 0.08 world units towards the eye whatever the distance: dz/dw of the depth is near far / ((far - near) w^2))
+        float depthBias = 0.08 * u.colours.y * u.colours.z / max(u.colours.z - u.colours.y, 1e-3) / max(c.w * c.w, 1e-3);
+        float4 clip = float4(c.xy + ndcOffset * c.w, c.z - depthBias * c.w, c.w);
         out.position = clip;
-        out.color = second ? s.colorB : s.colorA;
+        out.color = second ? colB : colA;
         out.across = side;
         return out;
     }

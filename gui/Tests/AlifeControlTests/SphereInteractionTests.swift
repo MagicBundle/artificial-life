@@ -187,6 +187,32 @@ fileprivate func makeSphereRig(_ scratch: Scratch) async throws -> SphereRig {
         #expect(rig.settle() && rig.sphere.camera.pose.tilt < 1e-3)
     }
 
+    /// The review's cases: a heading opposite to north (reached by dragging over a pole) must turn at once, not hold for half the ease and flip.
+    @Test(arguments: [180.0, 162.0, 90.0])
+    func northUpTurnsAViewThatIsUpsideDownAtOnceAndMonotonically(degrees: Double) async throws {
+        let (rig, scratch) = try await rig()
+        defer { scratch.cleanup() }
+        rig.sphere.setHeading(bearing: Float(degrees * .pi / 180))
+        func angle() -> Float { abs(rig.sphere.camera.pose.bearing) }
+        let start = angle()
+        #expect(abs(start - Float(degrees * .pi / 180)) < 1e-3)
+        rig.model.perform(.northUp)
+        var angles: [Float] = []
+        var elapsed = 0.0
+        while elapsed < 1 {
+            rig.clock.t += 1.0 / 60
+            elapsed += 1.0 / 60
+            let moving = rig.sphere.advance()
+            angles.append(angle())
+            if !moving { break }
+        }
+        for (a, b) in zip(angles, angles.dropFirst()) { #expect(b <= a + 1e-4, "the angle to north only shrinks") }
+        #expect(angles.last! < 1e-3 && rig.sphere.camera.pose.isNorthUp)
+        // a tenth of a second in (a third of the ease, e = 0.26) it has turned a good way: the blend of the vectors held at 180 degrees until e = 0.5
+        let at = angles[min(5, angles.count - 1)]
+        #expect(at < start * 0.85, "after 6 ticks the view is still \(at) from north, it started \(start)")
+    }
+
     @Test func theGrabTheScrollAndThePinchMoveThePlanetTheOwnersWay() async throws {
         let (rig, scratch) = try await rig()
         defer { scratch.cleanup() }

@@ -133,7 +133,7 @@ struct GPUPlanetWindowTests {
         world.model.sphere.freeRectChanged()
         let free = world.model.freeRect
         #expect(free.width > 600 && free.height > 400)
-        let home = try world.composite("planet_window_home")
+        let home = try world.composite("planet_window_home_v2")
         #expect(home.width == Int(free.width) * 2)
         // the planet is on screen: the middle of the picture is not the sky
         let mid = home.pixel(home.width / 2, home.height / 2)
@@ -147,22 +147,22 @@ struct GPUPlanetWindowTests {
         if let storm = world.play.store.storms?.storms.storms.first {
             world.model.selectStorm(storm.id, fly: true, follow: false)
             await world.finishMotion()
-            try world.composite("planet_window_storm")
+            try world.composite("planet_window_storm_v2")
         }
         // a region view, tilted, with a clicked cell
         world.model.perform(.viewPreset(.oblique))
         await world.finishMotion()
         sphere.click(at: CGPoint(x: world.model.freeRect.midX + 40, y: world.model.freeRect.midY + 30), shift: false, clicks: 1)
         sphere.hover(at: CGPoint(x: world.model.freeRect.midX - 80, y: world.model.freeRect.midY))
-        try world.composite("planet_window_cell")
+        try world.composite("planet_window_cell_v2")
         // the horizon, low
         sphere.zoom(by: 0.35)
         world.model.perform(.viewPreset(.low))
         await world.finishMotion()
-        try world.composite("planet_window_horizon")
+        try world.composite("planet_window_horizon_v2")
         // the whole planet again
         world.model.home()
         await world.finishMotion()
-        try world.composite("planet_window_home_again")
+        try world.composite("planet_window_home_again_v2")
     }
 }
