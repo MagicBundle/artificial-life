@@ -19,6 +19,10 @@ final class ViewerModel: ObservableObject {
     weak var renderer: Renderer?
     weak var view: MTKView?
 
+    /// The planet's camera and renderer feed, used instead of the box's while the stream is a sphere (DESIGN §46.8).
+    let sphereLab = SphereLabModel()
+    var isSphere: Bool { stream.header?.isSphere == true }
+
     /// What the colour pop-up shows, apart from the stream, which publishes with every frame (see `DistinctState`).
     let colour: DistinctState<ViewerColourInputs>
 
@@ -59,6 +63,10 @@ final class ViewerModel: ObservableObject {
     }
 
     func resetCamera() {
+        if isSphere {
+            sphereLab.reset()
+            return
+        }
         renderer?.resetCamera(aspect: aspect)
         view?.needsDisplay = true
     }
@@ -98,6 +106,18 @@ final class ViewerModel: ObservableObject {
 
     /// Draws the current view into an image of the window's size and writes it to `runs/NAME/media/view3d_<step>.png`.
     func snapshot() {
+        if isSphere, let view = sphereLab.view, let run = stream.source?.run, let directory = stream.directory, let frame = stream.frame {
+            let size = view.drawableSize
+            let url = ViewerSnapshot.url(directory: directory, run: run, step: frame.step)
+            do {
+                guard let image = try sphereLab.snapshot(width: Int(size.width), height: Int(size.height)) else { return }
+                try PNG.write(image, to: url)
+                note = "Saved runs/\(run)/media/\(url.lastPathComponent)"
+            } catch {
+                note = "Snapshot failed: \(error)"
+            }
+            return
+        }
         guard let renderer, let view, let step = renderer.frameStep, let run = stream.source?.run,
               let directory = stream.directory else {
             note = "Nothing to save yet."

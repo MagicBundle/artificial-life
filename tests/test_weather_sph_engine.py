@@ -112,6 +112,60 @@ def test_the_stormsph_overlay_is_made_for_the_64k3s_world() -> None:
     assert p.f0 * np.sin(np.radians(40.0)) == pytest.approx(0.0161, abs=1e-4)
 
 
+def test_the_stormsph16_overlay_is_made_for_the_tiny3s_world() -> None:
+    """The overlay of the `tiny3s` planet (DESIGN §46.6, §46.8): the weather Nside 16, the pools of
+    `sphere_weather_helpers.pools("tiny3s")` at the angular drift of `stormsph`, the coupling of `stormsph`;
+    it sets no weather time step (it runs at the derived one)."""
+    import tomllib
+    from importlib import resources
+
+    from sphere_weather_helpers import pools
+
+    assert "stormsph16" in config.WORLD_OVERLAYS and "stormsph16" in config.ALL_OVERLAYS
+    cfg = load_config(preset="tiny3s", overlays=["stormsph16"])
+    p = weather_sph.params_from_config(cfg)
+    assert cfg.weather.enabled and (cfg.weather.cells, len(cfg.weather.pools) // 7) == (16, 6)
+    assert cfg.weather.cells == 2 * cfg.world.nside == NW["tiny3s"]
+    # the pools are the tests' narrow ones (10 x 6 at +-40 degrees) with `stormsph`'s angular drift:
+    # -0.009 on a planet of radius 90 is -0.0036 on radius 36 (a lap in the same number of steps)
+    assert list(cfg.weather.pools) == pytest.approx(pools("tiny3s", drift=-0.009 * 36.0 / 90.0), abs=1e-6)
+    # the coupling is `stormsph`'s
+    sph = load_config(preset="tiny3s", overlays=["stormsph"], overrides=W64K[1:]).weather
+    for key in ("enabled", "f0", "seed_rate", "rain_gain", "storm_p", "storm_u0", "storm_span"):
+        assert getattr(cfg.weather, key) == getattr(sph, key), key
+    # nothing per step is configured by the overlay: the keys it sets are those of `stormsph`, and none is a
+    # time step (S4b derives it from the Courant number, so the overlay validates before and after that)
+    text = resources.files("alife.presets").joinpath("stormsph16.toml").read_text(encoding="utf-8")
+    keys = set(tomllib.loads(text)["weather"])
+    assert keys == {
+        "enabled", "cells", "f0", "seed_rate", "pools", "rain_gain", "storm_p", "storm_u0", "storm_span",
+    }  # fmt: skip
+    # the weather runs at the derived dt (C29): Courant 0.40 here as at every Nw (dt = 0.829 at Nw 16);
+    # C_used is proportional to dt and was 0.4826 at dt = 1: under 0.8 C_limit before and after C29
+    assert p.dt == pytest.approx(weather_sph.weather_dt(p)) == pytest.approx(0.829, abs=1e-3)
+    assert weather_sph.courant(p, 36.0) == pytest.approx(weather_sph.SPHERE_COURANT, abs=1e-9)
+    assert weather_sph.courant(p, 36.0, 1.0) == pytest.approx(0.4826, abs=1e-3)
+    assert weather_sph.courant(p, 36.0) <= 0.8 * weather_sph.C_LIMIT
+    # the pools drift at the angular rate of `stormsph`'s (vx/Rp per unit of weather time, whatever dt is)
+    assert cfg.weather.pools[5] / 36.0 == pytest.approx(sph.pools[5] / 90.0, rel=1e-9)
+
+
+def test_the_stormsph16_overlay_is_refused_on_the_other_planets() -> None:
+    for which in ("mini3s", "64k3s"):
+        with pytest.raises(ConfigError, match=r"Courant|latitude|arc length|power of two|rule 6"):
+            load_config(preset="tiny3s", overlays=["stormsph16"], overrides=[*BASE[1:2], *SPHERE_SETS[which]])
+
+
+def test_a_tiny3s_planet_spins_up_and_steps_with_stormsph16() -> None:
+    cfg = load_config(preset="tiny3s", overlays=["stormsph16"], overrides=["run.compile=false"])
+    key = init_keys(0)[InitStream.STATE_KEY]
+    s = init_state(cfg)
+    wx = weather_spinup.spinup(cfg, 12, step=0, key=key, compile=False)
+    assert tuple(wx.shape) == (11, 12 * 16 * 16) and bool(mx.all(mx.isfinite(wx)).item())
+    s2, out = make_step(cfg, compile=False)(s._replace(wx=wx))
+    assert invariants.full_check(s2, cfg, s._replace(wx=wx), out) == []
+
+
 # --- state --------------------------------------------------------------------------------------------------
 
 

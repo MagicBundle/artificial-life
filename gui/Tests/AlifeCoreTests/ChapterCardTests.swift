@@ -138,6 +138,18 @@ import Testing
         #expect(ChronicleAction.of(refs: ["K1"], entities: [:]) == nil)
     }
 
+    @Test func aSentenceOnAPlanetCarriesTheZOfItsPlace() {
+        let entities: [String: ReportBody.Entity] = [
+            "S2": .init(kind: "storm", id: 2, name: "B", x: 0.5, y: 0.25, z: 0.75),
+            "K1": .init(kind: "kin", id: 1, name: "A", x: nil, y: nil),
+        ]
+        let action = ChronicleAction.of(refs: ["S2"], entities: entities)
+        #expect(action == ChronicleAction(at: SIMD2(0.5, 0.25), select: .storm(id: 2), z: 0.75), "the point of a sphere report is x, y, z")
+        #expect(action?.z == 0.75)
+        #expect(ChronicleAction.of(refs: ["K1"], entities: entities)?.z == nil)
+        #expect(ChronicleAction.of(refs: ["nope", "S2"], entities: [:]) == nil)
+    }
+
     // MARK: The since strip
 
     @Test func theStripSaysWhatHasChangedForThePlayer() throws {

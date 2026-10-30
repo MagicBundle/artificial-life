@@ -286,6 +286,7 @@ struct ContentView: View {
                       help: "Strength of a second food band under the surface, 0 to 1. 0 = off.")
                 lever("Photic lambda", key: "fields.photic_lambda", text: w3.photicLambda,
                       help: "Depth scale of the surface band below the surface; > 0 when the amplitude is above 0.")
+                if w3.wrappedValue.sphere.isSphere { sphereLevers(isFork: isFork, w3) }
                 Button("Reset 3D levers") { controller.settings.levers.world3D = controller.settings.world3DBaseline }
                     .font(.caption)
             }
@@ -293,6 +294,32 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .disabled(busy)
+    }
+
+    /// The planet's levers (`SphereLevers`, DESIGN §46.9): a sphere world's radius, Nside, layers and ceiling band. The geometry itself is the
+    /// preset's or the source's and is shown, not offered: a fork cannot change it, nor the planet's shape.
+    private func sphereLevers(isFork: Bool, _ w3: Binding<World3DLevers>) -> some View {
+        let sphere = w3.sphere
+        return VStack(alignment: .leading, spacing: 10) {
+            Divider()
+            Text("Planet: \(w3.wrappedValue.sphere.summary). A sphere world's height is the thickness of its shell; a place is a longitude and a latitude in degrees.")
+                .font(.caption).foregroundStyle(.secondary)
+            if isFork {
+                Text("The planet's shape (radius, Nside, layers) is fixed in a fork: the engine refuses to change it, and a fork cannot cross geometries.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            lever("Planet radius", key: "world.radius", text: sphere.radius,
+                  help: "The floor is a sphere of this radius, at least 20. The shell above it is the world's height; its thickness must not exceed the radius.")
+                .disabled(isFork)
+            lever("Field Nside", key: "world.nside", text: sphere.nside,
+                  help: "HEALPix Nside of the field cells: 12 x Nside^2 cells a layer, at least 2. The cells stay near the field cell's volume.")
+                .disabled(isFork)
+            lever("Layers", key: "world.layers", text: sphere.layers,
+                  help: "Equal-volume radial layers of the shell, at least 2; layers x 12 x Nside^2 stays under 2^20.")
+                .disabled(isFork)
+            lever("Ceiling band", key: "physics.ceiling_band", text: sphere.ceilingBand,
+                  help: "A soft band under the lid in which agents are pushed back down. 0 = the hard lid only.")
+        }
     }
 
     // MARK: Timer

@@ -160,10 +160,17 @@ struct WorldCanvasView: View {
             Color(red: 0.035, green: 0.04, blue: 0.055)
             // No Metal device is created until a world is live.
             if play.phase == .live || play.store.header != nil {
-                WorldMetalView(model: model)
-                WorldOverlayView(model: model, overlay: model.overlay, play: play)
-                WorldHUDView(model: model, overlay: model.overlay, play: play)
-                ControlsHintView(model: model)
+                if model.sphereActive {
+                    // A planet: its own renderer, overlay and controls (DESIGN §46.8); the box world's below are untouched.
+                    SphereMetalView(model: model)
+                    SphereOverlayView(model: model, overlay: model.overlay, play: play)
+                    SphereHintView(model: model)
+                } else {
+                    WorldMetalView(model: model)
+                    WorldOverlayView(model: model, overlay: model.overlay, play: play)
+                    WorldHUDView(model: model, overlay: model.overlay, play: play)
+                    ControlsHintView(model: model)
+                }
                 if alertsOverMap { AlertStackOverlay(play: play, model: model) }
                 ChapterCardView(play: play, model: model)
                 ToastStackView(model: model)

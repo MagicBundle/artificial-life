@@ -108,6 +108,8 @@ func playSectionBytes(_ record: StreamRecord) -> [String: Data] {
         return ["owner": Data(t.owner), "purity": Data(t.purity)]
     case .map1(let m):
         return ["P": Data(m.p), "Dc": Data(m.dc), "zeta": raw(m.zeta), "Ts": Data(m.ts), "winds": raw(m.winds)]
+    case .maph(let m):
+        return ["P": Data(m.p), "Dc": Data(m.dc), "zeta": raw(m.zeta), "Ts": Data(m.ts), "winds": raw(m.winds)]
     case .clck(let c):
         var b: [UInt8] = leFloat(c.rate) + leFloat(c.achieved) + leFloat(c.stepMs) + leFloat(c.frameMs)
         b += le(c.lateSteps) + le(c.saveStallSteps) + [c.reason.rawValue, c.saving ? 1 : 0] + le(c.flags)

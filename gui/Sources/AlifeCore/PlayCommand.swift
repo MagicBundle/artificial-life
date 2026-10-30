@@ -226,7 +226,9 @@ package enum PlayCommand: Equatable, Sendable {
         var seen: Set<PowerCommand.Key> = []
         for p in power.parameters {
             guard seen.insert(p.key).inserted else { throw Invalid(reason: "power names \(p.key.rawValue) twice") }
-            guard p.value.isFinite, p.value >= 0, !p.key.isWhole || p.value == p.value.rounded() else {
+            // (a place on a sphere is a longitude and a latitude in degrees, which are signed; the power clamps or refuses the range)
+            let signed = p.key == .x || p.key == .y
+            guard p.value.isFinite, signed || p.value >= 0, !p.key.isWhole || p.value == p.value.rounded() else {
                 throw Invalid(reason: "\(p.key.rawValue) needs \(p.key.isWhole ? "a whole" : "a") non-negative number, not \(p.value)")
             }
             if p.key.isWhole {

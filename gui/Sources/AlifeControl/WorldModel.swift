@@ -105,6 +105,14 @@ final class WorldModel: ObservableObject {
                     if display.spin { startAnimating() }
                 }
                 if display.keepNorthUp != oldValue.keepNorthUp { defaults.set(display.keepNorthUp, forKey: Self.keepNorthUpKey) }
+                if sphereActive {  // a planet has its own layers and camera (SphereController); the box's globe, map and size policy do not apply
+                    if display.heightColour != oldValue.heightColour, !applyingColourDefault {
+                        defaults.set(display.heightColour, forKey: Self.heightColourKey)
+                    }
+                    sphere.displayChanged()
+                    overlay.invalidate()
+                    return
+                }
                 if display.globe != oldValue.globe {
                     if !adoptingGlobeDefault { defaults.set(display.globe, forKey: Self.globeKey) }
                     setGlobe(display.globe)
@@ -247,6 +255,8 @@ final class WorldModel: ObservableObject {
 
     weak var renderer: Renderer?
     weak var view: WorldMTKView?
+    /// The planet's camera, picking and renderer feed (DESIGN §46.8): used instead of the box paths while the world in view is a sphere.
+    private(set) lazy var sphere = SphereController(model: self)
     /// What the View menu shows, apart from the objects that change with every clock (see `DistinctState`).
     private(set) lazy var viewMenu = DistinctState<ViewMenuInputs>(
         initial: ViewMenuInputs(play: play, model: self), sources: [play.objectWillChange, objectWillChange]
@@ -318,6 +328,10 @@ final class WorldModel: ObservableObject {
     func setFreeRect(_ rect: CGRect) {
         guard rect != freeRect else { return }
         freeRect = rect
+        if sphereActive {
+            sphere.freeRectChanged()
+            return
+        }
         pushInset()
         refitToShape(aspect: aspect)  // (the drawable follows, and refits the same way; whichever comes second finds nothing to do)
     }
@@ -378,6 +392,15 @@ final class WorldModel: ObservableObject {
         if changes.contains(.frame), let index = store.frame?.colorIndex, index != menuColourIndex {
             menuColourIndex = index
             viewMenu.refresh()
+        }
+        if store.header?.isSphere == true {  // a planet: its camera and renderer are the SphereController's, the rest of the window is this
+            if changes.contains(.header) { viewMenu.refresh() }
+            sphere.deliver(changes)
+            if changes.contains(.storms) || changes.contains(.environment) || changes.contains(.territory) || changes.contains(.header)
+                || (changes.contains(.frame) && !selection.isNone) {
+                overlay.invalidate()
+            }
+            return
         }
         if changes.contains(.header) || changes.contains(.frame) { refreshSizePolicy(force: changes.contains(.header)) }
         // The Home view faces the side of the world the organisms are on, which the header does not say: the first frame of a world that
@@ -720,6 +743,7 @@ final class WorldModel: ObservableObject {
 
     /// `n`, a click on the compass: turn the map north up, the heading easing to 0 over 0.3 s.
     func northUp() {
+        if sphereActive { return sphere.northUp() }
         guard pose.heading != 0, flight?.home != true else { return }  // (a flight to Home is turning the view north up already)
         viewEase = nil  // (an ease to a view would turn the heading back to its own every frame: any other input ends it where it is)
         headingEase = HeadingEase(from: pose.heading)
@@ -781,5 +805,6 @@ final class WorldModel: ObservableObject {
         selection = new
         selectionHint = 0
         overlay.invalidate()
+        if sphereActive { sphere.selectionChanged() }
     }
 }
