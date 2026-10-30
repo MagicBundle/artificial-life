@@ -136,10 +136,10 @@ OVERLAY_OF = {"64k3s": "stormsph", "mini3s": "stormsph22", "tiny3s": "stormsph16
 CALIBRATED = {
     "stormsph": dict(
         pools=(3, 40.0, 20.0, 1.0),
-        seed_rate=0.02,
+        seed_rate=0.05,
         rain_gain=52000.0,
         storm_p=0.002,
-        storm_u0=0.08,
+        storm_u0=0.09,
         storm_span=0.03,
     ),
     "stormsph22": dict(
