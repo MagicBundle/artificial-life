@@ -90,6 +90,11 @@ def default_prereg(code_git: str | None = None) -> dict[str, Any]:
             "blocks": N_BLOCKS,
             "seed": SEED,
         },
+        "lineage": {
+            "groups": LINEAGE_GROUPS,
+            "rule": "k-means of the kin tags of the rows alive at the window start; a birth inherits its "
+            "parent's group (immigrants are unassigned)",
+        },
         "contexts": {k: v[0] for k, v in CONTEXTS.items()},
         "responses": {k: v[0] for k, v in RESPONSES.items()},
         "dist_bins": DIST_BINS,
