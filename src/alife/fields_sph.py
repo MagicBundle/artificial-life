@@ -338,7 +338,6 @@ class MatTables(NamedTuple):
     kmap: mx.array | None  # (FZ, Npix) int32 required open neighbours; None with aperture 0
     phase: mx.array | None  # (FZ, Npix) int32; None with aperture 0
     n_phase: int  # min(FZ, 3) · n_colours; 0 with aperture 0
-    k_max: int  # the largest entry of kmap (0 with aperture 0)
     n_nbr: np.ndarray  # (FZ, Npix) int32 host: the neighbour count of every cell
 
 
@@ -364,13 +363,13 @@ def mat_tables(nside: int, layers: int, aperture: float) -> MatTables:
     touch = np.where(ok, tb.touch, np.arange(tb.npix)[:, None]).astype(np.int32)
     n_nbr = n_neighbours(nside, layers)
     kmap = phase = None
-    n_phase = k_max = 0
+    n_phase = 0
     if aperture > 0:
         kk = aperture_k(aperture, n_nbr)
         colour, n_col = geom.min_colouring(nside)
         phase_np = colour[None, :].astype(np.int64) + n_col * (np.arange(layers)[:, None] % 3)
         kmap, phase = mx.array(kk, dtype=_I32), mx.array(phase_np, dtype=_I32)
-        n_phase, k_max = min(layers, 3) * n_col, math.ceil(aperture * (26 if layers > 2 else 17) - _TOUCH_K)
+        n_phase = min(layers, 3) * n_col
     return MatTables(
         touch=mx.array(touch, dtype=_I32),
         ok=mx.array(ok),
@@ -378,7 +377,6 @@ def mat_tables(nside: int, layers: int, aperture: float) -> MatTables:
         kmap=kmap,
         phase=phase,
         n_phase=n_phase,
-        k_max=k_max,
         n_nbr=n_nbr,
     )
 

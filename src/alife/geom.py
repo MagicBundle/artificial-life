@@ -566,6 +566,7 @@ def min_colouring(nside: int) -> tuple[np.ndarray, int]:
             break
         best, k = found, k - 1
     col = _frozen(best.astype(np.int32))
+    assert check_colouring(nside, col), "min_colouring produced an improper colouring"  # one gather, N x 24
     return col, int(col.max()) + 1
 
 

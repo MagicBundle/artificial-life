@@ -56,6 +56,22 @@ def test_the_colouring_is_small_at_the_preset_resolutions(nside: int, limit: int
     assert geom.check_colouring(nside, colour)
 
 
+# The colouring decides which cell may close at which step, so it is part of the trajectory of every
+# structures-on sphere run (and of resuming one), although the config hash does not contain it. Pinned here:
+# sha256 of the int32 colour array (first 16 hex digits) and the colour count. A change of the seed, the
+# iteration cap, the passes or NumPy's frozen RandomState stream changes them: re-pin DELIBERATELY (and the
+# compiled structures digest of test_sphere_trajectory with it), as for the other digests (DESIGN §46.5).
+COLOURING_PINS = {8: ("287d940ad91fb452", 11), 11: ("cf664d74586ccdc9", 11), 21: ("7446acc15afac274", 11)}
+
+
+@pytest.mark.parametrize("nside", sorted(COLOURING_PINS))
+def test_the_colouring_is_pinned(nside: int) -> None:
+    import hashlib
+
+    colour, k = geom.min_colouring(nside)
+    assert (hashlib.sha256(colour.tobytes()).hexdigest()[:16], k) == COLOURING_PINS[nside]
+
+
 def test_the_colouring_is_deterministic() -> None:
     a, ka = geom.min_colouring(8)
     geom.min_colouring.cache_clear()
@@ -462,3 +478,94 @@ def test_the_barrier_drag_is_bounded_by_the_gain_on_the_shell() -> None:
     here = mx.array(np.linspace(0, 1, 11), mx.float32)
     dm = np.asarray(physics.barrier_drag(mx.zeros((11, 3)), here, None, cfg))
     assert dm.min() >= 1.0 and dm.max() <= 4.0 + 1e-6
+
+
+# --- the watchdogs of R2: the counter and the host check use the per-cell requirement (S3 review M2) -------
+
+
+def _margin_material(cfg, layer: int, pix: int) -> tuple[np.ndarray, int]:
+    """A hand-made material (R2 does not apply) that leaves the cell ``(layer, pix)`` with exactly ``k_c``
+    open neighbours: its neighbours in the other layers are closed first, then the touching pixels of its own
+    layer. Returns ``(m, k_c)``."""
+    nside, layers = cfg.world.nside, cfg.world.layers
+    npix = geom.npix(nside)
+    thr = fields.mat_thr(cfg)
+    kc = int(_kmap(cfg)[layer, pix])
+    cell = layer * npix + pix
+    nb = [int(i) for i in neighbour_index(nside, layers)[cell] if i >= 0]
+    nb.sort(key=lambda i: (abs(i // npix - layer) == 0, i))  # the other layers first, then its own layer
+    want_open = kc
+    m = np.zeros((layers, npix), np.int64)
+    for i in nb[: len(nb) - want_open]:
+        m.reshape(-1)[i] = cfg.structures.cap
+    assert ref_nopen(m, thr, nside).reshape(-1)[cell] == want_open
+    return m, kc
+
+
+def _drive(cfg, m: np.ndarray, cell: int = 0, alive: bool = True):
+    """``structures.update`` on ``m`` with one inert row standing in ``cell``: returns the flows."""
+    n = 4
+    units = structures.actions.Build(mx.zeros((n,), mx.int32))
+    fcell = mx.full((n,), cell, mx.int32)
+    alive0 = mx.array([alive] + [False] * (n - 1))
+    _, fl = structures.update(
+        mx.array(m.astype(np.int32)), units, fcell, alive0, None, mx.array(3, mx.int32), cfg
+    )
+    return fl
+
+
+@pytest.mark.parametrize("kind", ["floor", "seven-neighbour floor", "seven-neighbour interior", "interior"])
+def test_the_violation_counter_and_the_host_check_sit_at_the_per_cell_margin(kind: str) -> None:
+    """A cell at exactly ``nopen == k_c`` (the margin; below the scalar ``k = ceil(aperture·26)`` on the
+    boundary layers and at the seven-neighbour pixels) is not a violation; one open neighbour fewer is
+    exactly one, in the engine's counter and in the host check. A scalar threshold in either fails the
+    first half."""
+    cfg = cfg_of("structures.enabled=true", "structures.aperture=0.25")
+    nside, layers = cfg.world.nside, cfg.world.layers
+    npix = geom.npix(nside)
+    seven = int(np.flatnonzero(geom.tables(nside).n_touch == 7)[0])
+    six = int(np.flatnonzero(geom.tables(nside).n_touch == 8)[40])
+    layer, pix = {
+        "floor": (0, six),
+        "seven-neighbour floor": (0, seven),
+        "seven-neighbour interior": (3, seven),
+        "interior": (3, six),
+    }[kind]
+    kc, k_scalar = int(_kmap(cfg)[layer, pix]), fields.mat_k(cfg)
+    assert (kc < k_scalar) == (kind != "interior")  # the margin cells have fewer than the interior's 7
+    thr, cell = fields.mat_thr(cfg), layer * npix + pix
+    m, _ = _margin_material(cfg, layer, pix)
+    ok = ref_nopen(m, thr, nside)
+    others = (ok < _kmap(cfg)).reshape(-1)
+    if others.any():  # the hand-made pattern must be valid elsewhere: close fewer of the far cells instead
+        pytest.skip(f"the pattern violates {int(others.sum())} other cell(s) at {kind}")
+    assert int(_drive(cfg, m).violations.item()) == 0 and structures.check({"mat": m}, cfg) == []
+    # one open neighbour fewer: close one that leaves exactly this cell below its requirement
+    open_nb = [int(i) for i in neighbour_index(nside, layers)[cell] if i >= 0 and m.reshape(-1)[i] < thr]
+    for i in open_nb:
+        m2 = m.copy()
+        m2.reshape(-1)[i] = cfg.structures.cap
+        bad = int((ref_nopen(m2, thr, nside) < _kmap(cfg)).sum())
+        if bad == 1:
+            break
+    else:
+        pytest.fail("no single closing leaves exactly one violation")
+    assert int(_drive(cfg, m2).violations.item()) == 1
+    problems = structures.check({"mat": m2}, cfg)
+    assert len(problems) == 1 and "1 cell(s)" in problems[0]
+
+
+def test_trapped_counts_an_agent_in_a_cell_with_no_open_neighbour_only() -> None:
+    cfg = cfg_of("structures.enabled=true", "structures.aperture=0.0", "structures.barrier_gain=0.0")
+    nside, layers = cfg.world.nside, cfg.world.layers
+    npix = geom.npix(nside)
+    layer, pix = 3, 100
+    cell = layer * npix + pix
+    nb = [int(i) for i in neighbour_index(nside, layers)[cell] if i >= 0]
+    for n_open, want in ((0, 1), (1, 0), (2, 0)):
+        m = np.zeros((layers, npix), np.int64)
+        for i in nb[: len(nb) - n_open]:
+            m.reshape(-1)[i] = cfg.structures.cap
+        assert ref_nopen(m, fields.mat_thr(cfg), nside).reshape(-1)[cell] == n_open
+        assert int(_drive(cfg, m, cell).trapped.item()) == want, n_open
+    assert int(_drive(cfg, m, cell, alive=False).trapped.item()) == 0  # nobody there
