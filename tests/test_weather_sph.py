@@ -11,6 +11,7 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
+import sphere_weather_stab as S
 from alife import geom, weather_sph, weather_tab
 from alife.weather import ENGINE_FIXED, WeatherForcing, WeatherParams
 from sphere_weather_ref import Ref, RefModel
@@ -445,32 +446,42 @@ def test_the_float32_courant_limit_is_at_least_1_25_times_the_courant_number_of_
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("nw,radius", [(16, 36.0), (42, 90.0)])
-def test_rotating_noise_does_not_grow(nw: int, radius: float) -> None:
-    """f0 = 0.025, 4000 steps, at C_used and 1.2·C_used: the log-slope of the rms |h - h0| over the second
-    half
-    is negative (S4a found a rotation-coupled mode at a4 = 1e-3; (3e-3, 3e-3) on (h, u) cures it)."""
-    for mult in (1.0, 1.2):
-        c = mult * c_used(nw, radius)
-        p = params(nw, radius, dt=_dt_for(nw, radius, c), f0=0.025)
-        n = 12 * nw * nw
-        base = np.array([[p.H1], [p.H2]], np.float32)
-        h = base + 0.01 * np.random.default_rng(0).normal(size=(2, n)).astype(np.float32)
-        z = mx.zeros((n, 3))
-        s = weather_sph.WeatherStateS(
-            mx.array(h[0]), mx.array(h[1]), z, z, mx.zeros((n,)), mx.zeros((n,)), mx.zeros((n,))
-        )
-        fo = forcing(p, np.zeros(n))
-        b = mx.array(base)
-        ser = []
-        for i in range(1, 4001):
-            s, _ = weather_sph.step(s, fo, mx.random.key(0), p, radius, dry=True, advect=False, seeds=False)
-            if i % 100 == 0:
-                ser.append((i, float(mx.sqrt(((mx.stack([s.h1, s.h2]) - b) ** 2).mean()))))
-        t = np.array([a for a, _ in ser], float)
-        e = np.log(np.array([b_ for _, b_ in ser]))
-        half = t > t[-1] / 2
-        assert np.polyfit(t[half], e[half], 1)[0] < 0, (mult, e[-1] - e[0])
+@pytest.mark.parametrize(
+    ("nw", "radius", "bound"),
+    [(16, 36.0, 2e-5), (22, 48.0, 2e-5), (42, 90.0, 1.5e-4)],
+)
+def test_the_dry_rotating_noise_grows_at_most_at_the_known_rate(nw: int, radius: float, bound: float) -> None:
+    """f0 = 0.025, **40 000** steps (S4a and the 4 000-step version of this test stop before the onset),
+    dry and
+    frictionless, at C_used: the slope of ``log rms(h - h0)`` over the last 5 blocks of 4 000 steps. Nw 16
+    and 22
+    decay or are neutral (measured -0.8 and -0.7e-5 per step); **Nw 42 grows at +8.6e-5 per step** (the
+    scheme's
+    own rotation-coupled mode, review M1, float32 CPU/Metal and float64 agree): the bound 1.5e-4 only stops it
+    from getting worse. In the production step friction cancels it (next test)."""
+    c = S.WeatherParams().c_ext / (0.81 * weather_sph.cell_side(radius, nw))
+    blocks = S.rms_blocks(nw, radius, c, 40000)
+    tail = float(np.mean(blocks[-5:]))
+    assert tail < bound, (nw, tail, blocks)
+
+
+@pytest.mark.slow
+def test_the_production_weather_at_nw_42_is_neutral_and_the_friction_is_what_makes_it_so() -> None:
+    """The dominant growth rate of the production map (r1 2e-4, r2 1e-4, tau_rad 2000, tripwire) about the
+    rest
+    state at Nw 42, C_used, by power iteration (24 blocks of 4 000 steps; the mean of the last 12). Measured:
+    +0.8e-5 per step (blocks wander between -1.1 and +3.1e-5; 16 blocks gave -0.7e-5, the reviewer's 20 gave
+    -0.3e-5, so the estimate is neutral within about +-2e-5), against +6.7e-5 with r1 and r2 halved
+    (e-folding in
+    15 000 steps). The bound +3e-5 (e-folding in 33 000 steps) fails if the margin that friction buys is
+    eaten;
+    the control asserts that the instrument sees it. **r1, r2 and tau_rad are stability parameters of this
+    weather**; S4c's calibration re-runs this test after changing them, Nw, Rp or dt."""
+    c = S.WeatherParams().c_ext / (0.81 * weather_sph.cell_side(90.0, 42))
+    nominal = S.dominant_rate(42, 90.0, c, 96000, dry=False)
+    assert float(np.mean(nominal[12:])) < 3e-5, nominal
+    halved = S.dominant_rate(42, 90.0, c, 96000, dry=False, r1=1e-4, r2=5e-5)
+    assert float(np.mean(halved[12:])) > 3e-5, halved
 
 
 def _dense_rho(nw: int, c: float, f0: float, radius: float = 90.0) -> float:
