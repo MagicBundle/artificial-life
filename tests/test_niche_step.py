@@ -22,7 +22,7 @@ from niche_helpers import cfg_for, farmers, np_soil
 STEPS = 40
 
 
-def _final(cfg, s, steps, *, observe=False, compile=True):
+def _final(cfg, s, steps, *, observe=False, compile=None):  # None: the config's own (eager on a sphere)
     fn = make_step(cfg, observe=observe, compile=compile)
     outs = []
     for _ in range(steps):
@@ -32,8 +32,8 @@ def _final(cfg, s, steps, *, observe=False, compile=True):
     return s, outs
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_determinism_resume_and_observer_purity(nd: int, tmp_path: Path) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_determinism_resume_and_observer_purity(nd: int | str, tmp_path: Path) -> None:
     cfg = cfg_for(nd)
     a, _ = _final(cfg, farmers(cfg), STEPS)
     assert state_digest(a) == state_digest(_final(cfg, farmers(cfg), STEPS)[0])
@@ -75,9 +75,9 @@ def test_compiled_and_eager_steps_agree(nd: int) -> None:
     assert to_numpy(oa.counters)[counter_index(cfg, "FARMERS")] > 0
 
 
-@pytest.mark.parametrize("nd", [2, 3])
+@pytest.mark.parametrize("nd", [2, 3, "s"])
 @pytest.mark.parametrize("control", ["none", "ablate"])
-def test_the_staged_pipeline_equals_the_step_with_farming_on(nd: int, control: str) -> None:
+def test_the_staged_pipeline_equals_the_step_with_farming_on(nd: int | str, control: str) -> None:
     from mlx.utils import tree_flatten
 
     from alife import bench
@@ -105,8 +105,8 @@ def test_bench_niche_flag_needs_the_feature() -> None:
         bench.run_bench(load_config(preset="tiny"), steps=1, warmup=1, niche_arm=True)
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_farming_coexists_with_every_other_feature(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_farming_coexists_with_every_other_feature(nd: int | str) -> None:
     """Structures, bonds, comm and arms on together with farming (DESIGN §41.7): 150 steps, the ledger closes,
     the soil and material identities hold, nothing trips."""
     extra = [
@@ -120,7 +120,7 @@ def test_farming_coexists_with_every_other_feature(nd: int) -> None:
     s = farmers(cfg)
     fn = make_step(cfg)
     tot = int(np_soil(s).sum())
-    for t in range(150):
+    for t in range(60 if nd == "s" else 150):
         prev = s
         s, out = fn(s)
         mx.eval(s, out)
