@@ -332,3 +332,15 @@ def test_run_resume_and_inspect_work_with_the_weather_and_a_spinup(
     assert cli.main(["inspect", str(out)]) == 0 and "ledger OK" in capsys.readouterr().out
     assert cli.main(["resume", str(out), "--until", "30", "--quiet"]) == 0
     assert RunDir.open(out).meta()["status"] == "done"
+
+
+def test_the_compile_self_check_covers_the_weather_nside() -> None:
+    """A compiled sphere step with the weather bakes the constants of ``ang2pix(Nw)`` in too (the fan's
+    departure points and the wind at the agents): they are part of the constants the self-check compares."""
+    from alife import sphere_check
+
+    dry = load_config(preset="tiny3s")
+    wet = weather_cfg("tiny3s")
+    assert sphere_check.constants(wet) == (*sphere_check.constants(dry), 16.0)
+    assert len(sphere_check._lookups(wet)(mx.zeros((3, 3)) + 40.0)) == 7
+    assert len(sphere_check._lookups(dry)(mx.zeros((3, 3)) + 40.0)) == 6

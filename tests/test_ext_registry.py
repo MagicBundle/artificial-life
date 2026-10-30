@@ -49,7 +49,16 @@ def test_with_every_feature_off_every_function_is_the_identity() -> None:
     assert config.POST_V01_KEYS[-n_feature_keys - 1] == ("combat", "protect_floor")
     assert set(config.FEATURE_KEYS) == {"arms", "structures", "bonds", "comm", "niche"}
     assert config.POST_V01_KEYS[-1] == ("niche", "control")
-    assert config.WORLD_OVERLAYS == ("storm", "storm160", "build", "bonds", "comm", "niche", "niche3d")
+    assert config.WORLD_OVERLAYS == (
+        "storm",
+        "storm160",
+        "build",
+        "bonds",
+        "comm",
+        "niche",
+        "niche3d",
+        "stormsph",
+    )
     assert ext.check_registry() == []
 
 
