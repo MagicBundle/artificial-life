@@ -21,9 +21,11 @@ will make from the state's own key. The spun-up weather is thus a function of (c
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -36,8 +38,8 @@ from alife.rng import Stream, step_keys
 
 CHUNK = 16  # weather steps per evaluation: enough to hide dispatch latency, small enough to bound the graph
 # The spin-up, in engine steps, that the launcher of a planet asks for (``alife play --init-from ...
-# --weather-spinup N``), per sphere preset: the length at which the kinetic energy, the humidity and the storm
-# count of that planet's weather have settled, times 1.3 (DESIGN §46.6, ``alife.analysis.w0_sphere``).
+# --weather-spinup N``), per sphere preset: the length at which the kinetic energy, the humidity and the
+# storm count of that planet's weather have settled, times 1.3 (DESIGN §46.6, ``alife.analysis.w0_sphere``).
 # ``PlanetSpec.sphereSpinups`` in ``gui/Sources/AlifeCore/PlayLaunch.swift`` is the launcher's copy;
 # ``tests/test_gui_sync.py`` keeps the two equal.
 SPHERE_SPINUP: dict[str, int] = {"64k3s": 15_000, "tiny3s": 10_000, "mini3s": 8_000}
@@ -104,13 +106,40 @@ def advance_chain(
 
 # --- the cache of spun-up states (S4c) ---------------------------------------------------------------------
 #
-# A spin-up is a pure function of its inputs: the configuration (the weather and the world it runs on), the
-# state key, the step the agents start at (the pools' phase), the length and the compiled or eager chain, on
-# one device and one build of the weather code. The result of a long one (20 000 steps of a 64k3s planet are a
-# minute on a quiet GPU, many on a busy one) is kept in a file keyed by all of those, so that launching the
-# same world again (the same source checkpoint, overlay and length) costs a file read. The entry carries its
-# key in clear and a load checks it, the shape, the dtype and finiteness; any failure is a miss, and a failed
-# write is ignored (the cache is an optimisation, never a dependency).
+# A spin-up is a pure function of its inputs: the parts of the configuration the weather reads (the world
+# and the weather sections: the other sections are not read, and a test shows it), the state key, the step
+# the agents start at (the pools' phase), the length and the compiled or eager chain, on one device and one
+# build of the code it executes. The result of a long one (15 000 steps of a 64k3s planet are half a minute
+# on a quiet GPU, many on a busy one) is kept in a file keyed by all of those, so that launching the same
+# world again (the same source checkpoint, overlay and length) costs a file read. The entry carries its key
+# in clear and a load checks it, the shape, the dtype and finiteness; any failure is a miss (a damaged entry
+# is removed), and a failed write is ignored (the cache is an optimisation, never a dependency). The folder
+# holds at most ``CACHE_MAX_ENTRIES`` entries, the least recently used going first.
+
+CACHE_MAX_ENTRIES = 64  # entries kept in the folder (the least recently modified go first)
+CACHE_TMP_MAX_AGE = 86_400.0  # seconds: a temporary file older than this is the leftover of a killed write
+# The configuration sections that a spin-up reads: ``tests/test_weather_spinup.py`` records every section
+# the chain touches (box 2D and 3D, sphere) and fails if one is not listed, and shows that changing any
+# other section changes neither the key nor the result.
+KEYED_SECTIONS = ("world", "weather")
+# The source files that a spin-up executes, relative to this package: the chain (``weather``,
+# ``weather_sph``, ``weather_tab``, ``weather_spinup``), the grid (``geom``, ``fieldtab``, ``layout``) and
+# what they call (``ops``, ``sphere``, ``fields_sph``, ``rng``). ``tests/test_weather_spinup.py`` traces a
+# spin-up of each world and fails if a source file under ``alife/`` that it executes is not listed here (and
+# if a listed file does not exist), so an edit of any code the chain runs invalidates the entries.
+DIGESTED_SOURCES = (
+    "fields_sph.py",
+    "fieldtab.py",
+    "geom.py",
+    "layout.py",
+    "ops.py",
+    "rng.py",
+    "sphere.py",
+    "weather.py",
+    "weather_sph.py",
+    "weather_spinup.py",
+    "weather_tab.py",
+)
 
 
 def cache_enabled() -> bool:
@@ -126,25 +155,25 @@ def cache_dir() -> Path:
 
 
 def _code_digest() -> str:
-    """The digest of the sources a spin-up depends on, so that an edit of the weather code never reads an
-    entry the old code wrote."""
+    """The digest of the sources a spin-up executes (``DIGESTED_SOURCES``): an edit of the code the chain
+    runs never reads an entry the old code wrote."""
     here = Path(__file__).resolve().parent
     h = hashlib.sha256()
-    for name in ("weather.py", "weather_sph.py", "weather_tab.py", "weather_spinup.py", "geom.py", "rng.py"):
+    for name in DIGESTED_SOURCES:
         h.update(name.encode())
         h.update((here / name).read_bytes())
     return h.hexdigest()
 
 
 def cache_key(cfg: Config, n_steps: int, *, step: int, key: mx.array, compile: bool) -> str:
-    """The key of a spin-up, as the canonical text hashed into the file name: the whole configuration but
-    ``run`` (which no step of the chain reads), ``n_steps``, ``step``, the bytes of the state ``key``, the
-    compile flag, the MLX version and device, the digest of the weather sources and the cache version."""
+    """The key of a spin-up, as the canonical text hashed into the file name: the sections of the
+    configuration that the weather reads (``KEYED_SECTIONS``), ``n_steps``, ``step``, the bytes of the state
+    ``key``, the compile flag, the MLX version and device, the digest of the executed sources and the cache
+    version."""
     conf = config_to_dict(cfg)
-    conf.pop("run", None)
     blob = {
         "cache": CACHE_VERSION,
-        "config": conf,
+        "config": {k: conf[k] for k in KEYED_SECTIONS},
         "n": int(n_steps),
         "step": int(step),
         "key": [int(v) for v in np.array(key).reshape(-1)],
@@ -161,29 +190,62 @@ def _entry(text: str) -> Path:
 
 
 def cache_load(text: str, like: mx.array) -> mx.array | None:
-    """The cached spin-up for the key ``text`` (shaped and typed like ``like``), or None on any mismatch."""
+    """The cached spin-up for the key ``text`` (shaped and typed like ``like``), or None on any mismatch or
+    failure: a missing, empty, truncated or foreign file is a miss, and a damaged one is removed."""
+    path = _entry(text)
     try:
-        with np.load(_entry(text), allow_pickle=False) as z:
+        with np.load(path, allow_pickle=False) as z:
             if str(z["key"]) != text:
                 return None
             wx = z["wx"]
-    except (OSError, ValueError, KeyError):
+    except FileNotFoundError:
+        return None
+    except Exception:  # EOFError, zipfile.BadZipFile, ValueError, KeyError, OSError ... the cache is optional
+        with contextlib.suppress(OSError):
+            path.unlink()
         return None
     if wx.shape != tuple(like.shape) or wx.dtype != np.float32 or not np.isfinite(wx).all():
         return None
+    with contextlib.suppress(OSError):
+        os.utime(path)  # a use keeps the entry (least recently used by modification time goes first)
     return mx.array(wx)
 
 
+def _sweep(folder: Path, keep: Path) -> None:
+    """Remove the temporaries of killed writes (older than ``CACHE_TMP_MAX_AGE``) and the least recently used
+    entries beyond ``CACHE_MAX_ENTRIES`` (``keep`` is never removed)."""
+    now = time.time()
+    entries = []
+    for f in folder.iterdir():
+        try:
+            if f.name.endswith(".tmp.npz"):
+                if now - f.stat().st_mtime > CACHE_TMP_MAX_AGE:
+                    f.unlink()
+            elif f.name.startswith("spinup_") and f.suffix == ".npz" and f != keep:
+                entries.append((f.stat().st_mtime, f))
+        except OSError:
+            continue
+    entries.sort()
+    for _, f in entries[: max(0, len(entries) + 1 - CACHE_MAX_ENTRIES)]:
+        with contextlib.suppress(OSError):
+            f.unlink()
+
+
 def cache_store(text: str, wx: mx.array) -> None:
-    """Write the entry atomically (a temporary file, then a rename); a failure is silent."""
+    """Write the entry atomically (a temporary file, then a rename; the temporary is removed whatever
+    happens), then sweep the folder; a failure is silent."""
     path = _entry(text)
+    tmp = path.with_name(f"{path.stem}.{os.getpid()}.tmp.npz")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.stem}.{os.getpid()}.tmp.npz")
         np.savez(tmp, wx=np.array(wx, dtype=np.float32), key=np.array(text))
         os.replace(tmp, path)
+        _sweep(path.parent, path)
     except OSError:
         pass
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
 
 
 def spinup(

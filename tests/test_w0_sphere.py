@@ -160,6 +160,35 @@ def test_the_plateau_time_is_where_a_relaxation_stays_within_the_tolerance() -> 
     assert 5000.0 < sp["named_north"] < 8000.0  # the count steps up to 3 at tick 300: within 1 of 3 at 2
 
 
+def test_the_turnover_counts_births_and_deaths_of_the_named_storms_in_the_window() -> None:
+    st = ws.StudySettings(steps=30000, spinup=10000)
+
+    def tr(named_at: int, t_last: int, ended: int, dets: int = 50) -> dict:
+        return {"named_at": named_at, "t_last": t_last, "ended": ended, "dets": dets}
+
+    rows = [
+        tr(2000, 30000, 0),  # born in the spin-up, alive at the end: no event
+        tr(3000, 15000, 1),  # born in the spin-up, died in the window
+        tr(12000, 24000, 1),  # born and died in the window
+        tr(20000, 30000, 0),  # born in the window, alive
+        tr(-1, 18000, 1),  # never named
+        tr(15000, 15100, 1, dets=2),  # a fragment (fewer than the qualifying detections)
+        tr(4000, 8000, 1),  # died in the spin-up
+    ]
+    t = ws._turnover(rows, st)
+    assert (t["named_births_in_window"], t["named_deaths_in_window"]) == (2, 2)
+    assert t["named_deaths_per_10k"] == pytest.approx(1.0)  # 2 deaths in 20 000 steps
+    assert ws._turnover([tr(2000, 30000, 0)], st)["named_deaths_per_10k"] == 0.0  # a frozen world
+    flat = [{"t": float(t), "ke": 1e-3, "umax1": 0.08} for t in range(0, 30000, 500)]
+    assert ws._window_cv(flat, 10000) == {"ke": 0.0, "umax1": 0.0}
+    live = [
+        {"t": float(t), "ke": 1e-3 * (1 + 0.2 * math.sin(t / 3000)), "umax1": 0.08}
+        for t in range(0, 30000, 500)
+    ]
+    cv = ws._window_cv(live, 10000)
+    assert 0.05 < cv["ke"] < 0.2 and cv["umax1"] == 0.0
+
+
 def _synthetic_frames(nside: int, radius: float, n: int):
     """Two cyclones drifting east at 40 degrees (one strong, one that never reaches the naming peak) and one
     across the south, for ``n`` ticks of 25 steps."""
@@ -212,6 +241,9 @@ def test_a_short_study_writes_the_record_the_tables_and_the_arrays(tmp_path) -> 
     assert rec["ticks_in_window"] == 21
     assert set(rec["counts"]) >= {"named", "active", "d5"}
     assert set(rec["lifetime"]) == {"named_hindsight", "all_qualifying", "named_realtime"}
+    assert {"named_births_in_window", "named_deaths_per_10k"} <= set(rec["tracks"]) and set(
+        rec["climate_cv"]
+    ) == {"ke", "umax1"}
     assert rec["_counts"].shape == (30, 5) and rec["_counts"][0, 0] == 50
     assert len(rec["_series"]) == 6 and rec["_series"][0]["ke"] >= 0.0
     counts, series = rec["_counts"].copy(), list(rec["_series"])

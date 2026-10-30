@@ -260,13 +260,21 @@ def test_a_prescribed_wind_moves_the_agents_by_alpha_times_the_wind() -> None:
     alive = np.array(s.alive)
     dpos = (np.array(b.pos) - np.array(a.pos))[alive]
     drift = np.array(weather.agent_drift(wx_w, s.pos, s.buoy_cap, s.alive, cfg))[alive]
+    # the expected drift, computed from the sampler and the coupling alone (not through `agent_drift`):
+    # alpha(buoyancy) · dt · u_air, a step being dt of a unit of weather time (S4c)
+    p = weather_sph.params_from_config(cfg)
+    geo = weather_sph.WeatherGeometry.from_config(cfg)
+    air = np.array(weather_sph.sample_wind(weather_sph.unpack(wx_w), s.pos, p, geo, valid=s.alive).u)[alive]
+    alpha = (p.alpha0 + p.alpha1 * np.array(s.buoy_cap))[alive][:, None]
+    want = alpha * p.dt * air
+    assert np.allclose(drift, want, rtol=1e-5, atol=1e-8)
     assert np.linalg.norm(drift, axis=1).mean() > 0.02
     cos = (dpos * drift).sum(1) / np.maximum(
         np.linalg.norm(dpos, axis=1) * np.linalg.norm(drift, axis=1), 1e-12
     )
     assert np.median(cos) > 0.9
-    ratio = np.linalg.norm(dpos, axis=1).sum() / np.linalg.norm(drift, axis=1).sum()
-    assert 0.5 < ratio < 1.5, ratio
+    ratio = np.linalg.norm(dpos, axis=1).sum() / np.linalg.norm(want, axis=1).sum()
+    assert 0.8 < ratio < 1.1, ratio  # without the factor dt (0.829) the ratio would be 1.2 times larger
 
 
 def test_the_metrics_row_has_the_sphere_weather_block() -> None:
@@ -507,9 +515,13 @@ def test_the_shear_layer_must_lie_within_the_floor_layer_in_weather_units() -> N
     assert "z_sl <= s·z_1" in _msgs("weather.z_sl=14.2")
 
 
-def test_the_load_rule_uses_the_vertical_wind_of_the_shell() -> None:
-    """Rule 16: ``thrust_max + max(g + a·drag·w_edge/s, ...) < 2·radius·k_repel``: with ``s = 5`` the largest
-    accepted ``w_edge`` is 0.15 (thrust 0.1, gravity 0.03, limit 0.16); without the division by ``s`` it would
-    be 0.03."""
-    assert "rule 16" not in _msgs("weather.w_edge=0.14")
-    assert "rule 16" in _msgs("weather.w_edge=0.16")
+def test_the_load_rule_uses_the_vertical_wind_of_the_shell_and_the_weather_time_of_a_step() -> None:
+    """Rule 16: ``thrust_max + max(g + a·drag·dt·w_edge/s, ...) < 2·radius·k_repel``: with ``s = 5`` and
+    ``dt = 0.829`` the largest accepted ``w_edge`` is 0.15/0.829 = 0.181 (thrust 0.1, gravity 0.03, limit
+    0.16); without the division by ``s`` it would be 0.036, without ``dt`` (the force is ``α·drag·dt·u``)
+    0.15."""
+    assert "rule 16" not in _msgs("weather.w_edge=0.17")
+    assert "rule 16" in _msgs("weather.w_edge=0.19")
+    # the speed rule carries dt too: (thrust_max + a·drag·dt·u_max)/drag <= v_max (0.5)
+    assert "rule 16" not in _msgs("weather.u_max=0.45")
+    assert "rule 16" in _msgs("weather.u_max=0.52")

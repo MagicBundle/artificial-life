@@ -576,6 +576,7 @@ def run_study(cfg: Config, st: StudySettings, progress: Any = None) -> dict[str,
         else None,
         "named_arc_max": float(arcs.max()) if arcs.size else 0.0,
         "split_born": sum(1 for tr in tracks if tr.parent),
+        **_turnover(rec_tracks, st),
     }
     da = np.array(dets, dtype=np.float64).reshape(-1, 9)
     inwin = da[:, 0] >= st.spinup
@@ -619,6 +620,7 @@ def run_study(cfg: Config, st: StudySettings, progress: Any = None) -> dict[str,
         "tracks": track_summary,
         "exposure": expo,
         "climate_window": _window_climate(series, st.spinup),
+        "climate_cv": _window_cv(series, st.spinup),
         "spinup_steps": spinup_stats(series, np.column_stack([times_a, nn]), st.steps),
         "_series": series,
         "_dets": da,
@@ -706,6 +708,33 @@ def _first_reach(t: np.ndarray, y: np.ndarray, ref_from: float, band: float = 1.
         return None
     hit = np.flatnonzero(y >= y[late].mean() - band)
     return float(t[hit[0]]) if hit.size else None
+
+
+def _turnover(rec_tracks: list[dict[str, Any]], st: StudySettings) -> dict[str, float]:
+    """The life cycle of the named storms in the window: births (a qualifying track first named at or after
+    the end of the spin-up), deaths (one that ended, by dissipation or merger, in the window) and deaths per
+    10 000 steps (the box's storms die at 1.8 to 2.0 per 10 000 steps, STORMS_W0 §2.2; a frozen weather
+    at 0)."""
+    named = [r for r in rec_tracks if r["named_at"] >= 0 and r["dets"] >= st.min_dets]
+    births = sum(1 for r in named if r["named_at"] >= st.spinup)
+    deaths = sum(1 for r in named if r["ended"] and st.spinup <= r["t_last"] <= st.steps)
+    span = max(st.steps - st.spinup, 1)
+    return {
+        "named_births_in_window": births,
+        "named_deaths_in_window": deaths,
+        "named_deaths_per_10k": 1e4 * deaths / span,
+    }
+
+
+def _window_cv(series: list[dict[str, float]], t_spin: int) -> dict[str, float]:
+    """The coefficient of variation of the kinetic energy and of the largest wind over the window: a weather
+    that does not evolve (frozen, or stuck in a permanent state) has none."""
+    rows = [r for r in series if r["t"] >= t_spin]
+    out = {}
+    for k in ("ke", "umax1"):
+        v = np.array([r[k] for r in rows], dtype=np.float64)
+        out[k] = float(v.std() / v.mean()) if v.size > 1 and v.mean() > 0 else 0.0
+    return out
 
 
 def _window_climate(series: list[dict[str, float]], t_spin: int) -> dict[str, float]:

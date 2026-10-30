@@ -26,10 +26,14 @@ def study(cfg: Config, steps: int, spinup: int, seed: int = 0, tick: int = 50) -
 def criteria(rec: dict[str, Any]) -> dict[str, Any]:
     """The STORMS_W0 criteria on a study record: the mean and range of the named storms per hemisphere, the
     share of ticks with 2 to 6 in both hemispheres, the lifetime (the median of the Kaplan-Meier curve of the
-    named storms, or the longest age observed when the curve stays above one half) and whether it reaches
-    3 000 steps."""
+    named storms, or the longest age observed when the curve stays above one half), whether it reaches
+    3 000 steps and whether that reading is reliable (``median_reliable``), and what tells a live weather
+    from a frozen one: the births and deaths of named storms in the window and the variation of the kinetic
+    energy and of the largest wind over it. A frozen weather has storms that never die, a count always in
+    range and no variation."""
     named = rec["counts"]["named"]
     life = rec["lifetime"]["named_hindsight"]
+    track = rec["tracks"]
     return {
         "north_mean": named["north"]["mean"],
         "south_mean": named["south"]["mean"],
@@ -38,5 +42,10 @@ def criteria(rec: dict[str, Any]) -> dict[str, Any]:
         "in_range_both": named["in_range_both"],
         "lifetime_pass": life["pass"],
         "lifetime": life["median"] if life["median"] is not None else life["max_age"],
-        "tracks": rec["tracks"]["named"],
+        "median_reliable": life["median_reliable"],
+        "tracks": track["named"],
+        "births": track["named_births_in_window"],
+        "deaths": track["named_deaths_in_window"],
+        "ke_cv": rec["climate_cv"]["ke"],
+        "umax1_cv": rec["climate_cv"]["umax1"],
     }

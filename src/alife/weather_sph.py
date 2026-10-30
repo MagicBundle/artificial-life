@@ -1024,17 +1024,18 @@ def validate_config(cfg: Config) -> list[str]:
         s = s_ratio
         a_max = p.alpha0 + p.alpha1
         g, bmax = ph.gravity, ph.buoyancy_max
-        wind_w = a_max * ph.drag * p.w_edge / s
+        wind_w = a_max * ph.drag * p.dt * p.w_edge / s  # the force is alpha·drag·dt·u (S4c)
         load = ph.thrust_max + max(g + wind_w, bmax - g + wind_w)
         if not load < 2 * ph.radius * ph.k_repel:
             bad.append(
-                f"rule 16: thrust_max + max(g + a*drag*w_edge/s, bmax - g + a*drag*w_edge/s) = {load:.4g} "
+                f"rule 16: thrust_max + max(g + a*drag*dt*w_edge/s, bmax - g + a*drag*dt*w_edge/s) "
+                f"= {load:.4g} "
                 f"must be < 2*radius*k_repel = {2 * ph.radius * ph.k_repel:.4g}"
             )
-        speed = (ph.thrust_max + a_max * ph.drag * p.u_max) / ph.drag if ph.drag > 0 else math.inf
+        speed = (ph.thrust_max + a_max * ph.drag * p.dt * p.u_max) / ph.drag if ph.drag > 0 else math.inf
         if not speed <= ph.v_max:
             bad.append(
-                f"rule 16: (thrust_max + a*drag*u_max)/drag = {speed:.4g} must be <= v_max = {ph.v_max:g}"
+                f"rule 16: (thrust_max + a*drag*dt*u_max)/drag = {speed:.4g} must be <= v_max = {ph.v_max:g}"
             )
     z_floor = float(geom.layer_edges(gm.radius, gm.height_max, gm.layers)[1])
     if not 0 < p.z_sl <= s_ratio * z_floor:
