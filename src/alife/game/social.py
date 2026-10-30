@@ -33,7 +33,7 @@ from typing import Final, NamedTuple
 
 import mlx.core as mx
 
-from alife import groups, layout, metrics
+from alife import geom, groups, layout, metrics
 from alife.config import Config, dims
 from alife.state import State, State3
 from alife.step import ActFlag, Acts
@@ -199,8 +199,8 @@ class SocialRules:
 SOCIAL_V1: Final = SocialRules()
 # The sphere world's territory and footprint maps (DESIGN §46.7): HEALPix Nsides. 12·9² = 972 territory cells
 # (the box's 32 × 32 TERR grid, within the 1 024 JSON cap) and 12·32² = 12 288 footprint cells.
-SPHERE_TERR_NSIDE: Final = 9
-SPHERE_FOOT_NSIDE: Final = 32
+SPHERE_TERR_NSIDE: Final = geom.TERRITORY_NSIDE
+SPHERE_FOOT_NSIDE: Final = geom.FOOTPRINT_NSIDE
 
 
 class SocIn(NamedTuple):

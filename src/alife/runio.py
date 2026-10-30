@@ -46,7 +46,7 @@ import mlx.core as mx
 import numpy as np
 import zstandard
 
-from alife import ext, layout, rng, spatial
+from alife import ext, geom, layout, rng, spatial
 from alife.config import Config, config_from_dict, config_hash, config_to_dict, is_3d, save_config, validate
 from alife.state import State, expected_layout, state_from_arrays, state_to_arrays, to_numpy
 
@@ -54,6 +54,7 @@ FORMAT_VERSION: Final = 1
 
 CONFIG_FILE: Final = "config.json"
 META_FILE: Final = "meta.json"
+GEOMETRY_FILE: Final = "geometry.json"  # a sphere run's planet for offline tools (DESIGN §46.7); absent = box
 METRICS_FILE: Final = "metrics.jsonl"
 LATEST_FILE: Final = "LATEST"
 DIRECTOR_LOG_FILE: Final = "director.jsonl"
@@ -902,6 +903,10 @@ class RunDir:
         tmp = _tmp_path(path / CONFIG_FILE)
         save_config(cfg, tmp)
         os.replace(tmp, path / CONFIG_FILE)
+        if cfg.world.geometry == "sphere":  # the planet, for tools that must not import the engine
+            gtmp = _tmp_path(path / GEOMETRY_FILE)
+            gtmp.write_text(json.dumps(geom.sidecar(cfg), indent=2, allow_nan=False) + "\n", encoding="utf-8")
+            os.replace(gtmp, path / GEOMETRY_FILE)
         meta = {
             "format_version": FORMAT_VERSION,
             "alife_version": _alife_version(),
@@ -954,6 +959,11 @@ class RunDir:
         tmp = _tmp_path(self.path / CONFIG_FILE)
         save_config(cfg, tmp)
         os.replace(tmp, self.path / CONFIG_FILE)
+
+    def geometry(self) -> dict[str, Any] | None:
+        """``geometry.json`` of a sphere run (DESIGN §46.7), or None for a box run."""
+        p = self.path / GEOMETRY_FILE
+        return json.loads(p.read_text(encoding="utf-8")) if p.is_file() else None
 
     def meta(self) -> dict[str, Any]:
         return json.loads((self.path / META_FILE).read_text(encoding="utf-8"))

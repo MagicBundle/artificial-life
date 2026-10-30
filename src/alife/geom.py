@@ -899,6 +899,40 @@ def layer_of(rho: np.ndarray, radius: float, height: float, fz: int) -> np.ndarr
 # --- directions on the sphere, for the observers (DESIGN §46.7) ---------------------------------------------
 
 
+# The Nsides of the observers' maps on a sphere (DESIGN §46.7): the territory map of the game (``TERR``, 972
+# cells) and the footprint map of the colony matching. Code constants, not config keys.
+TERRITORY_NSIDE = 9
+FOOTPRINT_NSIDE = 32
+
+
+def sidecar(cfg: Config) -> dict[str, object]:
+    """The ``geometry.json`` of a sphere run directory (DESIGN §46.7): what an offline tool needs to read the
+    ``(FZ, Npix)`` dumps and the logs without importing the engine. ``cell_index`` of the field dumps
+    (``mat``, ``niche``) and of ``STRC``/``FSOL`` is ``layer·npix + pixel``, the pixel in RING order; the
+    layers are equal-volume shells with the radii ``shell_edges``; every position in a log or a dump is
+    planet-frame Cartesian."""
+    w = cfg.world
+    fz = w.layers
+    return {
+        "format": "alife-geometry",
+        "geometry": "sphere",
+        "planet_radius": float(w.radius),
+        "height": float(w.height),
+        "nside": int(w.nside),
+        "layers": int(fz),
+        "npix": npix(w.nside),
+        "shell_edges": [float(r) for r in layer_radii(w.radius, w.height, fz)],
+        "layer_volume": layer_volume(w.radius, w.height, fz, w.nside),
+        "ring_order": "ring",
+        "cell_index": "layer*npix + pixel",
+        "dump_shape": ["layers", "npix"],
+        "nside_weather": int(cfg.weather.cells) if cfg.weather.enabled else 0,
+        "nside_territory": TERRITORY_NSIDE,
+        "nside_footprint": FOOTPRINT_NSIDE,
+        "position_frame": "planet-frame Cartesian (x, y, z); height = |p| - planet_radius",
+    }
+
+
 def unit(vec: np.ndarray) -> np.ndarray:
     """``vec`` normalised along the last axis (float64); a zero vector stays zero."""
     v = np.asarray(vec, dtype=np.float64)
@@ -958,19 +992,23 @@ def coarse_graph(nside: int) -> np.ndarray:
     return tables(int(nside)).edge
 
 
-def label_components(nside: int, member: np.ndarray, weight: np.ndarray | None = None) -> np.ndarray:
+def label_components(nside: int, member: np.ndarray, group: np.ndarray | None = None) -> np.ndarray:
     """Connected components over the edge graph of ``nside``: ``out[p]`` is the smallest pixel id of the
-    component of ``p``, −1 where ``member[p]`` is False. ``weight`` is unused here and kept for callers that
-    pass the occupancy. Iterative minimum-label propagation (pointer jumping), exact, O(diameter) passes."""
-    del weight
+    component of ``p``, −1 where ``member[p]`` is False. With ``group`` ((Npix,) integers) two member pixels
+    join only if their groups are equal (the storm tracker keeps the hemispheres apart). Iterative
+    minimum-label propagation (pointer jumping), exact, O(diameter) passes."""
     m = np.asarray(member, dtype=bool).reshape(-1)
     n = npix(nside)
     if m.size != n:
         raise ValueError(f"member has {m.size} entries, Nside {nside} has {n} pixels")
     nb = coarse_graph(nside).astype(np.int64)
+    join = m[nb]
+    if group is not None:
+        g = np.asarray(group).reshape(-1)
+        join = join & (g[nb] == g[:, None])
     lab = np.where(m, np.arange(n), n)
     while True:
-        cand = np.where(m[nb], lab[nb], n).min(axis=1)  # the smallest label among the member neighbours
+        cand = np.where(join, lab[nb], n).min(axis=1)  # the smallest label among the joined neighbours
         new = np.where(m, np.minimum(lab, cand), n)
         new = np.where(m, np.minimum(new, new[np.minimum(new, n - 1)]), n)  # one pointer jump
         if np.array_equal(new, lab):
