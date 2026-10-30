@@ -94,8 +94,28 @@ costs its value on average), booked in `HEAT_ACTION`: no 17th ledger term. `comm
 heard, with costs and speaking unchanged (the causal arms). Enable with `--overlay comm`, `--set comm.enabled=true`, or
 `alife migrate --enable comm` (a silent start from an evolved world). Founders with random brains: about 94 % speak at the start
 (arithmetic of the random outputs, not selection) at about 2 q per agent-step, so `comm.cost` 4 is no pressure yet; the sweep is C4.
-Absent: the observer channel `Acts.ext.comm`, `FSIG`, the GUI and the colour mode (C2), `analysis/comm.py` and the language score (C3),
-the runs (C4).
+Built since: the observer channel `Acts.ext.comm` and `FSIG` (C2, §39.8), the analysis and the language score (C3, §39.14, next
+section). Absent: the GUI and the colour mode, the cost/kin sweeps (C4).
+
+## The voice analysis (DESIGN §39.14, row I7x; branch `analysis/voice`)
+
+PR C3 is built: the log of what is said and heard, the meaning test of §39.9, and the language-score adapter of the emergence suite (E6). Host-side and observer-only; no engine file, key or digest changes (the CPU identity matrix against `5984583` is bit-identical). Code: `src/alife/analysis/voice/` and `src/alife/analysis/comm.py`; tests `tests/test_voice_analysis.py`, `tests/test_voice_replay.py`, `tests/voice_synth.py`.
+
+```
+python -m alife.analysis.voice log RUN --from STEP --steps 10000 --out DIR      # tables.npz, summary.json, summary.md
+python -m alife.analysis.voice summarize DIR                                    # rebuild the summary, no simulation
+python -m alife.analysis.voice drift DIR_A DIR_B --out FILE                     # dialect drift between two windows
+python -m alife.analysis.voice prereg --out prereg_voice.json --freeze          # the pre-registration (hashed)
+alife run --init-from RUN:STEP --set comm.control=deaf --seed 1 --steps 30000 --checkpoint-every 10000 --out F
+python -m alife.analysis.voice meaning --arm none:1=F_none_s1,LOGDIR ... --prereg prereg_voice.json --out OUT
+```
+
+* **What the log reads.** The replay is `labels.study`'s (observed step, metrics rows verified, end digest verified when the run has a checkpoint there). Per sample (every 50 steps, 2048 rows): senders (call, caller's context), hearers (call heard, own context, response, loudest source and its call and context), and the one-step counterfactual under `none`, `deaf` and `decoy` (eager steps, so no second compiled graph). Lineages are **kin groups** (k-means of the tags at the window start, inherited by births) because a mature run is one clade.
+* **The test.** `code`, `reception` and `transfer` are plug-in Miller-Madow information in bits against permutation nulls inside strata, with a max-T family p. The `transfer` null cannot remove the shared environment (neighbours are in similar places), so the verdict rests on the arm contrast (the pair chosen on the even blocks of `none`, estimated on the odd blocks of every arm), the fitness clause (population, births per agent-step, energy; Holm) and a cost-matching gate. Verdicts: `language`, `signalling without meaning`, `no evidence`.
+* **Pitfalls.** `keep_checkpoints` is 3 by default: a fork needs `--checkpoint-every 10000` so that the window's start checkpoint survives, and the source run `64k3s_a` has no checkpoint at 100 000 (only 0, 160 000, 180 000, 200 000). The thresholds are provisional until the calibration of the suite (E7). The p-value floor is `1/(1 + n_perm)`.
+* **Not built:** plots, compositionality and syntax, a per-channel ablation, kin-weighted source choice.
+* **First result** (2026-10-31, DESIGN §39.14 "Evidence"): `64k3s_a` at 200 000 and `allfeat_a` at 40 000, forks none/deaf/decoy x 3 seeds: **signalling without meaning**. The calls are used and hearing is worth +1 % to +3 % population against deafness, but a stranger's calls (decoy) are about as good as the neighbours', and the caller's situation does not reach the hearer through the calls (contrast 0.001 bits against a transfer of 0.026, which the deaf arm has as well). Cost 4 q leaves 98 % of the population speaking: the first thing to vary is `comm.cost` ({16, 64}, DESIGN §39.13 C4).
+
 
 ## Farming (DESIGN §41, I70)
 
