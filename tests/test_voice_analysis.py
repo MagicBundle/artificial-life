@@ -90,6 +90,14 @@ def test_the_family_test_finds_a_planted_dependence_and_pays_for_the_search() ->
     assert nulls.p_family > 0.05 or nulls.z[nulls.best] < 3.5
 
 
+def test_a_family_needs_pairs_and_permutations() -> None:
+    x = np.zeros(10, np.int8)
+    with pytest.raises(ValueError, match="at least one pair"):
+        ms.family_test([], 10, np.random.default_rng(0))
+    with pytest.raises(ValueError, match="n_perm"):
+        ms.family_test([ms.Pair("p", x, 1, x, 1, x)], 1, np.random.default_rng(0))
+
+
 # --- the sampler ---
 
 

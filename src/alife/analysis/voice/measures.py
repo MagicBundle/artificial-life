@@ -170,6 +170,8 @@ def family_test(
     family p. Pairs on the same rows (all of one length); ``n_perm`` >= 2."""
     if not pairs:
         raise ValueError("a family needs at least one pair")
+    if n_perm < 2:
+        raise ValueError("a permutation null needs n_perm >= 2")
     n = len(pairs[0].x)
     k = len(pairs)
     prep = []
