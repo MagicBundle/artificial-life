@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 
 import mlx.core as mx
@@ -16,6 +17,9 @@ _JIT: list[worker_cache.Session] = []
 def pytest_configure(config: pytest.Config) -> None:
     """MLX CPU kernels compile into a private cache per test process (``worker_cache``; DESIGN §22.0), so that
     the workers of ``pytest -n`` and concurrent pytest runs never share a half-built library."""
+    # the command line's cache of spun-up weather states is off in the suite (a test of it switches it on in a
+    # temporary cache directory): a hit would skip the chain a test means to run, and write under ~/.cache
+    os.environ.setdefault("ALIFE_SPINUP_CACHE", "0")
     if worker_cache.cap_applies():
         worker_cache.limit_mlx_buffer_cache()
     if (session := worker_cache.isolate_for(config)) is not None:

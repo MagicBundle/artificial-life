@@ -43,10 +43,10 @@ final class WorldLauncherModel: ObservableObject {
         } else if let size = selectedSource?.worldSize, size != planet.sourceWorldSize {
             // The selected source's config.json changed under a running launcher: follow its size (the overlay
             // is chosen from it), and its default spin-up if the user had not changed that.
-            let oldDefault = PlanetSpec.defaultSpinup(forGeometry: planet.sourceGeometry, worldSize: planet.sourceWorldSize)
+            let oldDefault = PlanetSpec.defaultSpinup(forGeometry: planet.sourceGeometry, shape: planet.sourceShape, worldSize: planet.sourceWorldSize)
             planet.sourceWorldSize = size
             if planet.storm, planet.weatherSpinup == oldDefault {
-                planet.weatherSpinup = PlanetSpec.defaultSpinup(forGeometry: planet.sourceGeometry, worldSize: size)
+                planet.weatherSpinup = PlanetSpec.defaultSpinup(forGeometry: planet.sourceGeometry, shape: planet.sourceShape, worldSize: size)
             }
         }
         if planet.name.trimmingCharacters(in: .whitespaces).isEmpty { suggestName() }
@@ -97,14 +97,14 @@ final class WorldLauncherModel: ObservableObject {
         // A weather-on source is forked as it is: the engine refuses the spin-up for it (§33.2.1). A 2D source cannot take
         // the weather at all, nor a planet of a shape that has no calibrated overlay (§46.8).
         planet.storm = !source.weatherOn && weatherObstacle == nil
-        planet.weatherSpinup = planet.storm ? PlanetSpec.defaultSpinup(forGeometry: source.geometry, worldSize: source.worldSize) : 0
+        planet.weatherSpinup = planet.storm ? PlanetSpec.defaultSpinup(forGeometry: source.geometry, shape: source.planetShape, worldSize: source.worldSize) : 0
     }
 
     /// Switching the weather overlay keeps the spin-up consistent with it: none without the overlay, at least 1 with it.
     func setStorm(_ on: Bool) {
         planet.storm = on
         planet.weatherSpinup = on
-            ? (planet.weatherSpinup > 0 ? planet.weatherSpinup : PlanetSpec.defaultSpinup(forGeometry: planet.sourceGeometry, worldSize: planet.sourceWorldSize))
+            ? (planet.weatherSpinup > 0 ? planet.weatherSpinup : PlanetSpec.defaultSpinup(forGeometry: planet.sourceGeometry, shape: planet.sourceShape, worldSize: planet.sourceWorldSize))
             : 0
     }
 

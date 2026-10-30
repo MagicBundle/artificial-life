@@ -756,6 +756,32 @@ def test_the_launcher_overlay_table_holds_the_shapes_the_overlays_are_made_for()
                     config.load_config(preset=other, overlays=[overlay])
 
 
+def test_the_launcher_spinup_table_is_the_engines_and_follows_the_overlay_table() -> None:
+    """`PlanetSpec.sphereSpinups` pairs each planet shape with the weather spin-up (engine steps) measured for
+    its preset (S4c); the engine's copy is `weather_spinup.SPHERE_SPINUP`. Same shapes, same order as the
+    overlay table, and every spin-up is positive and a multiple of 1 000 (the stepper's step)."""
+    from alife import weather_spinup
+
+    text = (CORE / "PlayLaunch.swift").read_text(encoding="utf-8")
+    shape = r"PlanetShape\(radius: (\d+), height: (\d+), nside: (\d+), layers: (\d+)\)"
+    spin = re.search(r"sphereSpinups: \[\(shape: PlanetShape, steps: Int\)\] = \[(.*?)\n    \]", text, re.S)
+    assert spin, "no sphereSpinups table in PlayLaunch.swift"
+    rows = re.findall(rf"\({shape}, ([0-9_]+)\)", spin.group(1))
+    over = re.findall(rf"\({shape}, \"[a-z0-9]+\"\)", text)
+    assert [r[:4] for r in rows] == [tuple(o) for o in over]  # one row per overlay row, in order
+    assert set(weather_spinup.SPHERE_SPINUP) == set(config.SPHERE_PRESETS)
+    for radius, height, nside, layers, steps in rows:
+        match = [
+            name
+            for name in config.SPHERE_PRESETS
+            if (lambda w: [w.radius, w.height, w.nside, w.layers])(config.load_config(preset=name).world)
+            == [int(radius), int(height), int(nside), int(layers)]
+        ]
+        assert len(match) == 1, (radius, height, nside, layers)
+        n = int(steps.replace("_", ""))
+        assert n == weather_spinup.SPHERE_SPINUP[match[0]] and n > 0 and n % 1000 == 0, match
+
+
 def test_the_play_launch_set_keys_are_config_fields() -> None:
     text = (CORE / "PlayLaunch.swift").read_text(encoding="utf-8")
     keys = {tuple(m.split(".")) for m in re.findall(r'"([a-z_]+\.[a-z_0-9]+)=', text)}

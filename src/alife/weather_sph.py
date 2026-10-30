@@ -859,9 +859,11 @@ def agent_wind(
 ) -> AgentForce:
     """The wind force on every row at ``pos`` (start-of-step positions) from the stored sphere weather: the
     coupling ``alpha0 + alpha1·buoy_cap`` times ``drag`` times the wind of ``sample_wind`` (Cartesian, planet
-    frame; ``physics.integrate_s`` divides by the same ``drag``, so a free agent drifts at ``alpha·u_air``).
-    ``wind_scale`` multiplies the force; the hazard speed is ``|u_air|`` (the eddy controls are refused on a
-    sphere by ``validate_config``)."""
+    frame, in length per unit of weather time) times ``dt``, the weather time of one engine step
+    (``weather_dt``; ``physics.integrate_s`` divides by the same ``drag``, so a free agent drifts at
+    ``alpha·dt·u_air`` per step, ``alpha`` times the displacement of the air parcel: DESIGN §46.6, S4c).
+    ``wind_scale`` multiplies the force; the hazard speed is ``|u_air|``, the air's own, not scaled (the eddy
+    controls are refused on a sphere by ``validate_config``)."""
     from alife.weather import alpha
 
     p = params_from_config(cfg)
@@ -869,7 +871,7 @@ def agent_wind(
     geo = WeatherGeometry.from_config(cfg)
     aw = sample_wind(ws, pos, p, geo, valid=alive)
     a = alpha(buoy_cap, p)[:, None]
-    force = a * cfg.physics.drag * aw.u
+    force = (a * cfg.physics.drag * p.dt) * aw.u  # S4c: the wind is per unit of weather time, a step is dt
     if wc.wind_scale != 1.0:  # static
         force = wc.wind_scale * force
     speed = mx.sqrt(_dot(aw.u, aw.u))
@@ -1022,17 +1024,18 @@ def validate_config(cfg: Config) -> list[str]:
         s = s_ratio
         a_max = p.alpha0 + p.alpha1
         g, bmax = ph.gravity, ph.buoyancy_max
-        wind_w = a_max * ph.drag * p.w_edge / s
+        wind_w = a_max * ph.drag * p.dt * p.w_edge / s  # the force is alpha·drag·dt·u (S4c)
         load = ph.thrust_max + max(g + wind_w, bmax - g + wind_w)
         if not load < 2 * ph.radius * ph.k_repel:
             bad.append(
-                f"rule 16: thrust_max + max(g + a*drag*w_edge/s, bmax - g + a*drag*w_edge/s) = {load:.4g} "
+                f"rule 16: thrust_max + max(g + a*drag*dt*w_edge/s, bmax - g + a*drag*dt*w_edge/s) "
+                f"= {load:.4g} "
                 f"must be < 2*radius*k_repel = {2 * ph.radius * ph.k_repel:.4g}"
             )
-        speed = (ph.thrust_max + a_max * ph.drag * p.u_max) / ph.drag if ph.drag > 0 else math.inf
+        speed = (ph.thrust_max + a_max * ph.drag * p.dt * p.u_max) / ph.drag if ph.drag > 0 else math.inf
         if not speed <= ph.v_max:
             bad.append(
-                f"rule 16: (thrust_max + a*drag*u_max)/drag = {speed:.4g} must be <= v_max = {ph.v_max:g}"
+                f"rule 16: (thrust_max + a*drag*dt*u_max)/drag = {speed:.4g} must be <= v_max = {ph.v_max:g}"
             )
     z_floor = float(geom.layer_edges(gm.radius, gm.height_max, gm.layers)[1])
     if not 0 < p.z_sl <= s_ratio * z_floor:

@@ -438,7 +438,15 @@ def _spin_weather(a: argparse.Namespace, rd: RunDir, cfg: Config, box: list[Stat
             last = done
 
     try:
-        wx = weather_spinup.spinup(cfg, n, step=step, key=s.key, compile=cfg.run.compile, progress=progress)
+        wx = weather_spinup.spinup(
+            cfg,
+            n,
+            step=step,
+            key=s.key,
+            compile=cfg.run.compile,
+            progress=progress,
+            cache=weather_spinup.cache_enabled(),
+        )
     except KeyboardInterrupt:
         rd.update_meta(status="interrupted")
         print("interrupted during the weather spin-up", file=sys.stderr)
