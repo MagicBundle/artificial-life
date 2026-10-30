@@ -436,8 +436,9 @@ def test_envs_strm_evnt_refusals():
     bad(hdr + envs({"patches": [{**patch, "lat": 120.0}]}), "lon, lat")
     nw = header_obj(nside_weather=0, weather_depth=0.0)
     nw["play"].pop("weather")
-    bad(header_bytes(nw) + envs({"pools": []}), "pools")
-    sd.decode(hdr + envs({"pools": []}))  # weather on: pools may be present
+    bad(header_bytes(nw) + envs({"pools": [{"x": 0.0}]}), "pools")  # without weather: the key stays, empty
+    sd.decode(header_bytes(nw) + envs({"pools": []}))
+    sd.decode(hdr + envs({"pools": [{"x": 0.0}]}))  # weather on: pools may be present
     bad(hdr + strm([{"id": 1, "lon": 3.0, "x": 0.0, "y": 10.0, "z": 0.0, "r": 3.0}]), "positional")
     bad(hdr + strm([{"id": 1, "x": 0.0, "y": 14.0, "z": 0.0, "r": 3.0}]), "floor radius")
     bad(hdr + strm([{"id": 1, "x": 0.0, "y": 10.0, "r": 3.0}]), "x, y, z, r")

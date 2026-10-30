@@ -58,17 +58,23 @@ def cfg():
 
 
 @pytest.fixture(scope="module")
-def live(cfg, tmp_path_factory: pytest.TempPathFactory):
+def scripted():
+    """The scripted policy and a shrunk timed menu for the whole module: the replay validates against it."""
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("alife.director.rules.decide", scripted_decide(PLAN))
         mp.setitem(
             actions.MENU, "regen_pulse", dataclasses.replace(actions.MENU["regen_pulse"], duration=(60, 2000))
         )
-        rd = RunDir.create(tmp_path_factory.mktemp("sd") / "live", cfg)
-        rd.update_meta(start_step=0)
-        res = runner.run(rd, cfg, init_state(cfg), END, quiet=True, director=Director(rd, cfg, "live", 0))
-        assert res.status == "done"
-        return rd.path
+        yield
+
+
+@pytest.fixture(scope="module")
+def live(cfg, scripted, tmp_path_factory: pytest.TempPathFactory):
+    rd = RunDir.create(tmp_path_factory.mktemp("sd") / "live", cfg)
+    rd.update_meta(start_step=0)
+    res = runner.run(rd, cfg, init_state(cfg), END, quiet=True, director=Director(rd, cfg, "live", 0))
+    assert res.status == "done"
+    return rd.path
 
 
 def _rows(path: Path) -> list[dict[str, Any]]:
