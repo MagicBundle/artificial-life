@@ -1074,7 +1074,7 @@ SPHERE_FEATURE_PR: Final[Mapping[str, str]] = {
     "director": "S5",
     "observers": "S5",
 }
-SPHERE_READY: frozenset[str] = frozenset({"structures"})
+SPHERE_READY: frozenset[str] = frozenset({"structures", "niche"})
 
 
 def sphere_wanted(cfg: Config) -> list[str]:
