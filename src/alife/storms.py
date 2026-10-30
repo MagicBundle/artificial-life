@@ -362,6 +362,18 @@ class Tracker:
         dt = t - last.t
         return last.ux + bx * dt, last.uy + by * dt
 
+    # The two distances the matching reads (the geometry of the world): the torus here, the great circle in
+    # ``storms_sph.SphereTracker`` (DESIGN §46.7), which overrides them, ``predict`` and ``_append``.
+    def _gap(self, c: Comp, last: Det) -> float:
+        """The distance from a component's centroid to a track's last detection."""
+        return float(np.hypot(min_image_np(c.x - last.x, self.p.L), min_image_np(c.y - last.y, self.p.L)))
+
+    def _gap_to(self, c: Comp, predicted: tuple[float, ...]) -> float:
+        """The distance from a component's centroid to a predicted position (``predict``'s result)."""
+        return float(
+            np.hypot(min_image_np(c.x - predicted[0], self.p.L), min_image_np(c.y - predicted[1], self.p.L))
+        )
+
     def _append(self, tr: Track, t: int, c: Comp) -> None:
         last = tr.dets[-1] if tr.dets else None
         if last is None:
@@ -417,9 +429,7 @@ class Tracker:
             best = max(cn for _, cn in rows)
             for lbl, cn in rows:
                 ci = by_label[lbl]
-                dist = float(
-                    np.hypot(min_image_np(comps[ci].x - last.x, p.L), min_image_np(comps[ci].y - last.y, p.L))
-                )
+                dist = self._gap(comps[ci], last)
                 # a piece within 10% of the track's best overlap counts as tied with it, and the stronger
                 # piece (peak vorticity) wins the tie, so a dying polar fragment does not take the id
                 eff = best if cn >= SPLIT_NEAR_TIE * best else cn
@@ -452,13 +462,13 @@ class Tracker:
         free_comps = [i for i in range(len(comps)) if i not in track_of_comp and i not in parent_of_comp]
         cand: list[tuple[float, int, int]] = []
         for tr in free_tracks:
-            px, py = self.predict(tr, t)
+            predicted = self.predict(tr, t)
             last = tr.dets[-1]
             for ci in free_comps:
                 c = comps[ci]
                 if c.hemi != tr.hemi:
                     continue
-                dist = float(np.hypot(min_image_np(c.x - px, p.L), min_image_np(c.y - py, p.L)))
+                dist = self._gap_to(c, predicted)
                 if dist <= max(last.r_eq, c.r_eq):
                     cand.append((dist, tr.id, ci))
         cand.sort()
