@@ -429,7 +429,7 @@ def _lifetime(tracks: Sequence[Track], t_spin: int, min_dets: int) -> dict[str, 
     st = w0.lifetime_stats(list(tracks), t_spin, min_dets, LIFETIME_MIN)
     keys = (
         *("n", "events", "censored", "median", "median_text", "max_age"),
-        *("n_risk_at_median", "median_reliable", "survival_before_threshold", "pass"),
+        *("n_risk_at_median", "thin_age", "median_reliable", "survival_before_threshold", "pass"),
     )
     out = {k: st[k] for k in keys}
     out["by_hemisphere"] = st["by_hemisphere"]

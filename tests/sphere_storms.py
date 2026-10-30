@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from alife.analysis import w0_sphere
+from alife.analysis.w0_sphere import LIFETIME_MIN
 from alife.config import Config
 
 
@@ -43,6 +44,14 @@ def criteria(rec: dict[str, Any]) -> dict[str, Any]:
         "lifetime_pass": life["pass"],
         "lifetime": life["median"] if life["median"] is not None else life["max_age"],
         "median_reliable": life["median_reliable"],
+        # the median may be unreadable (a thin risk set) and the criterion still decided: a median at or after
+        # an age where the risk set is thin, which is itself 3 000 or more, is 3 000 or more
+        "lifetime_readable": bool(
+            life["median_reliable"] or (life["thin_age"] is not None and life["thin_age"] >= LIFETIME_MIN)
+        ),
+        # the criterion read on detections instead of storms: the share of the window's detections that belong
+        # to a storm observed living 3 000 steps or more (above one half is a pass)
+        "long_share": life["share_detections_in_long_storms"],
         "tracks": track["named"],
         "births": track["named_births_in_window"],
         "deaths": track["named_deaths_in_window"],
