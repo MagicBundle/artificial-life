@@ -712,18 +712,48 @@ def test_the_play_launch_flags_are_flags_of_alife_play() -> None:
     choices = {s: a.choices for a in parser._actions for s in a.option_strings if a.choices}  # type: ignore[attr-defined]
     assert swift_enum_values(text, "PlayHouses") == set(choices["--houses"])
     assert swift_enum_values(text, "PlayDirector") == set(choices["--director"])
-    assert {"storm", "storm160", "stormsph", "stormsph22"} <= set(choices["--overlay"])
-    # The launcher passes the overlay of the source's geometry and size (DESIGN §37.2, §46.9): all three names
-    # are engine overlays, `stormsph` is chosen by the source's `world.geometry` (never by an alias), and
-    # `miniWorldSize` is the world.size of the preset that `storm160` is made for.
-    assert (
-        '"--overlay", PlanetSpec.overlay(forGeometry: p.sourceGeometry, worldSize: p.sourceWorldSize)' in text
+    assert {"storm", "storm160", "stormsph", "stormsph16", "stormsph22"} <= set(choices["--overlay"])
+    # The launcher passes the overlay of the source's geometry, planet shape and size (DESIGN §37.2, §46.8,
+    # §46.9): all the names are engine overlays, a planet's is chosen by the source's `world.geometry` and
+    # shape (never by an alias; none is passed for a shape without one), and `miniWorldSize` is the
+    # world.size of the preset that `storm160` is made for.
+    assert re.search(
+        r"let overlay = p\.storm \? PlanetSpec\.weatherOverlay\(forGeometry: p\.sourceGeometry, "
+        r"shape: p\.sourceShape, worldSize: p\.sourceWorldSize\) : nil",
+        text,
     )
-    assert re.search(r'geometry == "sphere" \? "stormsph" : overlay\(forWorldSize: size\)', text)
+    assert re.search(
+        r'geometry == "sphere" \? overlay\(forShape: shape\) : overlay\(forWorldSize: size\)', text
+    )
     assert re.search(r'size == miniWorldSize \? "storm160" : "storm"', text)
     assert re.search(r"miniWorldSize = 160\.0", text)
     assert config.load_config(preset="mini3d").world.size == 160.0
     assert config.WORLD_OVERLAYS[:2] == ("storm", "storm160")
+
+
+def test_the_launcher_overlay_table_holds_the_shapes_the_overlays_are_made_for() -> None:
+    """`PlanetSpec.weatherOverlays` pairs a planet shape (radius, height, nside, layers) with its overlay.
+    Each row is the shape of one engine sphere preset (`tiny3s`, `mini3s`, `64k3s`) and an engine overlay that
+    validates on exactly that preset and is refused on the other two."""
+    text = (CORE / "PlayLaunch.swift").read_text(encoding="utf-8")
+    rows = re.findall(
+        r'\(PlanetShape\(radius: (\d+), height: (\d+), nside: (\d+), layers: (\d+)\), "([a-z0-9]+)"\)', text
+    )
+    assert [r[4] for r in rows] == ["stormsph", "stormsph16", "stormsph22"]
+    preset_of = {"stormsph": "64k3s", "stormsph16": "tiny3s", "stormsph22": "mini3s"}
+    assert sorted(preset_of.values()) == sorted(config.SPHERE_PRESETS)  # every planet has a row
+    for radius, height, nside, layers, overlay in rows:
+        assert overlay in config.WORLD_OVERLAYS
+        cfg = config.load_config(preset=preset_of[overlay], overlays=[overlay])
+        w = cfg.world
+        assert [int(radius), int(height), int(nside), int(layers)] == [w.radius, w.height, w.nside, w.layers]
+        assert cfg.weather.enabled and cfg.weather.cells == 2 * int(nside)
+        for (
+            other
+        ) in config.SPHERE_PRESETS:  # a planet of another shape is refused, hence no overlay is passed
+            if other != preset_of[overlay]:
+                with pytest.raises(config.ConfigError):
+                    config.load_config(preset=other, overlays=[overlay])
 
 
 def test_the_play_launch_set_keys_are_config_fields() -> None:

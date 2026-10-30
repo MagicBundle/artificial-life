@@ -106,6 +106,9 @@ package struct PlaySource: Equatable, Sendable, Identifiable {
     package var geometry: String? = nil
     /// `world.radius` of a sphere source (the planet's radius), nil for a box or when unreadable.
     package var planetRadius: Double? = nil
+    /// Radius, height, field Nside and layers of a sphere source, nil for a box or when any is unreadable: it picks the planet's weather
+    /// overlay (`PlanetSpec.overlay(forShape:)`).
+    package var planetShape: PlanetShape? = nil
     /// `weather.enabled` of its config: a source whose weather is on is forked without the overlay and the spin-up.
     package var weatherOn: Bool
     /// Whether it has event chunks, which the exact houses of a planet are rebuilt from (`--houses auto` falls back to
@@ -175,6 +178,7 @@ package enum PlayCatalogScanner {
                     worldSize: (world?["size"] as? NSNumber)?.doubleValue,
                     geometry: (world?["geometry"] as? String) ?? (world == nil ? nil : "box"),
                     planetRadius: (world?["geometry"] as? String) == "sphere" ? (world?["radius"] as? NSNumber)?.doubleValue : nil,
+                    planetShape: (world?["geometry"] as? String) == "sphere" ? planetShape(of: world) : nil,
                     weatherOn: weather?["enabled"] as? Bool ?? false,
                     hasEvents: hasEntries(url.appendingPathComponent("events"), fileManager: fm),
                     modified: modified))
@@ -189,6 +193,14 @@ package enum PlayCatalogScanner {
         catalog.sources.sort { $0.modified > $1.modified }
         catalog.other.sort()
         return catalog
+    }
+
+    /// The shape of the planet a `world` section describes; nil when any of its four numbers is missing or not a number.
+    static func planetShape(of world: [String: Any]?) -> PlanetShape? {
+        guard let world,
+              let radius = (world["radius"] as? NSNumber)?.doubleValue, let height = (world["height"] as? NSNumber)?.doubleValue,
+              let nside = (world["nside"] as? NSNumber)?.intValue, let layers = (world["layers"] as? NSNumber)?.intValue else { return nil }
+        return PlanetShape(radius: radius, height: height, nside: nside, layers: layers)
     }
 
     /// Whether a directory without a valid `play.json` is a world `alife play` did not finish building. `alife play`
