@@ -233,5 +233,3 @@ def test_a_played_weather_world_sends_maph_and_strm_the_decoder_accepts(tmp_path
     assert maph.f["nside"] == dims(cfg).nside and maph.f["k"] == 1
     envs = next(r for r in dec.records if r.tag == "ENVS").f["json"]
     assert len(envs["pools"]) == 6 and all({"x", "y", "z", "lon", "lat"} <= set(p) for p in envs["pools"])
-        r for r in dec.records if r.tag == "STRM"
-    ]
