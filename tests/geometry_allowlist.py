@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-CURRENT_PR = 3  # the sphere series' PR this tree is: S3. Bump it in each PR (S4 sets 4, ...)
+CURRENT_PR = 5  # the sphere series' PR this tree is: S5. Bump it in each PR (S6 sets 6, ...)
 REASONS = ("pair", "box-only tool", "box branch", "converted")
 
 
@@ -70,31 +70,31 @@ AUDIT: dict[str, tuple[str, int | None]] = {
     "ext/niche.py": (_C, 3),
     "structures.py": (_C, 3),
     "niche.py": (_C, 3),
-    "metrics.py": (_C, 5),
+    "metrics.py": (_BB, None),
     "featobs.py": (_C, 5),
     "groups.py": (_C, 5),
-    "tracking.py": (_C, 5),
+    "tracking.py": (_BB, None),
     "streamrec.py": (_C, 5),
-    "stream.py": (_C, 5),
-    "play.py": (_C, 5),
-    "cli.py": (_C, 5),
+    "stream.py": (_BB, None),
+    "play.py": (_BB, None),
+    "cli.py": (_BB, None),
     "runio.py": (_C, 5),
     "game/observe.py": (_C, 5),
-    "game/observer.py": (_C, 5),
-    "game/tracers.py": (_C, 5),
+    "game/observer.py": (_C, 6),
+    "game/tracers.py": (_C, 6),
     "game/society.py": (_C, 5),
-    "game/powers.py": (_C, 5),
-    "game/social.py": (_C, 5),
+    "game/powers.py": (_BB, None),
+    "game/social.py": (_BB, None),
     "game/alerts.py": (_C, 5),
     "game/report.py": (_C, 5),
     "game/kinthreads.py": (_C, 5),
     "game/housefile.py": (_C, 5),
-    "analysis/labels.py": (_C, 5),
-    "storms.py": (_C, 5),
+    "analysis/labels.py": (_BB, None),
+    "storms.py": (_BB, None),
     "analysis/w0.py": (_C, 4),
     "analysis/w0_plots.py": (_C, 4),
     "analysis/w2.py": (_C, 4),
-    "director/actions.py": (_C, 5),
+    "director/actions.py": (_BB, None),
     "director/yoked.py": (_C, 5),
     "director/llm.py": (_C, 5),
     "director/prompt.py": (_C, 5),
@@ -123,13 +123,21 @@ NO_RAW_USE_TODAY = frozenset(
         "ext/niche.py",
         "structures.py",
         "niche.py",
+        "runio.py",  # S5 converted it: no raw use of the seven patterns remains
+        "game/observe.py",  # S5 converted it: no raw use of the seven patterns remains
+        "game/society.py",  # S5 converted it: no raw use of the seven patterns remains
+        "game/alerts.py",  # S5 converted it: no raw use of the seven patterns remains
+        "game/report.py",  # S5 converted it: no raw use of the seven patterns remains
+        "director/yoked.py",  # S5 converted it: no raw use of the seven patterns remains
+        "director/llm.py",  # S5 converted it: no raw use of the seven patterns remains
+        "director/prompt.py",  # S5 converted it: no raw use of the seven patterns remains
+        "director/__init__.py",  # S5 converted it: no raw use of the seven patterns remains
     }
 )
 # Listed files that the spec's audit table does not name (the lint finds them; the spec's grep counts differ).
 NOT_IN_SPEC_AUDIT = frozenset(
     {
         "step.py",
-        "analysis/activity.py",
         "analysis/emergence/braid.py",
         "analysis/emergence/frames.py",
         "analysis/emergence/modes.py",
@@ -140,7 +148,6 @@ NOT_IN_SPEC_AUDIT = frozenset(
 ALLOWLIST: tuple[Allow, ...] = (
     # analysis/activity.py: evolutionary-activity analysis of finished runs: positions and size (S5; not
     # in the spec table)
-    Allow("analysis/activity.py", "z_index", 1, "converted", 5),
     # analysis/emergence/braid.py: the E-series measures: declared box-only, `validate` refuses the
     # emergence recorder on a sphere (S2)
     Allow("analysis/emergence/braid.py", "xy_slice", 1, "box-only tool"),
@@ -168,11 +175,9 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("analysis/emergence/winding.py", "wrap", 6, "box-only tool"),
     # analysis/labels.py: G1 labels; the Nomad track needs the sum of great-circle arcs; INTENT_VERSION 4
     # (S5, thresholds in S7)
-    Allow("analysis/labels.py", "z_index", 2, "converted", 5),
-    Allow("analysis/labels.py", "xy_slice", 2, "converted", 5),
-    Allow("analysis/labels.py", "wrap", 1, "converted", 5),
-    Allow("analysis/labels.py", "world.size", 1, "converted", 5),
-    Allow("analysis/labels.py", "world.height", 2, "converted", 5),
+    Allow("analysis/labels.py", "z_index", 2, "box branch"),
+    Allow("analysis/labels.py", "wrap", 1, "box branch"),
+    Allow("analysis/labels.py", "world.size", 1, "box branch"),
     # analysis/signals.py: 2D only: `require_2d` already refuses dims 3, which covers the sphere
     Allow("analysis/signals.py", "wrap", 1, "box-only tool"),
     Allow("analysis/signals.py", "world.size", 1, "box-only tool"),
@@ -198,22 +203,17 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("bonds.py", "wrap", 1, "pair"),
     Allow("bonds.py", "world.size", 2, "pair"),
     # cli.py: inspect, replay, runs (S5); the fork guard of the geometry keys is S2's (DESIGN §46.13)
-    Allow("cli.py", "z_index", 2, "converted", 5),
-    Allow("cli.py", "wrap", 2, "converted", 5),
-    Allow("cli.py", "world.size", 3, "converted", 5),
-    Allow("cli.py", "world.height", 2, "converted", 5),
-    Allow("cli.py", "lattice", 3, "converted", 5),
+    Allow("cli.py", "wrap", 2, "box branch"),
+    Allow("cli.py", "world.size", 3, "box branch"),
+    Allow("cli.py", "world.height", 2, "box branch"),
+    Allow("cli.py", "lattice", 3, "box branch"),
     # director/__init__.py: levers and prompts in x, y (S5)
-    Allow("director/__init__.py", "world.size", 1, "converted", 5),
     # director/actions.py: ditto
-    Allow("director/actions.py", "wrap", 4, "converted", 5),
-    Allow("director/actions.py", "world.size", 9, "converted", 5),
+    Allow("director/actions.py", "wrap", 4, "box branch"),
+    Allow("director/actions.py", "world.size", 8, "box branch"),
     # director/llm.py: ditto
-    Allow("director/llm.py", "world.size", 1, "converted", 5),
     # director/prompt.py: ditto
-    Allow("director/prompt.py", "world.height", 2, "converted", 5),
     # director/yoked.py: ditto
-    Allow("director/yoked.py", "world.size", 1, "converted", 5),
     # fields.py: S1 and S3 converted it: every function the sphere replaces dispatches on `dims(cfg).sph`
     # to `fields_sph` (the resource, the chemicals, the built material) and keeps its box half (the counts
     # are those box halves)
@@ -224,36 +224,24 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("fields.py", "world.field_cell", 4, "box branch"),
     Allow("fields.py", "lattice", 21, "box branch"),
     # game/alerts.py: alerts (S5)
-    Allow("game/alerts.py", "z_index", 1, "converted", 5),
     # game/observe.py: the G1 observer's quantised z (S5)
-    Allow("game/observe.py", "z_index", 1, "converted", 5),
-    Allow("game/observe.py", "world.height", 1, "converted", 5),
     # game/observer.py: host observer (S5)
-    Allow("game/observer.py", "z_index", 3, "converted", 5),
-    Allow("game/observer.py", "wrap", 2, "converted", 5),
-    Allow("game/observer.py", "world.size", 2, "converted", 5),
-    Allow("game/observer.py", "world.height", 1, "converted", 5),
-    Allow("game/observer.py", "world.field_cell", 1, "converted", 5),
+    Allow("game/observer.py", "world.height", 1, "converted", 6),
+    Allow("game/observer.py", "world.field_cell", 1, "converted", 6),
     # game/powers.py: the player's powers (S5)
-    Allow("game/powers.py", "xy_slice", 2, "converted", 5),
-    Allow("game/powers.py", "wrap", 2, "converted", 5),
-    Allow("game/powers.py", "world.size", 3, "converted", 5),
+    Allow("game/powers.py", "xy_slice", 2, "box branch"),
+    Allow("game/powers.py", "wrap", 2, "box branch"),
+    Allow("game/powers.py", "world.size", 3, "box branch"),
     # game/report.py: the world report (S5)
-    Allow("game/report.py", "z_index", 2, "converted", 5),
-    Allow("game/report.py", "xy_slice", 1, "converted", 5),
     # game/social.py: social state (S5)
-    Allow("game/social.py", "world.size", 2, "converted", 5),
+    Allow("game/social.py", "world.size", 2, "box branch"),
     # game/society.py: houses and territory (S5)
-    Allow("game/society.py", "z_index", 2, "converted", 5),
-    Allow("game/society.py", "wrap", 3, "converted", 5),
-    Allow("game/society.py", "world.size", 3, "converted", 5),
-    Allow("game/society.py", "world.height", 1, "converted", 5),
     # game/tracers.py: tracer rig: vz_own, w_air, tracer_z (S5)
-    Allow("game/tracers.py", "z_index", 14, "converted", 5),
-    Allow("game/tracers.py", "wrap", 2, "converted", 5),
-    Allow("game/tracers.py", "world.size", 2, "converted", 5),
-    Allow("game/tracers.py", "world.height", 1, "converted", 5),
-    Allow("game/tracers.py", "world.field_cell", 6, "converted", 5),
+    Allow("game/tracers.py", "z_index", 14, "converted", 6),
+    Allow("game/tracers.py", "wrap", 2, "converted", 6),
+    Allow("game/tracers.py", "world.size", 2, "converted", 6),
+    Allow("game/tracers.py", "world.height", 1, "converted", 6),
+    Allow("game/tracers.py", "world.field_cell", 6, "converted", 6),
     # invariants.py: the box ranges; the sphere half is `_check_rows_sph` and device_check's own branch (S2)
     Allow("invariants.py", "z_index", 3, "box branch"),
     Allow("invariants.py", "world.size", 3, "box branch"),
@@ -269,21 +257,20 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("lifecycle.py", "world.size", 3, "box branch"),
     Allow("lifecycle.py", "lattice", 3, "box branch"),
     # metrics.py: observers (S5)
-    Allow("metrics.py", "world.height", 1, "converted", 5),
-    Allow("metrics.py", "lattice", 6, "converted", 5),
+    Allow("metrics.py", "lattice", 6, "box branch"),
     # physics.py: the box forces and integrators; the sphere has `forces_s` / `integrate_s` (S2)
     Allow("physics.py", "z_index", 7, "box branch"),
     Allow("physics.py", "xy_slice", 3, "box branch"),
     Allow("physics.py", "wrap", 2, "box branch"),
     Allow("physics.py", "world.size", 2, "box branch"),
     # play.py: the play loop (S5)
-    Allow("play.py", "z_index", 4, "converted", 5),
-    Allow("play.py", "xy_slice", 2, "converted", 5),
-    Allow("play.py", "wrap", 4, "converted", 5),
-    Allow("play.py", "world.size", 3, "converted", 5),
-    Allow("play.py", "world.height", 1, "converted", 5),
-    Allow("play.py", "world.field_cell", 3, "converted", 5),
-    Allow("play.py", "lattice", 8, "converted", 5),
+    Allow("play.py", "z_index", 2, "box branch"),
+    Allow("play.py", "xy_slice", 2, "box branch"),
+    Allow("play.py", "wrap", 3, "box branch"),
+    Allow("play.py", "world.size", 3, "box branch"),
+    Allow("play.py", "world.height", 1, "box branch"),
+    Allow("play.py", "world.field_cell", 3, "box branch"),
+    Allow("play.py", "lattice", 6, "box branch"),
     # render.py: 2D renderer: box-only tool
     Allow("render.py", "z_index", 2, "box-only tool"),
     Allow("render.py", "wrap", 5, "box-only tool"),
@@ -291,7 +278,6 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("render.py", "world.field_cell", 1, "box-only tool"),
     Allow("render.py", "lattice", 3, "box-only tool"),
     # runio.py: run metadata and listing (S5); migrate/refusal checks are S2's
-    Allow("runio.py", "z_index", 2, "converted", 5),
     # sensing.py: the box frame (to_body3); the sphere branches use `ops.to_body_s` (S2)
     Allow("sensing.py", "z_index", 6, "box branch"),
     Allow("sensing.py", "xy_slice", 6, "box branch"),
@@ -312,15 +298,13 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("step.py", "lattice", 6, "box branch"),
     # storms.py: the storm tracker and its host torus helper min_image_np (S5: tracker on vortices
     # crossing the poles)
-    Allow("storms.py", "wrap", 13, "converted", 5),
+    Allow("storms.py", "wrap", 13, "box branch"),
     # stream.py: stream v2 (S5)
-    Allow("stream.py", "world.size", 1, "converted", 5),
-    Allow("stream.py", "world.height", 1, "converted", 5),
-    Allow("stream.py", "world.field_cell", 1, "converted", 5),
-    Allow("stream.py", "lattice", 4, "converted", 5),
+    Allow("stream.py", "world.size", 1, "box branch"),
+    Allow("stream.py", "world.field_cell", 1, "box branch"),
+    Allow("stream.py", "lattice", 5, "box branch"),
     # tracking.py: generic tracking and circular_mean (S5: the Nomad track, kin groups on the sphere)
-    Allow("tracking.py", "z_index", 1, "converted", 5),
-    Allow("tracking.py", "wrap", 1, "converted", 5),
+    Allow("tracking.py", "wrap", 1, "box branch"),
     # viewer.py: 2D viewer: box-only tool
     Allow("viewer.py", "wrap", 8, "box-only tool"),
     Allow("viewer.py", "world.size", 7, "box-only tool"),

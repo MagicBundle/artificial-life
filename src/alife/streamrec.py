@@ -394,14 +394,14 @@ def sphere_block(
 def sphere_header(head: Mapping[str, Any], sphere: Mapping[str, Any]) -> dict[str, Any]:
     """``head`` (a ``legacy_header`` dict) as a protocol 2 header: ``protocol`` 2, no ``L``, ``FG`` 0, and the
     ``sphere_block`` keys after ``FZ`` (JSON key order is not significant; this one is documented)."""
-    out: dict[str, Any] = {}
-    for key, value in head.items():
-        if key == "L":
-            continue
-        out[key] = PROTOCOL_SPHERE if key == "protocol" else (0 if key == "FG" else value)
-        if key == "FZ":
-            out.update(sphere)
-    return out
+    keys = [k for k in head if k != "L"]
+    cut = keys.index("FZ") + 1  # the planet's keys follow FZ
+    pinned = {"protocol": PROTOCOL_SPHERE, "FG": 0}
+    return {
+        **{k: pinned.get(k, head[k]) for k in keys[:cut]},
+        **sphere,
+        **{k: pinned.get(k, head[k]) for k in keys[cut:]},
+    }
 
 
 def weather_block_sphere(*, enabled: bool, dc_ref: float | None, nside: int, coarse: int) -> dict[str, Any]:

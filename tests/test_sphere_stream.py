@@ -307,3 +307,29 @@ def test_a_box_header_is_unchanged_by_the_sphere_keys() -> None:
     assert box["protocol"] == 1 and box["L"] == 320.0 and "geometry" not in box and box["FG"] == 80
     assert list(box)[:3] == ["protocol", "dims", "L"]
     assert streamrec.ALL_TAGS[: len(streamrec.TAGS)] == streamrec.TAGS and "MAPH" not in streamrec.TAGS
+
+
+def test_alife_play_as_a_process_writes_a_decodable_protocol_2_stream(tmp_path: Path) -> None:
+    """The real thing: a subprocess on the CPU (compiled step, one configuration per process), real pipes."""
+    from play_helpers import finish, spawn
+
+    out = tmp_path / "w"
+    args = [
+        "play",
+        "--preset",
+        "tiny3s",
+        "--set",
+        "brain.weight_dtype=float32",
+        "--out",
+        str(out),
+        "--until",
+        "30",
+    ]
+    code, data, err = finish(spawn(*args), "rate max\nrun\n")
+    assert code == 0, err
+    dec = sd.decode(data)
+    assert dec.header["protocol"] == 2 and dec.header["geometry"] == "sphere" and "L" not in dec.header
+    tags = [r.tag for r in dec.records]
+    assert tags[0] == "FRMA" and "IDNT" in tags and "ENVS" in tags and dec.skipped == []
+    last = by_tag(dec, "FRMA")[-1]
+    assert last.step == 30 and last.a["height"].min() > -1e-3
