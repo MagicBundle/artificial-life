@@ -80,6 +80,9 @@ niche`, `alife bench --niche`); observers, GUI and the experiment are F2 to F4.
 - Avoid GPU float32 matmul for anything that must be accurate (Metal reduced precision, DESIGN F20).
 - A trajectory-neutral state field is frozen out of the legacy digests (`V0_FIELDS`, `V0_FIELDS_3D`), so the goldens
   do not move when such a field is added.
+- One compiled configuration per process: MLX 0.32.3 can hand a compiled function another's fused kernel when
+  their scalar constants print alike (DESIGN F21 item 6). A tool that needs several configurations runs one
+  process each (on the CPU with its own `TMPDIR`) or passes the differing scalars as array inputs.
 - Custom Metal kernels live only in `src/alife/knn_metal.py` (`mx.fast.metal_kernel`, lint rule 6). Each must be
   bitwise equal to the pure-MLX path it replaces (`tests/test_spatial_metal.py`, run with `-m ""` on the Mac and on
   every MLX bump, which is then added to `knn_metal.VERIFIED_MLX`), fall back to that path off Metal, and write no
