@@ -593,7 +593,7 @@ class Observer:
         self._settle()
         records = self.society.take_records()
         if records:
-            self._last_record = records[-1]
+            self._last_record = records[len(records) - 1]
         return records
 
     def color_inputs(self, houses: np.ndarray) -> ColorInputs:
@@ -665,7 +665,7 @@ class Observer:
     def _latest_record(self) -> dict[str, Any] | None:
         """The newest settled snapshot record (untaken, else the last one taken), None before any."""
         if self.society.records:
-            return self.society.records[-1]
+            return self.society.records[len(self.society.records) - 1]
         return self._last_record
 
     # --- reporting ----------------------------------------------------------------------------------------
@@ -863,6 +863,7 @@ def _kin_from_rows(
         clades, counts = np.unique(clade[m], return_counts=True)
         sph = place.is_sphere(cfg)
         c = _centre(pos[m], cfg) if n else (None,) * (3 if sph else 2)
+        cx, cy, *cz = c
         out.append(
             {
                 "slot": s,
@@ -873,9 +874,9 @@ def _kin_from_rows(
                 "clade": int(clades[np.argmax(counts)]) if n else -1,
                 "clade_share": round(int(counts.max()) / n, 4) if n else None,
                 "sim_self": None,
-                "x": c[0],
-                "y": c[1],
-                **({"z": c[2]} if sph else {}),
+                "x": cx,
+                "y": cy,
+                **({"z": cz[0]} if sph else {}),
                 **(
                     {("height" if sph else "z"): round(place.mean_height(pos[m], cfg), 2) if n else None}
                     if three
@@ -905,15 +906,16 @@ def _colonies_from_rows(
         ids, counts = ids[ids >= 0], counts[ids >= 0]
         sph = place.is_sphere(cfg)
         c = _centre(pos[m], cfg) if n else (None,) * (3 if sph else 2)
+        cx, cy, *cz = c
         out.append(
             {
                 "slot": s,
                 "id": int(society.col_slots[s]),
                 "size": n,
                 "kin": int(ids[np.argmax(counts)]) if ids.size else -1,
-                "x": c[0],
-                "y": c[1],
-                **({"z": c[2]} if sph else {}),
+                "x": cx,
+                "y": cy,
+                **({"z": cz[0]} if sph else {}),
             }
         )
     return out

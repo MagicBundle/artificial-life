@@ -331,15 +331,15 @@ def patches_block(patch_pos: np.ndarray, gains: np.ndarray, sigma: float) -> lis
         return [
             {
                 "i": i,
-                "x": round(float(patch_pos[i, 0]), 4),
-                "y": round(float(patch_pos[i, 1]), 4),
-                "z": round(float(patch_pos[i, 2]), 4),
+                "x": round(float(px), 4),
+                "y": round(float(py), 4),
+                "z": round(float(pz), 4),
                 "lon": round(float(lon[i]), 2),
                 "lat": round(float(lat[i]), 2),
                 "gain": round(float(gains[i]), 4),
                 "sigma": round(float(sigma), 4),
             }
-            for i in range(len(patch_pos))
+            for i, (px, py, pz) in enumerate(patch_pos)
         ]
     return [
         {

@@ -623,7 +623,7 @@ class ChapterClock:
 
     def is_end(self, t: int) -> bool:
         """Whether ``t`` is the end of a chapter (a stop checkpoint at another step is not)."""
-        return t > 0 and t % self.length == 0
+        return t > 0 and divmod(t, self.length)[1] == 0
 
 
 @dataclass
@@ -1625,7 +1625,7 @@ class PlayPacer:
             self._window.popleft()
         if len(self._window) < 2:
             return 0.0
-        (t0, n0), (t1, n1) = self._window[0], self._window[-1]
+        (t0, n0), (t1, n1) = self._window[0], self._window[len(self._window) - 1]
         span = max(t1 - t0, 1e-9)
         # the window ends now, not at the last step: a pause lets the rate decay
         return (n1 - n0) / max(span, min(now - t0, ACHIEVED_S))
@@ -2146,7 +2146,8 @@ class PlayPacer:
 def _pad3(a: Any) -> tuple[float, float, float]:
     """A 2- or 3-vector as three floats (z = 0 in 2D)."""
     v = np.asarray(a, np.float64).ravel().tolist()
-    return (v[0], v[1], v[2] if len(v) > 2 else 0.0)
+    x, y, *rest = v
+    return (x, y, rest[0] if rest else 0.0)
 
 
 # --- the origin row ---------------------------------------------------------------------------------------

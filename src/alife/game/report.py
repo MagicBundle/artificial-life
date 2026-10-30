@@ -2472,7 +2472,7 @@ def _headline_picks(ctx: _Ctx) -> list[tuple[str, dict[str, Mapping[str, Any]]]]
         first = hh
     if big:
         return [first]
-    alt = next((x for x in (hs, he, hh, hl) if x is not None and x[0][:2] != first[0][:2]), None)
+    alt = next((x for x in (hs, he, hh, hl) if x is not None and x[0][slice(2)] != first[0][slice(2)]), None)
     return [first] if alt is None else [first, alt]
 
 
@@ -2677,8 +2677,8 @@ def _within(c: Mapping[str, Any], pos: Mapping[str, int] | None, group_pos: Mapp
     if pos is None or sec in ("E", "CE") or len(c["order"]) < 2:
         return (0, *c["order"][1:])
     if sec == "G":
-        gid = c["order"][2]
-        return (0, group_pos.get(gid, len(pos)), c["order"][3])
+        _, _, gid, rank, *_ = c["order"]
+        return (0, group_pos.get(gid, len(pos)), rank)
     return (0, pos.get(c["id"], len(pos)), *c["order"][1:])
 
 
@@ -2730,7 +2730,7 @@ def assemble(
     if pos is not None:
         for c, _ in chosen:
             if c["section"] == "G" and c["id"] in pos:
-                gid = c["order"][2]
+                _, _, gid, *_ = c["order"]
                 group_pos.update({gid: min(pos[c["id"]], group_pos.get(gid, pos[c["id"]]))})
 
     def key(cu: tuple[dict[str, Any], str]) -> tuple:

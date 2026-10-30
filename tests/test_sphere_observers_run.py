@@ -201,3 +201,23 @@ def test_the_radial_velocity_column_is_the_radial_component(world) -> None:
     got = np.array(x)[:, lay.vrad] - np.array(x)[:, lay.vrad + 1]
     assert np.abs(got[alive] - want[alive]).max() <= 1
     assert np.abs(want[alive]).max() > 0, "agents move radially (buoyancy, gravity): the test is not vacuous"
+
+
+def test_the_centroids_of_the_tables_rotate_with_the_planet(world) -> None:
+    """Rotation equivariance of the row-derived kin and colony tables (the consumer guard, DESIGN §46.12): the
+    centroid of a group in a rotated world is the rotated centroid, and the heights are unchanged."""
+    cfg, s, obs, _r, _a, _p = world
+    sl = obs.social_labels()
+    kin, col = to_numpy(sl.kin_slot), to_numpy(sl.colony_slot)
+    alive = to_numpy(s.alive)
+    pos = to_numpy(s.pos).astype(np.float64)[alive]
+    clade = to_numpy(s.clade)[alive].astype(np.int32)
+    rot = random_rotation(33)
+    a_kin = _kin_from_rows(obs.society, kin[alive], clade, pos, cfg, True)
+    b_kin = _kin_from_rows(obs.society, kin[alive], clade, pos @ rot.T, cfg, True)
+    a_col = _colonies_from_rows(obs.society, kin[alive], col[alive], pos, cfg)
+    b_col = _colonies_from_rows(obs.society, kin[alive], col[alive], pos @ rot.T, cfg)
+    assert a_kin and a_col
+    for a, b in [*zip(a_kin, b_kin, strict=True), *zip(a_col, b_col, strict=True)]:
+        np.testing.assert_allclose(rot @ [a["x"], a["y"], a["z"]], [b["x"], b["y"], b["z"]], atol=0.02)
+        assert a.get("height") == b.get("height") and a["size"] == b["size"]

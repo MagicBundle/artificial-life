@@ -588,7 +588,7 @@ class Society:
         if d.d3:
             z = place.heights(h["pos"][sel], self.cfg)
             z_mean = np.bincount(rs, weights=z, minlength=f)[:f] / denom
-            band = metrics.z_band(z, self.cfg.world.height)
+            band = metrics.z_band(z, geom.geometry(self.cfg).height_max)
             frac = np.bincount(rs * metrics.N_BANDS + band, minlength=f * metrics.N_BANDS)
             frac = frac.reshape(f, metrics.N_BANDS) / denom[:, None]
             columns += ["z_mean", "band_frac"]

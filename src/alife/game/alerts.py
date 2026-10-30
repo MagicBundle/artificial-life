@@ -328,10 +328,11 @@ class Alert:
 
     def record(self) -> dict[str, Any]:
         """The alert as an ``ALRT`` object (``streamrec.check_alert``): a log alert is importance 0."""
+        ax, ay, az = self.pos
         return {
             "id": self.id, "version": self.version, "step": self.step, "class": self.cls, "key": self.key,
             "state": self.state, "surface": self.surface, "imp": 0 if self.surface == "log" else self.imp,
-            "title": self.title, "text": self.text, "x": self.pos[0], "y": self.pos[1], "z": self.pos[2],
+            "title": self.title, "text": self.text, "x": ax, "y": ay, "z": az,
             "ref": self.ref, "pause": self.pause, "expires": self.expires, "watched": self.watched,
             "calibrated": self.calibrated,
         }  # fmt: skip

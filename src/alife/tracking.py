@@ -507,7 +507,7 @@ class Dominance:
             known[: ids.size] = (old[order][pos] == ids) if old.size else False
             known[ids.size] = True  # "other" is always tracked
             prior[:, : ids.size] = self._ema[:, cols] if old.size else 0
-            prior[:, ids.size] = self._ema[:, -1]
+            prior[:, ids.size] = self._ema[:, self._ema.shape[1] - 1]
         # a column that was not tracked starts at its steady state ``x << k``
         e = np.where(known[None, :], prior + x - (prior >> self._k), x << self._k)
         self._ids, self._ema = ids.copy(), e

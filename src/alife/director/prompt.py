@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
+from alife import geom
 from alife.config import Config, is_3d
 from alife.director import llm, pacing
 from alife.director.actions import MENU
@@ -119,13 +120,13 @@ def world_text(cfg: Config) -> str:
     if cfg.world.geometry == "sphere":
         return (
             "The world is a planet with a surface and a lid at height "
-            f"{cfg.world.height:g}; a place is x = longitude and y = latitude in degrees, lengths are arc "
-            "lengths on the surface; one step is one time unit."
+            f"{geom.geometry(cfg).height_max:g}; a place is x = longitude and y = latitude in degrees, "
+            "lengths are arc lengths on the surface; one step is one time unit."
         )
     if is_3d(cfg):
         return (
             "The world is periodic in x and y, with a floor and a surface at height "
-            f"{cfg.world.height:g}; one step is one time unit."
+            f"{geom.geometry(cfg).height_max:g}; one step is one time unit."
         )
     return "The world is a torus; one step is one time unit."
 
@@ -331,9 +332,10 @@ def user_message(
     boundary are in ``taken`` and not repeated under the recent interventions)."""
     d3 = is_3d(cfg)  # the 3D world has a height, and K_est weighs each layer's food by its occupancy (§27.10)
     size = (
-        f"a planet of radius {cfg.world.radius:g} and height {cfg.world.height:g}"
+        f"a planet of radius {cfg.world.radius:g} and height {geom.geometry(cfg).height_max:g}"
         if ctx.sphere
-        else f"{ctx.world_size:g} x {ctx.world_size:g}" + (f" x {cfg.world.height:g}" if d3 else "")
+        else f"{ctx.world_size:g} x {ctx.world_size:g}"
+        + (f" x {geom.geometry(cfg).height_max:g}" if d3 else "")
     )
     return "\n\n".join(
         [

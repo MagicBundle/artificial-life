@@ -571,14 +571,8 @@ def _unit(v: mx.array) -> mx.array:
 
 
 def _cross(a: mx.array, b: mx.array) -> mx.array:
-    return mx.stack(
-        [
-            a[:, 1] * b[:, 2] - a[:, 2] * b[:, 1],
-            a[:, 2] * b[:, 0] - a[:, 0] * b[:, 2],
-            a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0],
-        ],
-        axis=1,
-    )
+    """The cross product of (N, 3) vectors, by cyclic rolls of the components."""
+    return mx.roll(a, -1, axis=1) * mx.roll(b, -2, axis=1) - mx.roll(a, -2, axis=1) * mx.roll(b, -1, axis=1)
 
 
 def develop_step(prev: mx.array, pos: mx.array, fr: mx.array) -> tuple[mx.array, mx.array, mx.array]:

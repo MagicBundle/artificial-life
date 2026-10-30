@@ -161,7 +161,7 @@ def sphere_block(cfg: Config) -> dict[str, Any]:
     wx = cfg.weather
     return streamrec.sphere_block(
         planet_radius=w.radius,
-        shell_edges=layer_radii(w.radius, w.height, d.fz),
+        shell_edges=layer_radii(w.radius, geom.geometry(cfg).height_max, d.fz),
         nside_field=w.nside,
         nside_weather=wx.cells if wx.enabled else 0,
         nside_territory=geom.TERRITORY_NSIDE,
@@ -218,7 +218,7 @@ class Streamer:
             "protocol": PROTOCOL,
             "dims": d.nd,
             "L": float(cfg.world.size),
-            "height": float(cfg.world.height) if d.d3 else 0.0,
+            "height": float(geom.geometry(cfg).height_max) if d.d3 else 0.0,
             "N": int(state.alive.shape[0]),
             "B": layout.B,
             "radius": float(cfg.physics.radius),

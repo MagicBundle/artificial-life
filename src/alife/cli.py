@@ -885,7 +885,7 @@ def _cmd_inspect(a: argparse.Namespace) -> int:
         info["parent"] = meta.get("parent")
         info["checkpoints"] = [st for st, _ in rd.checkpoints()]
         rows = rd.metrics_rows()
-        info["last_metrics"] = rows[-1] if rows else None
+        info["last_metrics"] = next(reversed(rows), None)
     problems: list[str] = []
     if a.check:
         problems = full_check(state, cfg)
@@ -1255,7 +1255,7 @@ def _cut_listing(rd: RunDir, step: int) -> str:
         {(s0, s1) for kind in ("births", "deaths") for s0, s1, _ in rd.event_files(kind) if s1 > step}
     )
     return (
-        f"checkpoints {ckpts}, {len(rows)} metrics rows (steps {rows[0]} to {rows[-1]})"
+        f"checkpoints {ckpts}, {len(rows)} metrics rows (steps {rows[0]} to {next(reversed(rows))})"
         if rows
         else f"checkpoints {ckpts}"
     ) + f" and {len(chunks)} event chunk(s) {chunks}"
