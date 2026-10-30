@@ -202,6 +202,10 @@ def test_silent_build_zeroes_the_build_column_of_founders_only() -> None:
 def test_the_build_overlay_validates_against_the_presets_that_can_be_coloured() -> None:
     assert "build" in config.WORLD_OVERLAYS and "build" not in config.OVERLAYS
     for preset in config.PRESETS:
+        if preset == "tiny3s":  # structures are PR S3 on a sphere (config.SPHERE_READY)
+            with pytest.raises(ConfigError, match="structures is not available on a sphere yet"):
+                load_config(preset=preset, overlays=["build"])
+            continue
         cfg = load_config(preset=preset, overlays=["build"])
         assert cfg.structures.enabled and fields.mat_phases(dims(cfg).fg, dims(cfg).nd)[0] >= 3
     # an overlay on a world whose lattice is prime is refused with the reason

@@ -58,8 +58,10 @@ CLOCK_MODULES = {
 CLOCK_CLASS = "RealClock"
 HOST_ALLOW = {  # rule 5: host-side checks that read arrays by design
     ("invariants", "full_check"),
+    ("invariants", "_check_rows_sph"),  # the sphere's host ranges, called by full_check
     ("knn_metal", "self_check"),  # the once-per-process startup comparison of the kernel with the MLX search
     ("knn_metal", "_check_scene"),  # builds that comparison's scene in numpy
+    ("knn_metal", "_check_scene_sph"),  # the same for the sphere variant of the kernel
 }
 METAL_KERNEL_MODULES = {"knn_metal"}  # rule 6: the only module that builds a custom Metal kernel
 KEYLESS_RANDOM = {"key", "split"}  # take the key (or seed) positionally by design

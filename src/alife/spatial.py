@@ -84,7 +84,10 @@ def prepare_knn(cfg: Config) -> str:
     """
     d = dims(cfg)
     if knn_impl(cfg) == "metal":
-        knn_metal.self_check(d.nd, sphere=d.sph)
+        if d.sph:  # static: the sphere variant of the kernel is checked apart from the box's
+            knn_metal.self_check(sphere=True)
+        else:
+            knn_metal.self_check(d.nd)
     elif d.k <= knn_metal.K_MAX and _on_gpu() and os.environ.get("ALIFE_KNN", "auto") == "auto":
         knn_metal.note_unverified()  # the kernel is what auto would have taken
     return knn_impl(cfg)

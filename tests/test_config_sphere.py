@@ -1,6 +1,5 @@
-"""The sphere world's configuration (DESIGN §46.9; sphere series S0): five keys, all off by default and
-invisible in a box world, and the validation rules, which refuse a sphere until the step can run one
-(``GEOMETRY_SUPPORTED = ("box",)``)."""
+"""The sphere world's configuration (DESIGN §46.9; sphere series S0, S2): five keys, all off by default and
+invisible in a box world, and the validation rules (S2 enabled the sphere: ``GEOMETRY_SUPPORTED``)."""
 
 from __future__ import annotations
 
@@ -57,7 +56,8 @@ def test_keys_default_to_a_box_and_are_post_v01_keys() -> None:
         config.SERIAL_OMIT_KEYS
     )
     assert not set(config.SPHERE_KEYS) & (set(config.UNHASHED_KEYS) | set(config.OBSERVER_KEYS))
-    assert config.GEOMETRY_SUPPORTED == ("box",)  # until S2
+    assert config.GEOMETRY_SUPPORTED == ("box", "sphere")  # S2 enabled it
+    assert frozenset() == config.SPHERE_READY  # and gated the layers that are not converted
 
 
 @pytest.mark.parametrize("preset", sorted(BASE_HASHES))
@@ -85,11 +85,28 @@ def test_the_dims_of_a_box_carry_box_neutral_sphere_fields() -> None:
     assert d3.q == 27 * d3.c and d3.fg > 0 and d3.g_hash > 0
 
 
-def test_a_sphere_config_is_refused_until_the_step_can_run_it() -> None:
+def test_a_sphere_config_is_refused_while_the_geometry_is_not_supported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "GEOMETRY_SUPPORTED", ("box",))
     msg = problems("tiny3s")
     assert "world.geometry = 'sphere' is not enabled yet" in msg
     assert msg.count("config problem") == 1 and msg.startswith("1 config problem(s)")  # nothing else is wrong
     assert cli.main(["run", "--preset", "tiny3d", "--set", "world.geometry=sphere", "--quiet"]) == 2
+
+
+def test_the_sphere_is_enabled_and_tiny3s_is_a_valid_preset() -> None:
+    assert problems("tiny3s") == "" and config.GEOMETRY_SUPPORTED == ("box", "sphere")
+    cfg = load_config(preset="tiny3s")
+    d = dims(cfg)
+    assert (cfg.world.geometry, cfg.world.radius, cfg.world.height, d.nside, d.fz) == (
+        "sphere",
+        36.0,
+        16.0,
+        8,
+        8,
+    )
+    assert (d.nside_h, d.g_hash_z, d.c, d.q, d.k) == (8, 5, 32, 4000, 8)
 
 
 @pytest.mark.usefixtures("sphere_enabled")

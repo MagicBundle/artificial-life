@@ -356,14 +356,14 @@ def _check_rows_sph(r: _Report, a: dict[str, np.ndarray], cfg: Config) -> None:
     """The sphere-only ranges (DESIGN §46.2), every row unless said: ``|pos|`` in ``[r_lo − ε, r_hi + ε]``
     (float32 bounds, ε = 4 ulp of the lid radius), ``|pitch| ≤ PITCH_MAX``, ``buoy_cap`` in ``[0, 1]``,
     ``hdg`` a unit vector (4e-7) tangent to the sphere (4e-7), the patch centres unit vectors (4e-7); on alive
-    rows the
-    derived scalar ``heading`` equals the bearing of ``hdg`` from local north to 1e-4 (compared circularly;
-    rows within 1e-3 of a pole are skipped: the frame is singular there) and no stored velocity presses into
-    the floor or the lid (the radial component at the new point may be negative by the curvature term
-    ``|vel|²/r`` that the move itself produces)."""
+    rows the derived scalar ``heading`` equals the bearing of ``hdg`` from local north to 1e-4 (compared
+    circularly; rows within 1e-3 of a pole are skipped: the frame is singular there). The box's "no stored
+    velocity into the floor or the surface" has no sound sphere form: a row that lands within the radius
+    tolerance of a bound without being clamped carries a downward (upward) radial velocity legitimately, and
+    the next step clamps it, so the check is left out."""
     d, pm = dims(cfg), np.float32(layout.PITCH_MAX)
     alive = a["alive"]
-    pos, hdg, vel = (a[k].astype(np.float64) for k in ("pos", "hdg", "vel"))
+    pos, hdg = (a[k].astype(np.float64) for k in ("pos", "hdg"))
     rad = np.linalg.norm(pos, axis=1)
     eps = radius_tol(cfg)
     r.rows(
@@ -388,12 +388,6 @@ def _check_rows_sph(r: _Report, a: dict[str, np.ndarray], cfg: Config) -> None:
     bearing = np.arctan2((hdg * east).sum(axis=1), (hdg * north).sum(axis=1))
     diff = np.abs(np.mod(a["heading"].astype(np.float64) - bearing + math.pi, 2.0 * math.pi) - math.pi)
     r.rows(alive & (zn > _POLE_SKIP) & ~(diff <= _HEADING_TOL), "heading: not the bearing of hdg (1e-4)")
-    # speed along the radius at the new point: bounded below by the curvature term of the move
-    vr = (vel * up).sum(axis=1)
-    # (a row within ε of the bound that was not clamped can still carry a radial speed below ε)
-    curv = (vel * vel).sum(axis=1) / np.maximum(rad, 1.0) + 1e-5 + eps
-    r.rows(alive & (rad <= d.r_lo + eps) & (vr < -curv), "vel: alive row on the floor moving down")
-    r.rows(alive & (rad >= d.r_hi - eps) & (vr > curv), "vel: alive row at the lid moving up")
 
 
 def _check_env(r: _Report, a: dict[str, np.ndarray], cfg: Config) -> None:

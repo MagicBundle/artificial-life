@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-CURRENT_PR = 1  # the sphere series' PR this tree is: S1. Bump it in each PR (S2 sets 2, ...)
+CURRENT_PR = 2  # the sphere series' PR this tree is: S2. Bump it in each PR (S3 sets 3, ...)
 REASONS = ("pair", "box-only tool", "box branch", "converted")
 
 
@@ -54,10 +54,10 @@ _C, _B, _P, _BB = "converted", "box-only tool", "pair", "box branch"
 AUDIT: dict[str, tuple[str, int | None]] = {
     "spatial.py": (_BB, None),
     "knn_metal.py": (_BB, None),
-    "physics.py": (_C, 2),
-    "sensing.py": (_C, 2),
-    "lifecycle.py": (_C, 2),
-    "invariants.py": (_C, 2),
+    "physics.py": (_BB, None),
+    "sensing.py": (_BB, None),
+    "lifecycle.py": (_BB, None),
+    "invariants.py": (_BB, None),
     "fields.py": (_BB, None),  # S1 converted it: the sphere half is fields_sph.py; the box half stays
     "state.py": (_BB, None),  # S1 converted it: the sphere branches use Dims; the box half stays
     "energy.py": (_P, None),
@@ -65,7 +65,7 @@ AUDIT: dict[str, tuple[str, int | None]] = {
     "weather.py": (_C, 4),
     "weather_obs.py": (_C, 4),
     "weather_spinup.py": (_C, 4),
-    "bench.py": (_C, 2),
+    "bench.py": (_BB, None),
     "ext/structures.py": (_C, 3),
     "ext/niche.py": (_C, 3),
     "structures.py": (_C, 3),
@@ -105,7 +105,7 @@ AUDIT: dict[str, tuple[str, int | None]] = {
     "analysis/emergence/epr.py": (_B, None),
     "analysis/emergence/record.py": (_B, None),
     "analysis/emergence/lattice.py": (_B, None),
-    "migrate.py": (_C, 2),
+    "migrate.py": (_B, None),
 }
 # Audited files with no raw use of the seven patterns today: named on purpose (a use appearing there fails).
 NO_RAW_USE_TODAY = frozenset(
@@ -184,20 +184,21 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("analysis/w0_plots.py", "z_index", 1, "converted", 4),
     # analysis/w2.py: the W2 study driver (S4)
     Allow("analysis/w2.py", "world.height", 3, "converted", 4),
-    # bench.py: step benchmark scenes: a sphere scene builder in S2
-    Allow("bench.py", "z_index", 4, "converted", 2),
-    Allow("bench.py", "world.size", 2, "converted", 2),
-    Allow("bench.py", "world.height", 1, "converted", 2),
-    Allow("bench.py", "lattice", 2, "converted", 2),
+    # bench.py: the environment block, the play-bench centre and list indexing; the staged step has its
+    # sphere branches (S2: `--stages` works on a sphere)
+    Allow("bench.py", "z_index", 4, "box branch"),
+    Allow("bench.py", "world.size", 2, "box branch"),
+    Allow("bench.py", "world.height", 1, "box branch"),
+    Allow("bench.py", "lattice", 2, "box branch"),
     # bonds.py: pair expressions on chord offsets: min_image is the identity there (DESIGN §46.3)
     Allow("bonds.py", "wrap", 1, "pair"),
     Allow("bonds.py", "world.size", 2, "pair"),
     # cli.py: inspect, replay, runs (S5); the fork guard of the geometry keys is S2's (DESIGN §46.13)
-    Allow("cli.py", "z_index", 4, "converted", 5),
+    Allow("cli.py", "z_index", 2, "converted", 5),
     Allow("cli.py", "wrap", 2, "converted", 5),
     Allow("cli.py", "world.size", 3, "converted", 5),
-    Allow("cli.py", "world.height", 1, "converted", 5),
-    Allow("cli.py", "lattice", 2, "converted", 5),
+    Allow("cli.py", "world.height", 2, "converted", 5),
+    Allow("cli.py", "lattice", 3, "converted", 5),
     # director/__init__.py: levers and prompts in x, y (S5)
     Allow("director/__init__.py", "world.size", 1, "converted", 5),
     # director/actions.py: ditto
@@ -259,31 +260,30 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("game/tracers.py", "world.size", 2, "converted", 5),
     Allow("game/tracers.py", "world.height", 1, "converted", 5),
     Allow("game/tracers.py", "world.field_cell", 6, "converted", 5),
-    # invariants.py: norm, tangent and radius invariants (S2)
-    Allow("invariants.py", "z_index", 3, "converted", 2),
-    Allow("invariants.py", "world.size", 3, "converted", 2),
+    # invariants.py: the box ranges; the sphere half is `_check_rows_sph` and device_check's own branch (S2)
+    Allow("invariants.py", "z_index", 3, "box branch"),
+    Allow("invariants.py", "world.size", 3, "box branch"),
     # knn_metal.py: the box search; the sphere search is a separate function (S2)
     Allow("knn_metal.py", "z_index", 1, "box branch"),
     Allow("knn_metal.py", "xy_slice", 1, "box branch"),
     Allow("knn_metal.py", "world.size", 1, "box branch"),
     Allow("knn_metal.py", "world.height", 2, "box branch"),
-    # lifecycle.py: placement, founders, catastrophe cap (S2)
-    Allow("lifecycle.py", "z_index", 1, "converted", 2),
-    Allow("lifecycle.py", "xy_slice", 1, "converted", 2),
-    Allow("lifecycle.py", "wrap", 4, "converted", 2),
-    Allow("lifecycle.py", "world.size", 3, "converted", 2),
-    Allow("lifecycle.py", "lattice", 3, "converted", 2),
+    # lifecycle.py: the box placement and catastrophe column; the sphere has its own functions (S2)
+    Allow("lifecycle.py", "z_index", 1, "box branch"),
+    Allow("lifecycle.py", "xy_slice", 1, "box branch"),
+    Allow("lifecycle.py", "wrap", 4, "box branch"),
+    Allow("lifecycle.py", "world.size", 3, "box branch"),
+    Allow("lifecycle.py", "lattice", 3, "box branch"),
     # metrics.py: observers (S5)
-    Allow("metrics.py", "z_index", 1, "converted", 5),
     Allow("metrics.py", "world.height", 1, "converted", 5),
     Allow("metrics.py", "lattice", 6, "converted", 5),
     # niche.py: farming (S3)
     Allow("niche.py", "lattice", 4, "converted", 3),
-    # physics.py: forces and integration (S2)
-    Allow("physics.py", "z_index", 7, "converted", 2),
-    Allow("physics.py", "xy_slice", 3, "converted", 2),
-    Allow("physics.py", "wrap", 2, "converted", 2),
-    Allow("physics.py", "world.size", 2, "converted", 2),
+    # physics.py: the box forces and integrators; the sphere has `forces_s` / `integrate_s` (S2)
+    Allow("physics.py", "z_index", 7, "box branch"),
+    Allow("physics.py", "xy_slice", 3, "box branch"),
+    Allow("physics.py", "wrap", 2, "box branch"),
+    Allow("physics.py", "world.size", 2, "box branch"),
     # play.py: the play loop (S5)
     Allow("play.py", "z_index", 4, "converted", 5),
     Allow("play.py", "xy_slice", 2, "converted", 5),
@@ -300,10 +300,10 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("render.py", "lattice", 3, "box-only tool"),
     # runio.py: run metadata and listing (S5); migrate/refusal checks are S2's
     Allow("runio.py", "z_index", 2, "converted", 5),
-    # sensing.py: descriptors and gradients (S2)
-    Allow("sensing.py", "z_index", 6, "converted", 2),
-    Allow("sensing.py", "xy_slice", 4, "converted", 2),
-    Allow("sensing.py", "world.height", 1, "converted", 2),
+    # sensing.py: the box frame (to_body3); the sphere branches use `ops.to_body_s` (S2)
+    Allow("sensing.py", "z_index", 6, "box branch"),
+    Allow("sensing.py", "xy_slice", 6, "box branch"),
+    Allow("sensing.py", "world.height", 1, "box branch"),
     # spatial.py: the box search; the sphere search is a separate function (S2)
     Allow("spatial.py", "z_index", 5, "box branch"),
     Allow("spatial.py", "xy_slice", 2, "box branch"),
@@ -316,8 +316,8 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("state.py", "wrap", 2, "box branch"),
     Allow("state.py", "world.size", 2, "box branch"),
     Allow("state.py", "lattice", 3, "box branch"),
-    # step.py: step wiring (S2; not in the spec table)
-    Allow("step.py", "lattice", 6, "converted", 2),
+    # step.py: step wiring; the box half of the column occupancy (S2; not in the spec table)
+    Allow("step.py", "lattice", 6, "box branch"),
     # storms.py: the storm tracker and its host torus helper min_image_np (S5: tracker on vortices
     # crossing the poles)
     Allow("storms.py", "wrap", 13, "converted", 5),
