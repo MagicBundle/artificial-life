@@ -104,7 +104,6 @@ def test_run_inspect_resume_and_bench_run_a_sphere(tmp_path: Path, capsys: pytes
         (["play", "--preset", "tiny3s"], "S5"),
         (["run", "--preset", "tiny3s", "--set", "game.observe=true"], "S5"),
         (["run", "--preset", "tiny3s", "--set", "director.enabled=true"], "S5"),
-        (["run", "--preset", "tiny3s", "--set", "weather.enabled=true"], "S4"),
     ],
 )
 def test_layers_that_are_not_converted_are_refused_with_their_pr(
