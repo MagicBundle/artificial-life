@@ -269,6 +269,21 @@ def classify_contrast(c: Mapping[str, Any], rules: Rules) -> dict[str, Any]:
     }
 
 
+def transfer_contrasts(
+    T: Mapping[str, Mapping[int, np.ndarray]], seeds: Sequence[int], rules: Rules
+) -> dict[str, Any]:
+    """The primary (none minus decoy) and secondary (none minus deaf) contrasts of the odd-block transfer
+    values ``T[arm][seed]``, with the seed-twin noise floor of the same values (same-arm seed differences)."""
+    floor = twin_floor({n: {s: T[n][s][1::2] for s in seeds} for n in T})
+    out: dict[str, Any] = {}
+    for c in ("decoy", "deaf"):
+        ct = contrast_call(T["none"], T[c], seeds, floor)
+        if c == "decoy":
+            ct["class"] = classify_contrast(ct, rules)
+        out[f"contrast_{c}"] = ct
+    return out
+
+
 def use_clause(arms: Mapping[str, Mapping[int, ArmRun]], rules: Rules) -> dict[str, Any]:
     """The counterfactual use clause from the none arm's logs (see the module docstring)."""
     per = []
@@ -455,12 +470,7 @@ def run_meaning(
     res["transfer_blocks"] = {
         n: {str(s): [None if not np.isfinite(v) else float(v) for v in T[n][s]] for s in seeds} for n in T
     }
-    floor = twin_floor({n: {s: T[n][s][1::2] for s in seeds} for n in T})
-    for c in ("decoy", "deaf"):
-        ct = contrast_call(T["none"], T[c], seeds, floor)
-        if c == "decoy":
-            ct["class"] = classify_contrast(ct, rules)
-        res[f"contrast_{c}"] = ct
+    res.update(transfer_contrasts(T, seeds, rules))
     # use
     res["use"] = use_clause(arms, rules)
     sp = {
@@ -553,7 +563,9 @@ def to_markdown(res: dict[str, Any]) -> str:
     """The report: verdict (and the earlier rule's), clauses with their numbers, contrasts per seed,
     fitness."""
     d, seeds, cl = res["decision"], res["seeds"], res["decision"]["clauses"]
-    if res["confirmatory"]:
+    if res["confirmatory"] and d["revised_after_results"]:
+        status = "Frozen pre-registration, but revised after results (not blind)"
+    elif res["confirmatory"]:
         status = "Confirmatory"
     elif not res["as_designed"]:
         status = "EXPLORATORY (a fork or a log does not match the pre-registered length, window or sampling)"

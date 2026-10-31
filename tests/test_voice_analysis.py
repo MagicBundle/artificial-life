@@ -361,6 +361,33 @@ def test_the_seed_twin_floor_and_the_bounds() -> None:
     assert b["upper"] == pytest.approx(0.02 + 2.919986 * 0.01 / np.sqrt(3), abs=1e-5)  # t(0.95, df 2)
 
 
+def test_the_noise_floor_of_the_seed_twins_enters_the_seed_rule() -> None:
+    """The seeds of an arm differ among themselves by more than the contrast: a consistent 0.002-bit contrast
+    is then inside the twin noise and is not called supported; without the offsets it is."""
+    rules = meaning.Rules()
+    rng = np.random.default_rng(16)
+
+    def arrays(offsets: tuple[float, float, float], contrast: float) -> dict:
+        ctrl = {
+            s: np.where(np.arange(16) % 2 == 1, o + rng.normal(0, 0.0003, 16), np.nan)
+            for s, o in zip((1, 2, 3), offsets, strict=True)
+        }
+        none = {s: ctrl[s] + contrast for s in ctrl}
+        return {"none": none, "decoy": ctrl, "deaf": ctrl}
+
+    quiet = meaning.transfer_contrasts(arrays((0.0, 0.0, 0.0), 0.002), (1, 2, 3), rules)
+    assert (
+        quiet["contrast_decoy"]["call"]["label"] == "supported"
+        and quiet["contrast_decoy"]["class"]["positive"]
+    )
+    noisy = meaning.transfer_contrasts(arrays((0.0, 0.02, -0.02), 0.002), (1, 2, 3), rules)
+    assert noisy["contrast_decoy"]["floor"] > 0.01
+    assert (
+        noisy["contrast_decoy"]["call"]["label"] != "supported"
+        and not noisy["contrast_decoy"]["class"]["positive"]
+    )
+
+
 def test_the_rules_come_from_a_version_3_preregistration_only() -> None:
     d = spec.default_prereg()
     assert d["rules_version"] == 3 and [a["id"] for a in d["amendments"]] == ["A1", "A2"]
