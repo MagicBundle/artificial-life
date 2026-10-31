@@ -50,7 +50,7 @@ def test_with_every_feature_off_every_function_is_the_identity() -> None:
     n_feature_keys = sum(len(v) for v in config.FEATURE_KEYS.values())
     assert config.POST_V01_KEYS[-n_feature_keys - 1] == ("combat", "protect_floor")
     assert set(config.FEATURE_KEYS) == {"arms", "structures", "bonds", "comm", "niche", "calls"}
-    assert config.POST_V01_KEYS[-1] == ("calls", "control")
+    assert config.POST_V01_KEYS[-1] == ("calls", "oracle_gain")
     assert config.WORLD_OVERLAYS == (
         "storm",
         "storm160",

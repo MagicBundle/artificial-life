@@ -29,13 +29,18 @@ _KEYS = (
     ("calls", "far_range"),
     ("calls", "far_xref"),
     ("calls", "control"),
+    ("calls", "oracle_min"),
+    ("calls", "oracle_gain"),
 )
 _KEYS_NAMES = tuple(k for _, k in _KEYS)
 # bit -> event name, in channel order (the active events in bit order take voice channels 0, 1, ...)
 EVENTS = (("hurt", 1), ("food", 2), ("storm", 4), ("lost", 8))
 EVENTS_MAX = 15
 HOLD_MAX = 64  # evt is uint8 and holds hold + 1 <= 65 steps left
-CONTROLS = ("none", "nofar", "reflex", "reflex_near")
+CONTROLS = ("none", "nofar", "reflex", "reflex_near", "reflex_call")
+ORACLES = ("reflex", "reflex_near")  # the controls that add a force (and count CALLS_ORACLE_ON)
+CALLING = ("reflex", "reflex_near", "reflex_call")  # the controls that call every open window at 0.5
+ORACLE_GAIN_MAX = 4.0
 FAR_RANGE_RADII = 4.0  # far_range <= 4 sensing radii
 
 
@@ -88,7 +93,9 @@ def _counters(cfg: Any) -> tuple[str, ...]:
             for name in event_names(cfg.calls.events)
             for kind in ("OPEN", "SPOKE")
         )
-    return (*out, "CALLS_FAR_HEARD") if cfg.calls.far_range > 0.0 else out
+    if cfg.calls.far_range > 0.0:
+        out = (*out, "CALLS_FAR_HEARD")
+    return (*out, "CALLS_ORACLE_ON") if cfg.calls.control in ORACLES else out
 
 
 def _enable(cfg: Any) -> Any:
@@ -169,10 +176,12 @@ def _far_range_problems(cfg: Any) -> list[str]:
             "magnitude and in direction: refused in v1)"
         )
     lo = max(calltab.CELLS_MIN * cell, r)
-    if not lo <= c.far_range <= FAR_RANGE_RADII * r:
+    # (strictly above the near range: a range equal to R is no annulus)
+    if not (lo <= c.far_range <= FAR_RANGE_RADII * r and c.far_range > r):
         bad.append(
             f"calls.far_range {c.far_range} must be in [max(4 columns = {calltab.CELLS_MIN * cell:.3f}, "
-            f"the sensing radius {r}), 4 sensing radii = {FAR_RANGE_RADII * r}] (a column is {cell:.3f} wide)"
+            f"the sensing radius {r} exclusive), 4 sensing radii = {FAR_RANGE_RADII * r}] "
+            f"(a column is {cell:.3f} wide)"
         )
     reach = 2.0 * scale if kind == "sphere" else scale / 2.0  # the planet diameter; half a torus side
     if c.far_range >= reach:
@@ -261,12 +270,23 @@ def _validate(cfg: Any) -> None:
     if c.control not in CONTROLS:
         bad.append(f"calls.control {c.control!r} must be one of {CONTROLS}")
     else:
-        if c.control in ("nofar", "reflex") and not c.far_range > 0.0:
+        if c.control in ("nofar", "reflex", "reflex_call") and not c.far_range > 0.0:
             bad.append(f"calls.control {c.control!r} needs calls.far_range > 0")
-        if c.control in ("reflex", "reflex_near") and not (c.trigger and c.events & 4):
+        if c.control in CALLING and not (c.trigger and c.events & 4):
             bad.append(
                 f"calls.control {c.control!r} needs calls.trigger and the storm bit (4) in calls.events"
             )
+    if c.control in ORACLES:
+        if not (math.isfinite(c.oracle_min) and 0.0 < c.oracle_min <= 1.0):
+            bad.append(f"calls.oracle_min {c.oracle_min} must be in (0, 1]")
+        if not (math.isfinite(c.oracle_gain) and 0.0 < c.oracle_gain <= ORACLE_GAIN_MAX):
+            bad.append(f"calls.oracle_gain {c.oracle_gain} must be in (0, {ORACLE_GAIN_MAX}]")
+    else:  # inert keys keep their default (the repository convention)
+        bad += [
+            f"calls.{k} is inert unless calls.control is an oracle {ORACLES}: it must keep its default"
+            for k in ("oracle_min", "oracle_gain")
+            if getattr(c, k) != getattr(d, k)
+        ]
     if bad:
         raise ConfigError("; ".join(bad))
 

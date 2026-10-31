@@ -19,14 +19,16 @@ from mlx.utils import tree_flatten
 
 import calls_grid_helpers as G
 import helpers
-from alife import bench, calls, cli, invariants, layout, physics, weather
+from alife import bench, calls, cli, fields, invariants, layout, metrics, physics, weather
 from alife.config import dims, load_config
 from alife.ext.calls import event_names
 from alife.runio import RunDir, load_checkpoint, write_state_file
 from alife.state import (
+    CounterIdx,
     counter_blocks,
     counter_index,
     init_state,
+    n_counters,
     state_digest,
     to_numpy,
 )
@@ -333,8 +335,8 @@ def test_the_oracle_force_is_added_to_the_wind_term(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(weather, "agent_wind", fake)
     seen: dict[str, list] = {}
-    states = {}
-    for control in ("none", "reflex"):
+    states, counts, cfgs = {}, {}, {}
+    for control in ("none", "reflex_call", "reflex"):
         cfg = far_cfg("box2w", f"calls.control={control}", events=5)
         d = dims(cfg)
         s = forced(cfg, init_state(cfg))
@@ -346,11 +348,18 @@ def test_the_oracle_force_is_added_to_the_wind_term(monkeypatch: pytest.MonkeyPa
         for _ in range(3):
             prev, (s, _o) = s, fn(s)
             mx.eval(s)
-        seen[control], states[control] = store, prev
+        seen[control], states[control], counts[control], cfgs[control] = (
+            store,
+            prev,
+            to_numpy(_o.counters),
+            cfg,
+        )
         monkeypatch.undo()
         monkeypatch.setattr(weather, "agent_wind", fake)
-    for w in seen["none"]:
-        assert np.array_equal(w, np.broadcast_to(f0, w.shape))
+    for control in ("none", "reflex_call"):  # no force: reflex_call calls like reflex and pushes nobody
+        for w in seen[control]:
+            assert np.array_equal(w, np.broadcast_to(f0, w.shape))
+    assert "CALLS_ORACLE_ON" not in dict(counter_blocks(cfgs["reflex_call"]))["calls"]
     prev = states["reflex"]
     cfg = far_cfg("box2w", "calls.control=reflex", events=5)
     rows, _ = G.ref_table(cfg)
@@ -369,13 +378,20 @@ def test_the_oracle_force_is_added_to_the_wind_term(monkeypatch: pytest.MonkeyPa
     np.testing.assert_allclose(extra[ok], expect[ok], atol=2e-5)
     assert (np.linalg.norm(extra[ok], axis=1) > 0.99 * ph).sum() > 20  # many rows are pushed at full strength
     assert np.linalg.norm(extra, axis=1).max() <= ph * 1.0001
+    # CALLS_ORACLE_ON = the rows the force acted on (non-zero extra force), recounted from the spy
+    on = counts["reflex"][counter_index(cfgs["reflex"], "CALLS_ORACLE_ON")]
+    assert int(on) == int((np.linalg.norm(extra, axis=1) > 0).sum()) > 20
 
 
-def test_a_reflex_world_calls_every_open_window_at_half(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("control", ["reflex", "reflex_near", "reflex_call"])
+def test_a_reflex_world_calls_every_open_window_at_half(
+    control: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The comm outputs of the event channels are ignored (their bias here would say 2.0, a full call):
-    an open window stores exactly 0.5, a closed one 0, and the cost is paid (the voice due is booked)."""
+    an open window stores exactly 0.5, a closed one 0, and the cost is paid (the voice due is booked). The
+    same for the three controls that call (``reflex_near`` and ``reflex_call`` too: not a golden digest)."""
     wind_pattern(monkeypatch, "box2w")
-    cfg = far_cfg("box2w", "calls.control=reflex", events=5)
+    cfg = far_cfg("box2w", f"calls.control={control}", events=5)
     d = dims(cfg)
     s = forced(cfg, init_state(cfg))
     rs = np.random.default_rng(2)
@@ -435,6 +451,7 @@ GOLDEN_CONTROLS = {
         "nofar": "0fe52d42d996f814f27a349a62a48453",
         "reflex": "f0c6c9f45886ae0262472033770f8a94",
         "reflex_near": "70a1e53aa43780dc71119958a1dd16d8",
+        "reflex_call": "157619e1f237ad6655650e05c4c31c6b",
     },
 }
 
@@ -449,8 +466,10 @@ def _control_digest(control: str, monkeypatch: pytest.MonkeyPatch) -> str:
 def test_every_control_is_trajectory_changing_with_a_digest_of_its_own(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    digests = {c: _control_digest(c, monkeypatch) for c in ("none", "nofar", "reflex", "reflex_near")}
-    assert len(set(digests.values())) == 4, digests
+    digests = {
+        c: _control_digest(c, monkeypatch) for c in ("none", "nofar", "reflex", "reflex_near", "reflex_call")
+    }
+    assert len(set(digests.values())) == 5, digests
     again = _control_digest("reflex", monkeypatch)
     assert again == digests["reflex"]  # reproducible
     key = f"{platform.system()}-{platform.machine()}-{'gpu' if mx.default_device().type == mx.gpu else 'cpu'}"
@@ -459,6 +478,152 @@ def test_every_control_is_trajectory_changing_with_a_digest_of_its_own(
         pytest.skip(f"pinned for MLX {GOLDEN_CONTROLS['mlx']} on Darwin-arm64-cpu")
     for control, digest in digests.items():
         assert digest.startswith(pins[control]), (control, digest)
+
+
+# --- the oracle knobs, reflex_call, the counter, the near oracle on a sphere (K2 review) ------------------
+
+
+def test_the_oracle_gain_and_threshold_keys_scale_and_gate_the_force() -> None:
+    """``oracle_gain`` multiplies ``thrust_max``; ``oracle_min`` moves the heard threshold of the hearers."""
+    rows = [{"pos": (64.0, 64.0), "heading": 0.0}, {"pos": (76.0, 64.0), "voice": [0.0, 0.9]}]
+    base = far_cfg("box2w", "calls.control=reflex", "calls.far_xref=1.0", events=5)
+    ph = base.physics.thrust_max
+    ns = _plant(base, rows)
+    assert np.hypot(*_force(base, ns)[0]) == pytest.approx(ph, rel=1e-5)
+    half = far_cfg("box2w", "calls.control=reflex", "calls.far_xref=1.0", "calls.oracle_gain=0.5", events=5)
+    assert np.hypot(*_force(half, ns)[0]) == pytest.approx(0.5 * ph, rel=1e-5)
+    h, _ = G.hear(base, ns, ns.voice)
+    assert 0.2 < h[0, 1] < 0.99
+    high = far_cfg("box2w", "calls.control=reflex", "calls.far_xref=1.0", "calls.oracle_min=0.99", events=5)
+    assert not _force(high, ns)[0].any()  # heard below the raised threshold
+    low = far_cfg(
+        "box2w", "calls.control=reflex", "calls.far_xref=1.0", f"calls.oracle_min={h[0, 1] - 0.01}", events=5
+    )
+    assert np.hypot(*_force(low, ns)[0]) == pytest.approx(ph, rel=1e-5)
+    # the controls without a force return none: reflex_call calls like reflex but pushes nobody
+    for control in ("none", "nofar", "reflex_call"):
+        c = far_cfg("box2w", f"calls.control={control}", events=5)
+        assert (
+            calls.oracle_force(
+                ns, c, None, (mx.zeros((c.population.n_max, 2)), mx.zeros((c.population.n_max, 4)))
+            )
+            is None
+        )
+
+
+def test_the_counter_names_follow_the_control() -> None:
+    off = far_cfg("box2w", events=5)
+    for control, has in (
+        ("none", False),
+        ("nofar", False),
+        ("reflex_call", False),
+        ("reflex", True),
+        ("reflex_near", True),
+    ):
+        cfg = far_cfg("box2w", f"calls.control={control}", events=5)
+        assert ("CALLS_ORACLE_ON" in dict(counter_blocks(cfg))["calls"]) is has, control
+    assert dict(counter_blocks(off))["calls"][-1] == "CALLS_FAR_HEARD"
+    assert dict(counter_blocks(far_cfg("box2w", "calls.control=reflex", events=5)))["calls"][-2:] == (
+        "CALLS_FAR_HEARD",
+        "CALLS_ORACLE_ON",
+    )
+
+
+def test_the_far_and_oracle_fractions_use_the_alive_agent_steps_as_denominator() -> None:
+    """Planted counters: ``calls_far_heard_frac`` = CALLS_FAR_HEARD / sum of N_ALIVE over the interval,
+    likewise ``calls_oracle_on_frac`` (a doubled or halved denominator is caught)."""
+    cfg = far_cfg("box2w", "calls.control=reflex", events=5)
+    blocks = counter_blocks(cfg)
+    c = np.zeros((4, n_counters(2, True, blocks)), np.int64)
+    c[:, CounterIdx.N_ALIVE] = [100, 100, 200, 200]
+    c[:, counter_index(cfg, "CALLS_FAR_HEARD")] = [10, 20, 30, 40]
+    c[:, counter_index(cfg, "CALLS_ORACLE_ON")] = [1, 2, 3, 6]
+    row = metrics.interval_row(4, c, np.zeros((4, 16), np.int64), {}, {}, nd=2, weather=True, blocks=blocks)
+    assert row["calls_far_heard_frac"] == pytest.approx(100 / 600)
+    assert row["calls_oracle_on_frac"] == pytest.approx(12 / 600)
+    plain = metrics.interval_row(4, c[:, : -1], np.zeros((4, 16), np.int64), {}, {}, nd=2, weather=True,
+                                 blocks=counter_blocks(far_cfg("box2w", events=5)))  # fmt: skip
+    assert "calls_oracle_on_frac" not in plain and plain["calls_far_heard_frac"] == pytest.approx(100 / 600)
+
+
+def test_reflex_near_zeroes_the_far_block_even_with_far_hearing_on() -> None:
+    """The near oracle's brain sees exact zeros in the far block (the near block is its only hearing); the
+    plain far world and ``reflex_call`` (which calls like ``reflex`` and keeps the far block) do not."""
+    cfg = far_cfg("box2w", events=5)
+    d = dims(cfg)
+    ns = G.scene(cfg, 500, 8)
+    rs = np.random.default_rng(10)
+    voice = (rs.random((d.n, d.voice_w)) * (rs.random((d.n, d.voice_w)) < 0.4)).astype(np.float32)
+    msg = np.zeros((d.n, d.msg_w), np.float32)
+    msg[:, layout.MSG :] = voice
+    s = SimpleNamespace(**{**vars(ns), "msg": mx.array(msg), "step": mx.array(3, mx.int32)})
+    ctx = SimpleNamespace(fcell=fields.cell_index(ns.pos, cfg))
+    for control, zero in (
+        ("reflex_near", True),
+        ("nofar", True),
+        ("none", False),
+        ("reflex_call", False),
+        ("reflex", False),
+    ):
+        c = far_cfg("box2w", f"calls.control={control}", events=5)
+        h, b = calls.ext_inputs(s, c, ctx)
+        assert (not np.array(h).any() and not np.array(b).any()) is zero, control
+        assert np.array(h).shape == (d.n, d.voice_w) and np.array(b).shape == (d.n, 2 * d.voice_w)
+
+
+def test_reflex_near_on_a_sphere_pushes_along_the_tangent_plane() -> None:
+    """The caller is 1.5 units away along the ground and 2.5 units higher: the near offset is mostly radial,
+    and the force on the hearer must still be tangent to the sphere (``F . up = 0``), of magnitude
+    ``thrust_max``, away from the caller. Without the tangent projection the force has a radial part."""
+    from alife import sensing, spatial
+
+    cfg = far_cfg("sphw", "calls.control=reflex_near", events=5)
+    d = dims(cfg)
+    rs = np.random.default_rng(4)
+    ph = cfg.physics.thrust_max
+    for trial in range(4):
+        u = rs.normal(size=3)
+        u /= np.linalg.norm(u)
+        t = rs.normal(size=3)
+        t -= (t @ u) * u
+        t /= np.linalg.norm(t)
+        r0 = cfg.world.radius + 4.0
+        ang = 1.5 / r0
+        uc = u * math.cos(ang) + t * math.sin(ang)
+        n = d.n
+        s0 = init_state(cfg)
+        alive = np.zeros(n, bool)
+        alive[:2] = True
+        pos = np.array(s0.pos)
+        pos[0], pos[1] = u * r0, uc * (r0 + 2.5)
+        hdg = np.array(s0.hdg)
+        hdg[0] = t
+        msg = np.zeros((n, d.msg_w), np.float32)
+        msg[1, layout.MSG + 1] = 0.9
+        s = s0._replace(alive=mx.array(alive), pos=mx.array(pos), hdg=mx.array(hdg), msg=mx.array(msg))
+        nbr = spatial.find_neighbors(s.pos, s.alive, cfg)
+        assert bool(np.array(nbr.valid)[0].any())
+        ctx = SimpleNamespace(nbr=nbr, desc=sensing.neighbor_descriptors(s, nbr, cfg))
+        f = np.array(calls.oracle_force(s, cfg, ctx, None))[0].astype(np.float64)
+        assert np.linalg.norm(f) == pytest.approx(ph, rel=1e-4), trial
+        assert abs(f @ u) < 1e-4 * ph, (trial, f @ u / ph)  # tangent
+        assert (f / np.linalg.norm(f)) @ t < -0.9, trial  # away from the caller (which lies along +t)
+
+
+def test_the_sphere_check_carries_the_column_map_of_the_far_hearing() -> None:
+    """With ``far_range > 0`` the self-check's memo key holds ``Npix`` and its lookups return one more integer
+    array, the column of each point, equal to the pixel (``fcell % Npix``); without it neither is there."""
+    from alife import sphere, sphere_check
+
+    far, off = calls_cfg("sph", "calls.far_range=20", "calls.far_xref=2.0"), calls_cfg("sph")
+    assert len(sphere_check.constants(far)) == len(sphere_check.constants(off)) + 1
+    assert float(dims(far).npix) in sphere_check.constants(far)
+    pts = mx.array(sphere_check._points(far))
+    a, b = sphere_check._lookups(far)(pts), sphere_check._lookups(off)(pts)
+    assert len(a) == len(b) + 1
+    col = np.array(a[-1])
+    assert np.array_equal(col, np.array(sphere.ang2pix(pts, dims(far).nside)))
+    assert col.min() >= 0 and col.max() < dims(far).npix
 
 
 # --- migration ----------------------------------------------------------------------------------------------

@@ -24,8 +24,9 @@ def test_every_key_is_off_by_default_hashed_and_omitted_from_config_json() -> No
     d = CallsConfig()
     assert (d.enabled, d.trigger, d.far_range, d.control) == (False, False, 0.0, "none")
     assert (d.events, d.hold, d.food_q, d.storm_frac, d.far_xref) == (15, 4, 200, 1.0, 1.0)
+    assert (d.oracle_min, d.oracle_gain) == (0.05, 1.0)
     keys = {("calls", f.name) for f in dataclasses.fields(CallsConfig)}
-    assert keys == set(ext.lever_keys()["calls"]) == set(SPEC.lever_keys) and len(keys) == 9
+    assert keys == set(ext.lever_keys()["calls"]) == set(SPEC.lever_keys) and len(keys) == 11
     assert keys <= set(config.POST_V01_KEYS) and keys <= set(config.SERIAL_OMIT_KEYS)
     cfg = load("brain.weight_dtype=float32")
     assert "calls" not in config_to_dict(cfg, omit_defaults=True)
@@ -53,7 +54,7 @@ def test_the_registry_row() -> None:
         8,
     ]
     assert event_names(5) == ("hurt", "storm") and event_names(15) == ("hurt", "food", "storm", "lost")
-    assert CONTROLS == ("none", "nofar", "reflex", "reflex_near")
+    assert CONTROLS == ("none", "nofar", "reflex", "reflex_near", "reflex_call")
     assert "calls" in config.SPHERE_READY and config.SPHERE_FEATURE_PR["calls"] == "K1"
 
 
@@ -219,3 +220,51 @@ def test_far_hearing_has_a_brain_footprint_and_a_token_only_with_far_range() -> 
         ext.layout_features(w4) == "comm4@1,calls4@1"
         and dims(w4).lay.D_IN == dims(load("comm.enabled=true")).lay.D_IN + 12
     )
+
+
+def test_reflex_call_oracle_keys_and_the_strict_range_bound() -> None:
+    """K2 review: ``reflex_call`` (calls at 0.5, no force) has the cross rules of ``reflex``, the oracle keys
+    are valid only for an oracle control, with ranges; ``far_range == sensing.radius`` is a ConfigError (an
+    empty annulus), not a ValueError from the table."""
+    base = [
+        *WX,
+        "comm.enabled=true",
+        "comm.width=2",
+        "calls.enabled=true",
+        "calls.trigger=true",
+        "calls.events=5",
+    ]
+    ok = load(*base, "calls.far_range=18", "calls.control=reflex_call")
+    assert ok.calls.control == "reflex_call" and ext.layout_features(ok) == "comm2@1,calls2@1"
+    with pytest.raises(ConfigError, match=r"needs calls\.far_range > 0"):
+        load(*base, "calls.control=reflex_call")
+    with pytest.raises(ConfigError, match="storm bit"):
+        load(*WX, "comm.enabled=true", "comm.width=2", "calls.enabled=true", "calls.trigger=true",
+             "calls.events=3", "calls.far_range=18", "calls.control=reflex_call")  # fmt: skip
+    for control in ("reflex", "reflex_near"):
+        cfg = load(
+            *base,
+            "calls.far_range=18",
+            f"calls.control={control}",
+            "calls.oracle_min=0.2",
+            "calls.oracle_gain=2",
+        )
+        assert (cfg.calls.oracle_min, cfg.calls.oracle_gain) == (0.2, 2.0)
+    for bad, msg in (
+        ("calls.oracle_min=0", r"oracle_min 0\.0 must be in"),
+        ("calls.oracle_min=1.5", r"oracle_min 1\.5 must be in"),
+        ("calls.oracle_gain=0", r"oracle_gain 0\.0 must be in"),
+        ("calls.oracle_gain=9", r"oracle_gain 9\.0 must be in"),
+    ):
+        with pytest.raises(ConfigError, match=msg):
+            load(*base, "calls.far_range=18", "calls.control=reflex", bad)
+    for control in ("none", "nofar", "reflex_call"):  # inert unless the control is an oracle
+        for key in ("calls.oracle_min=0.2", "calls.oracle_gain=2"):
+            with pytest.raises(ConfigError, match=r"inert unless calls\.control is an oracle"):
+                load(*base, "calls.far_range=18", f"calls.control={control}", key)
+    with pytest.raises(ConfigError, match=r"inert while calls\.enabled is false"):
+        load("calls.oracle_gain=2")
+    # a range equal to the sensing radius: columns of 1 unit would admit it by the 4-column rule alone
+    small = ["world.size=48", "world.field_cell=1", "comm.enabled=true", "comm.width=2", "calls.enabled=true"]
+    with pytest.raises(ConfigError, match="exclusive"):
+        load_config(preset="tiny", overrides=[*small, "calls.far_range=6"])

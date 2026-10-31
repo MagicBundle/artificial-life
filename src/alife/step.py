@@ -261,6 +261,8 @@ def step(
         if cfg.calls.control in ("reflex", "reflex_near")
         else None
     )
+    if wind_orc is not None:  # static: the rows the force acted on (CALLS_ORACLE_ON)
+        xdec = {**xdec, "calls": calls.with_oracle(xdec.get("calls"), wind_orc)}
 
     nb0 = bonds.n_bonds(s.partner)  # S8
     extra_due = ext.sum_due(spec.due(s, act, y, cfg) for spec in ext.active(cfg) if spec.due is not None)

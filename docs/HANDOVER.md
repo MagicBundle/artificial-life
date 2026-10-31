@@ -189,8 +189,9 @@ fork cannot add the trigger or the far blocks to an enabled-only calls world, 47
 calls.far_range=18 --set calls.far_xref=X` (not in the overlay yet) adds the inputs `voice_far` (W) and `far_bearing` (2W): the
 column voice grid (`calltab.py` table, `calls.deposit`/`apply`/`hear_far`; integer deposit, no atomic float add, bitwise
 reproducible), `CALLS_FAR_HEARD`; accuracy is good for dense scenes and poor for fewer than 10 callers (47.7). Controls
-(start of run): `calls.control` `nofar`, the engine oracle `reflex` / `reflex_near` (a force of magnitude `thrust_max` away from
-the storm calls, added to the wind term; gate G5 of the pilot), `comm.control` `deaf`/`decoy` cover both blocks. **Built: K1, K2.
+(start of run): `calls.control` `nofar`, the engine oracle `reflex` / `reflex_near` (a force of magnitude `thrust_max * oracle_gain` away from
+the storm calls, added to the wind term, hearers at `heard >= oracle_min`; it bounds the exposure reduction of a free full-thrust reflex, not
+the net benefit: read births and population too, DESIGN 47.7), `reflex_call` (the same calling, no force), `comm.control` `deaf`/`decoy` cover both blocks. **Built: K1, K2.
 Next: the pilot K5** (it chooses `storm_u0`, `comm.cost`, `calls.far_xref`, hold, then the overlay values), M1, K3, K4. Tests:
 `tests/test_calls_*.py`.
 

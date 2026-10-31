@@ -56,7 +56,7 @@ import mlx.core as mx
 
 from alife import calltab, comm, layout, ops, sphere
 from alife.config import Config, dims
-from alife.ext.calls import event_names
+from alife.ext.calls import ORACLES, event_names
 
 _I32 = mx.int32
 _U8 = mx.uint8
@@ -68,13 +68,14 @@ I_FOOD_Q: Final = 1
 I_NCOL: Final = 2
 F_STORM: Final = 0
 F_XREF: Final = 1
-F_THRUST: Final = 2
+F_THRUST: Final = 2  # physics.thrust_max x calls.oracle_gain
+F_ORACLE_MIN: Final = 3
 DEPOSIT_MAX: Final = 255  # a call quantum min(255, floor(256·sig)): sig < 1 gives at most 255
 QUANTA: Final = 256.0
 BEARING_FLOOR: Final = (
     1e-3  # denominator floor of the far bearing, in heard-intensity units (0 without sound)
 )
-ORACLE_HEARD_MIN: Final = 0.05  # the oracle acts on a storm channel heard at or above this
+ORACLE_HEARD_MIN: Final = 0.05  # the default of calls.oracle_min (the config key is the value in use)
 ORACLE_DIR_FLOOR: Final = (
     1e-3  # |bearing| below this scales the oracle force down linearly (no garbage direction)
 )
@@ -87,7 +88,7 @@ class Runtime(NamedTuple):
     kernel text. The last element of each array is padding."""
 
     ints: mx.array  # (4,) int32: hold + 1, food_q, the number of columns, pad
-    floats: mx.array  # (4,) float32: storm_frac * storm_u0, far_xref, physics.thrust_max, pad
+    floats: mx.array  # (4,) float32: storm_frac * storm_u0, far_xref, thrust_max * oracle_gain, oracle_min
 
 
 def runtime(cfg: Config) -> Runtime:
@@ -96,7 +97,7 @@ def runtime(cfg: Config) -> Runtime:
     kind, n, _ = calltab.geometry_key(cfg)
     return Runtime(
         mx.array([c.hold + 1, c.food_q, calltab.ncol_of(kind, n), 0], _I32),
-        mx.array([thr, c.far_xref, cfg.physics.thrust_max, 0.0], _F32),
+        mx.array([thr, c.far_xref, cfg.physics.thrust_max * c.oracle_gain, c.oracle_min], _F32),
     )
 
 
@@ -109,6 +110,9 @@ class CallFlows(NamedTuple):
     # (N,) bool: the row heard some far sound this step (some ``voice_far`` channel > 0, alive at the start);
     # None without far hearing. Attached by ``with_far`` from the brain's own input block.
     far: mx.array | None = None
+    # (N,) bool: the oracle's force acted on the row this step (non-zero force); None unless calls.control is
+    # an oracle. Attached by ``with_oracle``.
+    oracle: mx.array | None = None
 
 
 class CallsActs(NamedTuple):
@@ -162,6 +166,12 @@ def decode(s: Any, y: mx.array, ctx: Any, cfg: Config) -> CallFlows | None:
     return CallFlows((s.evt > 0) & s.alive[:, None] if cfg.calls.trigger else None)
 
 
+def with_oracle(f: CallFlows | None, force: mx.array) -> CallFlows:
+    """``f`` with the rows the oracle's force acted on: a non-zero force ((N, nd), 0 on dead rows)."""
+    on = (force * force).sum(axis=-1) > 0.0
+    return CallFlows(None, None, on) if f is None else f._replace(oracle=on)
+
+
 def with_far(f: CallFlows | None, blocks: tuple[mx.array, ...], alive: mx.array) -> CallFlows:
     """``f`` with the far-heard flag of the step from the brain's own ``(voice_far, far_bearing)`` blocks (the
     values the row decided on): some channel heard above 0, on a row alive at the start."""
@@ -186,6 +196,8 @@ def ext_count(s_new: Any, alive0: mx.array, flows: Any, cfg: Config) -> dict[str
         }
     if cfg.calls.far_range > 0.0:  # static
         out = {**out, "CALLS_FAR_HEARD": f.far.astype(_I32).sum()}
+    if cfg.calls.control in ORACLES:  # static
+        out = {**out, "CALLS_ORACLE_ON": f.oracle.astype(_I32).sum()}
     return out
 
 
@@ -274,7 +286,9 @@ def hear_far(s: Any, voice: mx.array, col: mx.array, rt: Runtime, cfg: Config) -
     dep = deposit(voice, col, s.alive, rt, ncol)
     x, b = apply(dep, device_table(cfg))
     xh = x.T[col]  # (N, W): each hearer reads its own column
-    heard = 1.0 - mx.exp(-xh / rt.floats[F_XREF])
+    heard = 1.0 - mx.exp(
+        -xh / rt.floats[F_XREF]
+    )  # (not -expm1: its fused kernel differs by an ulp, DESIGN 47.7)
     bh = b[:, :, col]  # (nt, W, N)
     if d.sph:  # static: the tangent projection on (hdg, up × hdg) of the hearer
         up = s.pos / sphere.radius_of(s.pos)[:, None]
@@ -328,7 +342,7 @@ def _unit_force(v: mx.array, heard: mx.array, alive: mx.array, rt: Runtime) -> m
     force of magnitude ``thrust_max`` away from the storm bearing ``v`` ((N, nd) in the planet frame; a
     bearing shorter than 1e-3 scales the force down so that a cancelled bearing gives no random direction)."""
     n = mx.sqrt((v * v).sum(axis=-1, keepdims=True))
-    on = (heard >= ORACLE_HEARD_MIN) & alive
+    on = (heard >= rt.floats[F_ORACLE_MIN]) & alive
     return mx.where(on[:, None], -rt.floats[F_THRUST] * v / mx.maximum(n, ORACLE_DIR_FLOOR), 0.0)
 
 
@@ -343,7 +357,7 @@ def oracle_force(s: Any, cfg: Config, ctx: Any, blocks: tuple[mx.array, ...] | N
       loudness-weighted mean of their planet-frame offsets (horizontal).
     """
     ctl = cfg.calls.control
-    if ctl not in ("reflex", "reflex_near"):  # static
+    if ctl not in ORACLES:  # static
         return None
     rt = runtime(cfg)
     cs = storm_channel(cfg)

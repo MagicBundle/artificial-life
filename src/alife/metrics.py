@@ -600,6 +600,8 @@ def interval_row(
                 row[f"calls_rate_{ev}"] = _ratio(spoke, opened)  # spoke over open
             if "CALLS_FAR_HEARD" in by:  # far hearing (§47.7): the share of alive agent-steps that heard it
                 row["calls_far_heard_frac"] = _ratio(int(cs[at + by["CALLS_FAR_HEARD"]]), alive_steps)
+            if "CALLS_ORACLE_ON" in by:  # the oracle controls (§47.7): the share of agent-steps it pushed
+                row["calls_oracle_on_frac"] = _ratio(int(cs[at + by["CALLS_ORACLE_ON"]]), alive_steps)
             if weather:  # the fitness readout of the storm warning: storm deaths per alive agent-step
                 row["calls_deaths_storm_rate"] = _ratio(int(row["deaths_storm"]), alive_steps)
         elif (

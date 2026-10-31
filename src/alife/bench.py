@@ -939,6 +939,8 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         xdec = ext.mask_all(ext.decode_all(s, y, se.ctx, cfg), c.solvent, cfg)
         if cfg.calls.far_range > 0.0:  # static: the rows that heard a far sound (CALLS_FAR_HEARD, §47)
             xdec = {**xdec, "calls": calls.with_far(xdec.get("calls"), se.calls_in, s.alive)}
+        if se.orc is not None:  # static: the rows the oracle's force acted on (CALLS_ORACLE_ON, §47)
+            xdec = {**xdec, "calls": calls.with_oracle(xdec.get("calls"), se.orc)}
         act = actions.mask(act, c.solvent)
         flag = act.release | (se.geom.length > cfg.bonds.break_length)
         if wind is not None and wind.breaks is not None:  # static: storm_break_u > 0

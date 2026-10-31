@@ -30,7 +30,8 @@ from alife.config import Config, dims
 SALT: Final = rng.HASH_SALTS["comm"]  # ops.hash32 salt of the comm feature (DESIGN §43.3)
 SIG_MAX: Final = 1.0 - 2.0**-24  # the largest f32 below 1: tanh saturates to exactly 1.0, a call stays < 1
 BEARING_FLOOR: Final = 1e-3  # denominator floor of the bearing (no sound -> exactly 0)
-ORACLE_INTENSITY: Final = 0.5  # the fixed call of an open window under calls.control = reflex | reflex_near
+ORACLE_INTENSITY: Final = 0.5  # the fixed call of an open window under the controls of ORACLE_CALLING
+ORACLE_CALLING: Final = ("reflex", "reflex_near", "reflex_call")  # = ext.calls.CALLING (comm imports no ext)
 _I32 = mx.int32
 _F32 = mx.float32
 
@@ -65,10 +66,7 @@ def sig_of(y: mx.array, cfg: Config, gate: mx.array | None = None) -> mx.array:
     exactly 0: silent and free (edge case K1)."""
     d = dims(cfg)
     o = d.lay.OUT_VOICE
-    if gate is not None and cfg.calls.control in (
-        "reflex",
-        "reflex_near",
-    ):  # static: the oracle (DESIGN §47.7)
+    if gate is not None and cfg.calls.control in ORACLE_CALLING:  # static: the oracle (DESIGN §47.7)
         return mx.where(gate, ORACLE_INTENSITY, 0.0).astype(_F32)  # every open window calls at 0.5, y ignored
     sig = mx.clip(mx.tanh(y[:, o : o + d.voice_w]), 0.0, SIG_MAX)
     return sig if gate is None else mx.where(gate, sig, 0.0)
