@@ -1,6 +1,8 @@
 """The voice analysis (DESIGN §39.14) on synthetic worlds with a planted code: the information measures and
 their
-shuffle nulls, the sampler, the arm contrast and the verdict, the scorecard adapter. Host numpy only."""
+shuffle nulls, the sampler, the arm contrast and the verdict (rules version 3), the scorecard adapter. Host
+numpy
+only."""
 
 from __future__ import annotations
 
@@ -176,7 +178,7 @@ def test_a_planted_code_is_found_by_the_code_and_the_transfer_test(worlds: dict[
     b = _run(worlds["planted"])
     assert b["code"]["pair"] == "S~hurt" and b["code"]["excess"] > 0.6 and b["code"]["p_family"] <= 0.02
     assert b["transfer"]["pair"] == "hurt>approach" and b["transfer"]["excess"] > 0.1
-    assert b["transfer"]["z"] > spec.THRESH["transfer"]["z"] and b["reception"]["p_family"] <= 0.02
+    assert b["transfer"]["z"] > 4.0 and b["reception"]["p_family"] <= 0.02
 
 
 def test_random_calls_give_the_null(worlds: dict[str, tables.Tables]) -> None:
@@ -199,7 +201,9 @@ def test_the_shared_environment_reaches_the_transfer_test_but_not_the_calls(
     assert b["code"]["excess"] < 0.02 and b["reception"]["excess"] < 0.02
 
 
-def test_the_pooled_test_is_calibrated_under_the_null() -> None:
+def test_the_pooled_test_is_not_grossly_wrong_under_the_null() -> None:
+    """A gross-failure guard (25 % at the 5 % level over 24 worlds) for the code and reception families; the
+    tight check of the largest family is the slow test below."""
     hits = {f: 0 for f in ("code", "reception", "transfer")}
     n = 24
     for seed in range(n):
@@ -208,7 +212,23 @@ def test_the_pooled_test_is_calibrated_under_the_null() -> None:
         for f in hits:
             r = analyse.run_family(p, f, 60, np.random.default_rng(seed), 30)
             hits[f] += int(r is not None and r.p_family <= 0.05)
-    assert all(h <= 0.25 * n for h in hits.values()), hits  # nominal 5 %; a loose guard against a broken null
+    assert all(h <= 0.25 * n for h in hits.values()), hits
+
+
+@pytest.mark.slow
+def test_the_largest_family_is_calibrated_on_independent_null_worlds() -> None:
+    """At the 5 % level the max-T family p of ``transfer`` rejects at most 12 % of 150 independent null worlds
+    (observed 6 %, Wilson 95% interval 3 to 11 %). This is a nominal check on independent rows. In the real
+    logs
+    the rows are 199 samples drawn from the same 42 000 animals, so they are not exchangeable and every pooled
+    z (100 to 1200) and p (the floor) is non-binding: the verdict does not use them."""
+    hits, n = 0, 150
+    for seed in range(n):
+        tab = vs.sample_tables(np.random.default_rng(1000 + seed), "random", n=120, steps=40, rows=120)
+        p = analyse.prepare(tab, (0, 40))
+        r = analyse.run_family(p, "transfer", 40, np.random.default_rng(seed), 20)
+        hits += int(r is not None and r.p_family <= 0.05)
+    assert hits <= 0.12 * n, hits
 
 
 def test_block_estimates_follow_the_pooled_test(worlds: dict[str, tables.Tables]) -> None:
@@ -232,11 +252,153 @@ def test_the_summary_reports_lineages_and_drift(worlds: dict[str, tables.Tables]
     assert d["population_js"] is not None and d["population_js"] < 0.02  # a stationary world does not drift
     json.dumps(jsonable(s), allow_nan=False)
     md = summary.to_markdown(s)
-    assert "## Kin groups" in md and "Dialect drift" in md
+    assert "## Tag clusters" in md and "Dialect drift" in md
     cmp = summary.compare_windows(s, s)
     assert cmp["population_js"] == pytest.approx(0.0, abs=1e-9) and cmp[
         "code_table_correlation"
     ] == pytest.approx(1.0)
+
+
+# --- the pieces of the decision ---
+
+
+def test_the_block_index_follows_the_window() -> None:
+    step = np.array([100, 101, 109, 110, 111, 119, 120, 130, 131, 90])
+    b = tables.block_of(step, 100, 30, 3)  # blocks of 10 steps in (100, 130]
+    assert b.tolist() == [-1, 0, 0, 0, 1, 1, 1, 2, -1, -1]
+
+
+def test_the_excess_is_the_information_minus_the_null_mean() -> None:
+    rng = np.random.default_rng(11)
+    x = rng.integers(0, 3, 600).astype(np.int8)
+    y = ((x + (rng.random(600) < 0.3)) % 3).astype(np.int8)
+    strata = rng.integers(0, 20, 600)
+    r = ms.family_test([ms.Pair("a", x, 3, y, 3, strata)], 30, np.random.default_rng(0), min_size=5)
+    assert r.excess[0] == pytest.approx(r.mi[0] - r.null_mean[0], abs=1e-12) and r.null_mean[0] > 0.0
+    blk = np.zeros(600, int)
+    ex = ms.block_excess(ms.Pair("a", x, 3, y, 3, strata), blk, 1, 30, np.random.default_rng(0), 5)
+    assert ex[0] < ms.block_info(ms.Pair("a", x, 3, y, 3, strata), blk, 1, 5)[0]  # the bias is subtracted
+
+
+def test_the_null_permutes_inside_the_strata() -> None:
+    """When x is constant inside every stratum a within-stratum shuffle changes nothing, so the null mean is
+    exactly the observed value's null (0); a shuffle across strata would not be."""
+    rng = np.random.default_rng(12)
+    strata = np.repeat(np.arange(40), 5)
+    x = (strata % 3).astype(np.int8)
+    y = rng.integers(0, 2, 200).astype(np.int8)
+    r = ms.family_test([ms.Pair("a", x, 3, y, 2, strata)], 20, np.random.default_rng(0), min_size=1)
+    assert r.null_sd[0] == 0.0 and r.null_mean[0] == pytest.approx(r.mi[0])
+    ex = ms.block_excess(
+        ms.Pair("a", x, 3, y, 2, strata), np.zeros(200, int), 1, 10, np.random.default_rng(0), 1
+    )
+    assert ex[0] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_the_transfer_is_conditioned_on_the_hearers_own_situation() -> None:
+    """If the source's context equals the hearer's own and the response depends on the own context only, the
+    transfer given the own context is nil; without the conditioning it would be the whole entropy."""
+    tab = vs.sample_tables(np.random.default_rng(13), "random", n=150, steps=40, rows=150)
+    h = tab.hearers
+    h["src_c_loss"] = h["c_loss"].copy()
+    h["r_attack"] = (h["c_loss"] > 0).astype(np.int8)
+    p = analyse.prepare(tab, (0, 40))
+    r = analyse.run_family(p, "transfer", 30, np.random.default_rng(0), 20)
+    ex = dict(zip(r.names, r.excess, strict=True))
+    assert abs(ex["hurt>attack"]) < 0.01
+    raw = ms.mi_codes(p.h_src_ctx["hurt"][p.h_has_src], p.h_resp["attack"][p.h_has_src], 2, 2)
+    assert raw > 0.5
+
+
+def test_the_reception_strata_hold_the_geometry() -> None:
+    """The reception test is stratified on the audible count and the distance of the loudest source, so a
+    heard call that only tells how near the neighbours are carries nothing."""
+    tab = vs.sample_tables(np.random.default_rng(14), "random", n=150, steps=40, rows=150)
+    h = tab.hearers
+    near = h["audible"] >= 7  # the response follows the audible count, and so does the call (its channel)
+    h["r_attack"] = near.astype(np.int8)
+    h["heard"] = np.zeros_like(h["heard"])
+    h["heard"][near, 0] = 200
+    h["heard"][~near, 1] = 200
+    p = analyse.prepare(tab, (0, 40))
+    raw = ms.mi_codes(p.h_heard, p.h_resp["attack"], p.n_sym, 2)
+    r = analyse.run_family(p, "reception", 30, np.random.default_rng(0), 20)
+    assert raw > 0.2 and abs(dict(zip(r.names, r.excess, strict=True))["H~attack"]) < 0.02
+
+
+def _contrast(means: list[float], label: str = "supported") -> dict:
+    return {"per_seed": [{"mean": m} for m in means], "call": {"label": label}, "bounds": {}}
+
+
+def test_the_minimum_effect_and_the_equivalence_gate() -> None:
+    rules = meaning.Rules()
+    x = rules.min_effect
+
+    def cls(mean: float, spread: float = 0.0005, label: str = "supported") -> dict:
+        return meaning.classify_contrast(_contrast([mean - spread, mean, mean + spread], label), rules)
+
+    assert cls(x + 0.001)["meaning"] and cls(x + 0.001)["positive"]
+    below = cls(
+        x - 0.001, 0.001
+    )  # positive, but a trace: below the minimum effect and not bounded below 0.005
+    assert below["positive"] and not below["meaning"] and not below["equivalent"]
+    assert not cls(x + 0.001, label="mixed")["positive"]  # the seed rule decides, not the mean alone
+    none = cls(0.0001, label="not supported")
+    assert none["equivalent"] and not none["positive"] and none["upper"] < rules.equivalence
+    wide = meaning.classify_contrast(_contrast([-0.02, 0.0, 0.02], "not supported"), rules)
+    assert not wide["equivalent"] and not wide["positive"]  # too noisy to bound: not enough to say
+    lower = meaning.classify_contrast(_contrast([0.0, 0.002, 0.004], "supported"), rules)
+    assert not lower["positive"]  # the seed rule says supported, the one-sided lower bound does not exclude 0
+
+
+def test_the_seed_twin_floor_and_the_bounds() -> None:
+    f = meaning.twin_floor(
+        {"a": {1: np.array([0.0, 0.0]), 2: np.array([0.01, 0.01]), 3: np.array([0.0, 0.0])}}
+    )
+    assert f == pytest.approx(0.01)  # pairs (1,2) 0.01, (1,3) 0, (2,3) 0.01: the median magnitude
+    b = meaning.seed_bounds([0.01, 0.02, 0.03], 0.05)
+    assert b["mean"] == pytest.approx(0.02) and b["lower"] < 0.02 < b["upper"]
+    assert b["upper"] == pytest.approx(0.02 + 2.919986 * 0.01 / np.sqrt(3), abs=1e-5)  # t(0.95, df 2)
+
+
+def test_the_rules_come_from_a_version_3_preregistration_only() -> None:
+    d = spec.default_prereg()
+    assert d["rules_version"] == 3 and [a["id"] for a in d["amendments"]] == ["A1", "A2"]
+    assert d["amendments"][1]["results_read"] is True and d["amendments"][0]["results_read"] is False
+    r = meaning.Rules()
+    assert r.revised_after_results and (r.min_effect, r.equivalence) == (0.005, 0.005)
+    old = {k: v for k, v in d.items() if k != "rules_version"}
+    with pytest.raises(ValueError, match="rules version"):
+        meaning.Rules(old)
+
+
+def test_the_stored_tests_must_have_run_with_the_registered_parameters() -> None:
+    rules = meaning.Rules()
+    ok = {"params": rules.tests_params()}
+    meaning.check_tests(ok, rules, "x")
+    for bad in (
+        {},
+        {"params": {**rules.tests_params(), "n_perm": 20}},
+        {"params": {**rules.tests_params(), "seed": 9}},
+    ):
+        with pytest.raises(ValueError, match="rebuild the summary"):
+            meaning.check_tests(bad, rules, "x")
+
+
+def test_as_designed_checks_the_sampling_of_the_log() -> None:
+    rules = meaning.Rules()
+    a = object.__new__(meaning.ArmRun)
+    a.fit, a.fork_start = {"last_step": np.array([rules.fork_steps])}, 1000
+    lo, hi = rules.table_window
+    a.window = (1000 + lo, 1000 + hi)
+    a.tab = SimpleNamespace(meta={"every": rules.every, "rows": rules.rows, "seed": rules.seed})
+    assert a.as_designed(rules)
+    for k, v in (("every", 25), ("rows", 1024), ("seed", 3)):
+        a.tab.meta[k] = v
+        assert not a.as_designed(rules), k
+        a.tab.meta[k] = getattr(rules, "every" if k == "every" else k)
+    a.window = (1000 + lo, 1000 + hi - 1)
+    assert not a.as_designed(rules)
 
 
 # --- the arm contrast and the verdict ---
@@ -252,6 +414,9 @@ class FakeArm(meaning.ArmRun):
         return self.designed
 
 
+CF_METRICS = ["d_thrust", "flip_attack", "flip_bond", "flip_speak", "d_voice", "d_vel", "n"]
+
+
 def _fit(rng: np.random.Generator, level: float, due: float = 100.0) -> dict[str, np.ndarray]:
     return {
         "population": level + rng.normal(0, 1, 12),
@@ -265,109 +430,200 @@ def _fit(rng: np.random.Generator, level: float, due: float = 100.0) -> dict[str
 _TABLES: dict[tuple[str, int], tables.Tables] = {}
 
 
-def _table(mode: str, seed: int) -> tables.Tables:
-    if (mode, seed) not in _TABLES:
-        _TABLES[(mode, seed)] = vs.sample_tables(np.random.default_rng(seed), mode, n=200, steps=80, rows=200)
-    return _TABLES[(mode, seed)]
+def _table(mode: str, seed: int, d_thrust: float | None = None, silent: bool = False) -> tables.Tables:
+    """A cached synthetic table; ``d_thrust`` adds the counterfactual block of a none arm, ``silent`` silences
+    every sender."""
+    key = (mode, seed, d_thrust, silent)
+    if key not in _TABLES:  # type: ignore[comparison-overlap]
+        base = vs.sample_tables(np.random.default_rng(seed), mode, n=200, steps=80, rows=200)
+        senders = dict(base.senders)
+        if silent:
+            senders["voice"] = np.zeros_like(senders["voice"])
+        cf = {}
+        meta = dict(base.meta)
+        if d_thrust is not None:
+            st = np.zeros((6, 2, 2, 7), np.float32)
+            st[:, :, 0, 0] = d_thrust
+            st[:, :, 0, -1] = 1000
+            st[:, :, 1, -1] = 100  # the silent control group changes by exactly 0
+            cf = {"step": np.arange(6, dtype=np.int32), "stats": st}
+            meta.update(cf_modes=["deaf", "decoy"], cf_metrics=CF_METRICS)
+        _TABLES[key] = tables.Tables(senders, base.hearers, meta, cf)  # type: ignore[index]
+    return _TABLES[key]  # type: ignore[index]
 
 
-def _arms(none_mode: str, ctrl_mode: str, benefit: float, due: dict[str, float] | None = None):
+def _arms(
+    modes: tuple[str, str, str],
+    benefit: float | tuple[float, float] = 15.0,
+    due: dict[str, float] | None = None,
+    d_thrust: float | None = 0.04,
+    silent: bool = False,
+):
     rules = meaning.Rules()
-    rules.n_perm, rules.n_perm_block = 60, 8  # the smallest p is 1/61, so the threshold p is relaxed to match
-    rules.thresholds = {k: {**v, "p": 0.02} for k, v in rules.thresholds.items()}
+    rules.n_perm, rules.n_perm_block = 60, 8
+    benefit_deaf, benefit_decoy = benefit if isinstance(benefit, tuple) else (benefit, benefit)
     due = due or {}
     arms: dict[str, dict[int, meaning.ArmRun]] = {n: {} for n in spec.ARMS}
     for s in (1, 2, 3):
         rng = np.random.default_rng(50 + s)
         for i, name in enumerate(spec.ARMS):
-            mode = none_mode if name == "none" else ctrl_mode
-            tab = _table(mode, 10 * s + i)
-            fit = _fit(rng, 1000 + (benefit if name == "none" else 0), due.get(name, 100.0))
-            arms[name][s] = FakeArm(name, s, tab, fit)
+            tab = _table(modes[i], 10 * s + i, d_thrust if name == "none" else None, silent)
+            level = 1000 + {"none": 0.0, "deaf": -benefit_deaf, "decoy": -benefit_decoy}[name]
+            arms[name][s] = FakeArm(name, s, tab, _fit(rng, level, due.get(name, 100.0)))
     return rules, arms
+
+
+def _verdict(rules, arms):
+    return meaning.run_meaning(arms, rules, log=lambda m: None)
 
 
 @pytest.fixture(scope="module")
 def language_case():
-    return _arms("planted", "random", benefit=15.0)
+    return _arms(("planted", "random", "random"))
 
 
 def test_a_planted_language_gets_the_verdict_language(language_case) -> None:
     rules, arms = language_case
-    res = meaning.run_meaning(arms, rules, log=lambda m: None)
+    res = _verdict(rules, arms)
     d = res["decision"]
-    assert d["verdict"] == "language", json.dumps(jsonable(d["clauses"]), indent=1)[:1500]
-    assert all(c["passed"] for c in d["clauses"].values())
-    assert res["transfer_contrast"]["deaf"]["call"]["label"] == "supported"
+    assert d["verdict"] == "language", json.dumps(jsonable(d["clauses"]), indent=1)[:1800]
+    assert all(c["passed"] for c in d["clauses"].values()) and d["revised_after_results"]
+    assert res["contrast_decoy"]["class"]["meaning"] and res["contrast_decoy"]["call"]["label"] == "supported"
     json.dumps(jsonable(res), allow_nan=False)
-    assert "Verdict: language" in meaning.to_markdown(res)
+    md = meaning.to_markdown(res)
+    assert "Verdict: language" in md and "decided after seeing the v2 results" in md
 
 
-def test_use_without_benefit_is_not_a_language() -> None:
-    rules, arms = _arms("planted", "random", benefit=0.0)  # the same worlds with no fitness difference
-    res = meaning.run_meaning(arms, rules, log=lambda m: None)
-    d = res["decision"]
-    assert d["verdict"] == "signalling without meaning" and "use without benefit" in d["detail"]
-    assert d["clauses"]["transfer_contrast"]["passed"] and not d["clauses"]["fitness"]["passed"]
+def test_the_arms_are_coded_with_the_none_arms_cut_points(language_case) -> None:
+    rules, arms = language_case
+    _verdict(rules, arms)
+    for s in (1, 2, 3):
+        base = arms["none"][s].prep
+        for n in ("deaf", "decoy"):
+            assert arms[n][s].prep.edges == base.edges and arms[n][s].prep.sym_thr == base.sym_thr
+        own = tables.fit_edges(arms["decoy"][s].tab.senders, arms["decoy"][s].tab.hearers)
+        assert own != base.edges  # the arm's own cut points would differ, so the sharing is not vacuous
+
+
+def test_the_pair_is_chosen_on_the_even_blocks_and_estimated_on_the_odd_ones() -> None:
+    """Altering the odd blocks of a table (a binary response, so the cut points do not move) cannot change the
+    selected pair; altering the even blocks cannot change the odd-block estimate."""
+    rules = meaning.Rules()
+    rules.n_blocks = 16
+    rng = np.random.default_rng(15)
+
+    def preps(tabs):
+        return {1: {"none": analyse.prepare(tabs[0], WINDOW), "decoy": analyse.prepare(tabs[1], WINDOW)}}
+
+    t_none, t_decoy = _table("planted", 31), _table("random", 32)
+
+    def altered(tab, parity):
+        h = {k: v.copy() for k, v in tab.hearers.items()}
+        blk = tables.block_of(h["step"], 0, 80, 16)
+        sel = (blk >= 0) & (blk % 2 == parity)
+        h["r_attack"][sel] = rng.integers(0, 2, int(sel.sum())).astype(np.int8)
+        h["r_bond"][sel] = rng.integers(0, 2, int(sel.sum())).astype(np.int8)
+        h["r_approach"][sel] = rng.integers(-1, 2, int(sel.sum())).astype(np.int8)
+        return tables.Tables(tab.senders, h, tab.meta)
+
+    base_pair, base_scores = meaning.select_contrast_pair(preps((t_none, t_decoy)), rules)
+    odd_changed = meaning.select_contrast_pair(preps((altered(t_none, 1), altered(t_decoy, 1))), rules)
+    assert odd_changed[0] == base_pair and odd_changed[1][base_pair] == pytest.approx(base_scores[base_pair])
+    even_changed = meaning.select_contrast_pair(preps((altered(t_none, 0), altered(t_decoy, 0))), rules)
+    assert even_changed[1][base_pair] != pytest.approx(
+        base_scores[base_pair]
+    )  # the selection does read the even blocks
+    p0 = analyse.prepare(t_none, WINDOW)
+    p1 = analyse.prepare(altered(t_none, 0), WINDOW)
+    a = analyse.pair_blocks(p0, "transfer", "hurt>approach", 5, np.random.default_rng(3), parity=1)
+    b = analyse.pair_blocks(p1, "transfer", "hurt>approach", 5, np.random.default_rng(3), parity=1)
+    assert np.allclose(a[1::2], b[1::2], equal_nan=True) and np.isnan(a[0::2]).all()
+
+
+def test_the_decoy_contrast_is_a_clause_of_its_own() -> None:
+    """The decoy world carries the same behaviour as the real one while the deaf world does not: the content
+    adds nothing beyond what the decoy already gives, so the primary contrast is nil and there is no language,
+    although none would beat deaf on the planted pair."""
+    rules, arms = _arms(("planted", "random", "planted"))
+    rules.equivalence = 0.05
+    res = _verdict(rules, arms)
+    cl = res["decision"]["clauses"]
+    assert not cl["meaning"]["passed"] and cl["meaning"]["equivalent"]
+    assert res["decision"]["verdict"] == "signalling, no detectable meaning"
+    assert res["decision"]["label"].startswith("signalling, no detectable meaning (bound ")
+
+
+def test_a_meaning_without_a_fitness_benefit_is_only_a_signalling_with_trace_meaning() -> None:
+    rules, arms = _arms(("planted", "random", "random"), benefit=0.0)
+    d = _verdict(rules, arms)["decision"]
+    assert d["verdict"] == "signalling with trace meaning" and "fitness" in d["detail"]
+    assert d["clauses"]["meaning"]["passed"] and not d["clauses"]["fitness"]["passed"]
 
 
 def test_a_benefit_of_hearing_that_the_decoy_shares_is_not_a_benefit_of_the_calls() -> None:
-    rules, arms = _arms("planted", "random", benefit=15.0)
-    for s, a in arms["decoy"].items():  # the decoy world is as fit as the real one
-        a.fit = _fit(np.random.default_rng(90 + s), 1015)
-    d = meaning.run_meaning(arms, rules, log=lambda m: None)["decision"]
-    assert (
-        d["verdict"] == "signalling without meaning" and "benefit of hearing but none specific" in d["detail"]
-    )
-    assert "none beats deaf on population" in d["detail"] and "none beats decoy on no readout" in d["detail"]
+    rules, arms = _arms(("planted", "random", "random"), benefit=(15.0, 0.0))
+    d = _verdict(rules, arms)["decision"]
+    assert d["verdict"] != "language" and "none beats deaf on population" in d["detail"]
+    assert "none beats decoy on no readout" in d["detail"]
 
 
 def test_unmatched_cost_withholds_the_language() -> None:
-    rules, arms = _arms("planted", "random", benefit=15.0, due={"deaf": 60.0})
-    res = meaning.run_meaning(arms, rules, log=lambda m: None)
-    assert not res["cost"]["matched"] and res["decision"]["verdict"] == "signalling without meaning"
+    rules, arms = _arms(("planted", "random", "random"), due={"deaf": 60.0})
+    res = _verdict(rules, arms)
+    assert not res["cost"]["matched"] and res["decision"]["verdict"] != "language"
     assert "cost" in res["decision"]["detail"]
 
 
-def test_a_tic_is_information_without_use_and_random_calls_are_no_evidence() -> None:
-    rules, arms = _arms("tic", "tic", benefit=0.0)
-    d = meaning.run_meaning(arms, rules, log=lambda m: None)["decision"]
-    assert d["verdict"] == "signalling without meaning" and "information without use" in d["detail"]
-    rules, arms = _arms("random", "random", benefit=0.0)
-    d = meaning.run_meaning(arms, rules, log=lambda m: None)["decision"]
-    assert d["verdict"] == "no evidence"
+def test_a_use_that_the_counterfactual_does_not_show_withholds_the_language() -> None:
+    rules, arms = _arms(("planted", "random", "random"), d_thrust=0.001)
+    d = _verdict(rules, arms)["decision"]
+    assert not d["clauses"]["use"]["passed"] and d["verdict"] != "language"
 
 
-def test_the_environment_alone_is_not_a_language() -> None:
-    """Neighbours' situations reach the hearer in every arm: the transfer test passes in none, but so it
-    does in
-    deaf and decoy, so the contrast (and the verdict) says no."""
-    rules, arms = _arms("environment", "environment", benefit=0.0)
-    res = meaning.run_meaning(arms, rules, log=lambda m: None)
-    assert res["decision"]["clauses"]["transfer"]["passed"]
-    assert (
-        not res["decision"]["clauses"]["transfer_contrast"]["passed"]
-        and res["decision"]["verdict"] != "language"
-    )
+def test_calls_that_nobody_makes_are_no_evidence() -> None:
+    rules, arms = _arms(("planted", "random", "random"), silent=True)
+    d = _verdict(rules, arms)["decision"]
+    assert d["verdict"] == "no evidence" and not d["clauses"]["speaking"]["passed"]
+
+
+def test_random_calls_and_the_environment_alone_are_no_detectable_meaning() -> None:
+    for mode in ("random", "tic", "environment"):
+        rules, arms = _arms((mode, mode, mode), benefit=0.0)
+        rules.equivalence = 0.05  # the synthetic worlds are small: the default bound needs more rows
+        res = _verdict(rules, arms)
+        assert res["decision"]["verdict"] == "signalling, no detectable meaning", (
+            mode,
+            res["decision"]["detail"],
+        )
+        assert not res["contrast_decoy"]["class"]["positive"]
+
+
+def test_a_contrast_too_noisy_to_bound_is_no_evidence() -> None:
+    rules, arms = _arms(("random", "random", "random"), benefit=0.0)
+    rules.equivalence = 1e-6  # nothing can be bounded that tightly
+    d = _verdict(rules, arms)["decision"]
+    assert d["verdict"] == "no evidence" and "not enough to say" in d["detail"]
 
 
 def test_a_fork_off_the_design_makes_the_report_exploratory() -> None:
-    rules, arms = _arms("random", "random", benefit=0.0)
+    rules, arms = _arms(("random", "random", "random"), benefit=0.0)
     rules.confirmatory = True  # as if a frozen pre-registration were loaded
-    assert meaning.run_meaning(arms, rules, log=lambda m: None)["confirmatory"] is True
-    arms["deaf"][2].designed = False  # a fork of the wrong length or a log of the wrong window
-    res = meaning.run_meaning(arms, rules, log=lambda m: None)
-    assert res["confirmatory"] is False and "pre-registered length or window" in meaning.to_markdown(res)
+    assert _verdict(rules, arms)["confirmatory"] is True
+    arms["deaf"][2].designed = False  # a fork of the wrong length or a log of the wrong window or sampling
+    res = _verdict(rules, arms)
+    assert res[
+        "confirmatory"
+    ] is False and "pre-registered length, window or sampling" in meaning.to_markdown(res)
 
 
 def test_the_arms_must_be_complete() -> None:
-    rules, arms = _arms("random", "random", benefit=0.0)
+    rules, arms = _arms(("random", "random", "random"), benefit=0.0)
     del arms["decoy"][3]
     with pytest.raises(ValueError, match="seeds"):
-        meaning.run_meaning(arms, rules, log=lambda m: None)
+        _verdict(rules, arms)
     del arms["decoy"]
     with pytest.raises(ValueError, match="missing"):
-        meaning.run_meaning(arms, rules, log=lambda m: None)
+        _verdict(rules, arms)
 
 
 # --- the pre-registration and the scorecard adapter ---
@@ -379,9 +635,11 @@ def test_the_preregistration_is_hashed_and_drives_the_rules(tmp_path: Path) -> N
     h = pr.write_prereg(tmp_path / "p.json", d)
     loaded = pr.load_prereg(tmp_path / "p.json")
     r = meaning.Rules(loaded)
-    assert r.confirmatory and r.hash == h and r.thresholds["transfer"] == {"z": 4.0, "bits": 0.05, "p": 0.01}
+    assert (
+        r.confirmatory and r.hash == h and (r.min_effect, r.equivalence, r.use_thrust) == (0.005, 0.005, 0.01)
+    )
     assert not meaning.Rules().confirmatory
-    text = (tmp_path / "p.json").read_text().replace('"bits": 0.05', '"bits": 0.01')
+    text = (tmp_path / "p.json").read_text().replace('"min_effect_bits": 0.005', '"min_effect_bits": 0.0001')
     (tmp_path / "p.json").write_text(text)
     with pytest.raises(pr.PreregError):
         pr.load_prereg(tmp_path / "p.json")
@@ -395,22 +653,38 @@ def test_the_scorecard_degrades_then_reads_a_log(
     assert (
         scorecards.evaluate("comm", SimpleNamespace(), (0, 10), None, {}, tmp_path).label == "not evaluated"
     )
+    cfg = SimpleNamespace(comm=SimpleNamespace(enabled=True))
     off = SimpleNamespace(
         config=lambda: SimpleNamespace(comm=SimpleNamespace(enabled=False)), path=Path("r1")
     )
     assert "comm.enabled is false" in card.available(off)[0]
-    monkeypatch.chdir(tmp_path)
-    run = SimpleNamespace(config=lambda: SimpleNamespace(comm=SimpleNamespace(enabled=True)), path=Path("r1"))
+    monkeypatch.setenv("ALIFE_VOICE_LOGS", str(tmp_path / "logs"))
+    monkeypatch.chdir(tmp_path)  # the log root does not depend on the working directory
+    run = SimpleNamespace(config=lambda: cfg, path=tmp_path / "runs" / "r1")
     assert "a voice log" in card.available(run)[0]
-    worlds["planted"].save(tmp_path / "analysis_cache" / "voice" / "r1" / "tables.npz")
-    assert card.available(run, WINDOW) == []
-    assert "window" in card.available(run, (5, 80))[0]
+
+    def log(tab: tables.Tables, name: str, run_path: Path) -> None:
+        tables.Tables(tab.senders, tab.hearers, {**tab.meta, "run": str(run_path)}).save(
+            tmp_path / "logs" / name / "tables.npz"
+        )
+
+    log(worlds["planted"], "r1", run.path)
+    assert card.available(run, WINDOW) == [] and "window" in card.available(run, (5, 80))[0]
+    other = SimpleNamespace(config=lambda: cfg, path=tmp_path / "elsewhere" / "r1")  # same name, another run
+    assert "a voice log" in card.available(other)[0]
     r = card.compute(run, WINDOW, None, {}, tmp_path)
-    assert r.evaluated and r.label == "signalling" and r.feature == "comm"
+    assert r.evaluated and r.feature == "comm" and r.label.startswith("signalling, meaning not tested")
     assert r.primary == r.endpoint["transfer_bits"] and r.primary > 0.1
-    assert any(c.passed for c in r.criteria)
-    r0 = card.compute(run, WINDOW, None, {"deaf": run}, tmp_path)  # a control with the same log: contrast ~ 0
-    assert abs(r0.endpoint["transfer_over_deaf"]) < 0.05
+    decoy = SimpleNamespace(config=lambda: cfg, path=tmp_path / "runs" / "d1")
+    log(worlds["random"], "d1", decoy.path)
+    r1 = card.compute(
+        run, WINDOW, None, {"decoy": decoy}, tmp_path
+    )  # the planted code against a random decoy
+    assert r1.label == "signalling with trace meaning" and r1.endpoint["transfer_over_decoy"] > 0.05
+    assert any(c.passed for c in r1.criteria)
+    log(worlds["planted"], "d1", decoy.path)  # a decoy that carries the same behaviour: nothing call-specific
+    r2 = card.compute(run, WINDOW, None, {"decoy": decoy}, tmp_path)
+    assert abs(r2.endpoint["transfer_over_decoy"]) < 0.05 and r2.label != "signalling with trace meaning"
 
 
 # --- lint ---

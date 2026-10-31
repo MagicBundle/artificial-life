@@ -1,34 +1,36 @@
-"""Do the calls mean something? The meaning test of DESIGN §39.9 and §39.14 (numpy and the standard library).
+"""Do the calls mean something? The meaning test of DESIGN §39.9 and §39.14, rules version 3.
 
 Input: forks of one checkpoint with ``comm.control`` ``none``, ``deaf`` and ``decoy`` (the same seeds in every
 arm), each with its voice log (``tables.npz``) over the same window, and the fork's ``metrics.jsonl``. The
 voice is paid for in every arm, so a contrast isolates what the *information* is worth.
 
-The clauses of the operational definition (spec section 7.2), each tested the way the emergence suite tests an
-arm contrast (paired block differences per seed, ``w2.classify`` over the seeds, Stouffer's combined p, Holm
-where several tests share a family, the thresholds read from the frozen pre-registration):
+Rules version 3 is a revision decided after the v2 results were read (the amendments are in the
+pre-registration; the v2 rule is in commit ``1be5a33``). The unit of inference is the seed, one evolved
+checkpoint per world.
 
-* **code**, ``none`` arm: the call type carries information about the caller's context (max-T permutation
-  test,
-  every seed).
-* **transfer**, ``none`` arm: the situation of the loudest audible caller reaches the hearer's behaviour
-  beyond
-  the hearer's own situation: at least 0.05 bits and z >= 4 above the shuffle null (the spec's number).
-* **transfer contrast**: that information is absent in ``deaf`` and at the ``decoy`` level or below. The pair
-  is chosen on the even blocks of the ``none`` arm and estimated on the odd blocks of every arm (coded with
-  the
-  ``none`` arm's cut points), so the contrast has no winner's curse; ``none`` minus ``deaf`` and ``none``
-  minus
-  ``decoy`` are positive in every seed.
-* **reception**, ``none`` arm: hearers act differently on different calls, given their own situation.
-* **fitness**: ``none`` beats ``deaf`` and ``decoy`` on one readout (population, births per agent-step, mean
-  energy) that passes in both contrasts, with Holm over the readouts.
-* **cost matched**: the voice costs the same per agent-step in every arm (it is paid whether heard or not).
+* **Call-specific transfer** (the language score): how much of the caller's situation reaches the hearer's
+  behaviour *through the call content*. The none arm minus the **decoy** arm (the content is cut; presence,
+  loudness and bearing are kept), per seed on the odd blocks, for the transfer pair with the largest such
+  contrast on the **even** blocks (so the pair is not the shared environment's champion, and there is no
+  winner's curse). The none arm minus the **deaf** arm is the secondary contrast: it also contains the
+  knock-out of inputs the evolved brains are tuned to. Every arm of a seed is coded with the none arm's cut
+  points. Across seeds: the mean, the one-sided 95% bounds (t, df = seeds - 1) and the seed rule of the suite
+  (``stats.seed_call``) with the seed-twin noise floor.
+* **Positive**: the seed rule says ``supported`` and the lower bound is above 0. A **meaning**: positive with
+  a mean of at least ``min_effect`` bits. **Equivalent to nothing**: the upper bound is below ``equivalence``.
+* **Use**: the one-step counterfactual (none to decoy) changes the audible rows' thrust by at least
+  ``use_thrust`` in every seed, and the rows with no audible neighbour by exactly 0.
+* **Fitness**: none beats deaf and decoy on one readout that passes in both (seed rule with the floor, Holm
+  over the readouts). The deaf contrast is a knock-out (removing the heard inputs costs something whatever
+  they carry); only the decoy contrast separates the content.
+* **Cost matched** in every arm.
 
-The verdict: ``language`` when every clause holds; ``signalling without meaning`` when the calls carry
-information or are used but a clause fails (the detail names it: information without use, use without
-benefit); ``no evidence`` otherwise. Information without use, or use without benefit, is never called a
-language (spec 7.2).
+Verdicts: ``language`` (speaking, use, meaning, the secondary contrast not negative, fitness, cost);
+``signalling with trace meaning`` (the primary contrast is positive, but not a language); ``signalling, no
+detectable meaning (bound X)`` (the upper bound is below the equivalence bound); ``no evidence`` (nobody
+speaks, or the data neither show a contrast nor bound it). ``code`` (sender side) and ``reception``
+(confounded by the geometry of hearing, even with the audible count and the distance in its strata) are
+reported, not decided on.
 """
 
 from __future__ import annotations
@@ -48,7 +50,7 @@ from alife.analysis.voice import measures as ms
 from alife.analysis.voice.tables import Tables
 from alife.analysis.w2 import Blocking, block_mean, block_ratio
 
-MEANING_VERSION = 1
+MEANING_VERSION = 3
 
 
 class Rules:
@@ -56,9 +58,13 @@ class Rules:
 
     def __init__(self, prereg: dict[str, Any] | None = None):
         d = prereg or spec.default_prereg()
+        if d.get("rules_version") != spec.RULES_VERSION:
+            raise ValueError(
+                f"the pre-registration is rules version {d.get('rules_version')}; this code decides version "
+                f"{spec.RULES_VERSION} (the v2 rule is in commit 1be5a33)"
+            )
         self.confirmatory = bool(prereg and prereg.get("frozen"))
         self.hash = pr.prereg_hash(prereg) if prereg else None
-        self.thresholds = d["thresholds"]
         self.alpha = d["decision"]["alpha"]
         self.cost_tol = d["cost"]["tolerance"]
         self.n_perm = d["tests"]["n_perm"]
@@ -68,7 +74,24 @@ class Rules:
         self.table_window = tuple(d["arms"]["table_window"])
         self.n_blocks = d["sampling"]["blocks"]
         self.seed = d["sampling"]["seed"]
+        self.every = d["sampling"]["every"]
+        self.rows = d["sampling"]["rows"]
         self.readouts = list(d["fitness"]["readouts"])
+        self.min_effect = d["contrast"]["min_effect_bits"]
+        self.equivalence = d["contrast"]["equivalence_bits"]
+        self.alpha_one_sided = d["contrast"]["alpha_one_sided"]
+        self.use_thrust = d["use"]["use_thrust"]
+        self.speaking_min = d["speaking_min"]
+        self.amendments = d.get("amendments", [])
+        self.revised_after_results = any(a.get("results_read") for a in self.amendments)
+
+    def tests_params(self) -> dict[str, Any]:
+        return {
+            "n_perm": self.n_perm,
+            "n_perm_block": self.n_perm_block,
+            "seed": self.seed,
+            "n_blocks": self.n_blocks,
+        }
 
 
 # --- one arm-seed -----------------------------------------------------------------------------------------
@@ -109,27 +132,34 @@ class ArmRun:
         self.fork_start = int(meta["start_step"])
 
     def as_designed(self, rules: Rules) -> bool:
-        """The fork ran the pre-registered length and its log covers the pre-registered window."""
+        """The fork ran the pre-registered length, its log covers the pre-registered window and was made
+        with the
+        pre-registered sampling (every, rows, seed)."""
         lo, hi = rules.table_window
+        m = self.tab.meta
         return bool(
             int(self.fit["last_step"][0]) == rules.fork_steps
             and tuple(self.window) == (self.fork_start + lo, self.fork_start + hi)
+            and (m.get("every"), m.get("rows"), m.get("seed")) == (rules.every, rules.rows, rules.seed)
         )
 
 
-def _pass(best: Mapping[str, Any] | None, thr: Mapping[str, float]) -> dict[str, Any]:
-    """The threshold test of a family's best pair: ``passed`` and the numbers behind it."""
-    if best is None:
-        return {"passed": False, "reason": "not enough rows"}
-    z, ex, p = best["z"], best["excess"], best["p_family"]
-    ok = None not in (z, ex, p) and z >= thr["z"] and ex >= thr["bits"] and p <= thr["p"]
-    return {"passed": bool(ok), "pair": best["pair"], "excess": ex, "z": z, "p_family": p, "mi": best["mi"]}
+def check_tests(tests: Mapping[str, Any], rules: Rules, name: str) -> None:
+    """A stored ``summary.json`` ``tests`` block must have been run with the pre-registered permutations, seed
+    and blocks (otherwise every p-value in it means something else)."""
+    have = tests.get("params")
+    if have != rules.tests_params():
+        raise ValueError(
+            f"{name}: the stored tests ran with {have}, the pre-registration says {rules.tests_params()}; "
+            "rebuild the summary (python -m alife.analysis.voice summarize DIR)"
+        )
 
 
 def analyse_arm(
     a: ArmRun, rules: Rules, tests: dict[str, Any] | None = None, log: Callable[[str], None] = print
 ) -> dict:
-    """The pooled tests of one fork (``tests`` from its summary.json if already computed)."""
+    """The pooled tests of one fork (``tests`` from its summary.json if already computed; reported, not
+    decided on)."""
     if tests is None:
         tests = analyse.run_all(
             a.tab,
@@ -137,36 +167,43 @@ def analyse_arm(
             n_perm=rules.n_perm,
             n_perm_block=rules.n_perm_block,
             seed=rules.seed,
+            n_blocks=rules.n_blocks,
             log=lambda m: log(f"{a.arm}_s{a.seed}: {m}"),
         )
+    else:
+        check_tests(tests, rules, f"{a.arm}_s{a.seed}")
     fam = {k: (v["best"] if v else None) for k, v in tests["families"].items()}
-    return {"tests": tests, "families": fam}
+    blocks = {k: (v["blocks"] if v else None) for k, v in tests["families"].items()}
+    return {"families": fam, "blocks": blocks}
 
 
-def select_transfer_pair(p: analyse.Prepared, rules: Rules) -> str | None:
-    """The transfer pair with the largest z on the **even** blocks of a ``none`` arm (50 permutations)."""
-    pairs = analyse.build_family(p, "transfer", mask=(p.h_block >= 0) & (p.h_block % 2 == 0))
-    if not pairs or len(pairs[0].x) < 100:
-        return None
-    res = ms.family_test(pairs, 50, np.random.default_rng([rules.seed, 7]), spec.MIN_STRATUM)
-    return res.names[res.best]
+# --- the contrast pair ------------------------------------------------------------------------------------
+
+
+def select_contrast_pair(
+    preps: Mapping[int, Mapping[str, analyse.Prepared]], rules: Rules
+) -> tuple[str | None, dict[str, float]]:
+    """The transfer pair with the largest **none minus decoy** contrast of the raw information on the **even**
+    blocks, averaged over the seeds' blocks and seeds; only pairs present in every arm of every seed. Returns
+    the name and the scores of all pairs."""
+    per_seed: list[dict[str, float]] = []
+    for arms in preps.values():
+        a = analyse.block_information(arms["none"], "transfer", parity=0)
+        b = analyse.block_information(arms["decoy"], "transfer", parity=0)
+        d = {}
+        for name in a.keys() & b.keys():
+            diff = a[name] - b[name]
+            if np.isfinite(diff).any():
+                d[name] = float(np.nanmean(diff))
+        per_seed.append(d)
+    names = set.intersection(*(set(d) for d in per_seed)) if per_seed else set()
+    if not names:
+        return None, {}
+    score = {n: float(np.mean([d[n] for d in per_seed])) for n in sorted(names)}
+    return max(score, key=lambda n: score[n]), score
 
 
 # --- contrasts --------------------------------------------------------------------------------------------
-
-
-def _interval(per_seed: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """The decision over seeds of one contrast (``stats.seed_call``)."""
-    return stats.seed_call(per_seed)
-
-
-def contrast_blocks(
-    none: Mapping[int, np.ndarray], ctrl: Mapping[int, np.ndarray], seeds: Sequence[int]
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Per-seed paired block tests of ``none - ctrl`` (positive = hearing the real calls helps) and the
-    call."""
-    per = [stats.paired_test(none[s], ctrl[s], direction=1) for s in seeds]
-    return per, _interval(per)
 
 
 def holm_flags(ps: Sequence[float | None], alpha: float) -> tuple[list[float | None], list[bool]]:
@@ -175,81 +212,173 @@ def holm_flags(ps: Sequence[float | None], alpha: float) -> tuple[list[float | N
     return adj_n, [bool(v is not None and v < alpha) for v in adj_n]
 
 
+def twin_floor(values: Mapping[str, Mapping[int, np.ndarray]]) -> float | None:
+    """The seed-twin noise floor (DESIGN 44.8): the median magnitude of the mean same-arm difference between
+    two seeds, over all arms and seed pairs (``stats.noise_floor``)."""
+    diffs = []
+    for by_seed in values.values():
+        seeds = sorted(by_seed)
+        for i, s in enumerate(seeds):
+            for t in seeds[i + 1 :]:
+                diffs.append(np.asarray(by_seed[s], float) - np.asarray(by_seed[t], float))
+    return stats.noise_floor(diffs)
+
+
+def seed_bounds(means: Sequence[float], alpha: float) -> dict[str, Any]:
+    """Across-seed mean and the one-sided ``1 - alpha`` bounds (t, df = seeds - 1) of per-seed means."""
+    v = np.asarray([m for m in means if m is not None and math.isfinite(m)], float)
+    out: dict[str, Any] = {
+        "n": int(v.size),
+        "mean": float(v.mean()) if v.size else None,
+        "lower": None,
+        "upper": None,
+    }
+    if v.size >= 2:
+        half = ms.t_upper(alpha, v.size - 1) * float(v.std(ddof=1)) / math.sqrt(v.size)
+        out.update(lower=float(v.mean()) - half, upper=float(v.mean()) + half, sd=float(v.std(ddof=1)))
+    return out
+
+
+def contrast_call(
+    none: Mapping[int, np.ndarray], ctrl: Mapping[int, np.ndarray], seeds: Sequence[int], floor: float | None
+) -> dict[str, Any]:
+    """Per-seed paired block tests of ``none - ctrl`` (positive = the real calls help), the seed rule with the
+    noise floor, and the across-seed bounds of the seed means."""
+    per = [stats.paired_test(none[s], ctrl[s], direction=1) for s in seeds]
+    call = stats.seed_call(per, floor)
+    means = [p["mean"] for p in per]
+    return {"per_seed": per, "call": call, "bounds": seed_bounds(means, 0.05), "floor": floor}
+
+
+def classify_contrast(c: Mapping[str, Any], rules: Rules) -> dict[str, Any]:
+    """positive / meaning / equivalent for a primary contrast (see the module docstring)."""
+    b = c["bounds"]
+    bounds = seed_bounds([p["mean"] for p in c["per_seed"]], rules.alpha_one_sided)
+    positive = bool(c["call"]["label"] == "supported" and bounds["lower"] is not None and bounds["lower"] > 0)
+    meaning = bool(positive and bounds["mean"] >= rules.min_effect)
+    equivalent = bool(bounds["upper"] is not None and bounds["upper"] < rules.equivalence)
+    return {
+        "positive": positive,
+        "meaning": meaning,
+        "equivalent": equivalent,
+        "mean": bounds["mean"],
+        "lower": bounds["lower"],
+        "upper": bounds["upper"],
+        "bounds": bounds,
+        "two_sided_bounds": b,
+    }
+
+
+def use_clause(arms: Mapping[str, Mapping[int, ArmRun]], rules: Rules) -> dict[str, Any]:
+    """The counterfactual use clause from the none arm's logs (see the module docstring)."""
+    per = []
+    for s, a in sorted(arms["none"].items()):
+        st = a.tab.cf.get("stats")
+        modes = a.tab.meta.get("cf_modes", [])
+        names = a.tab.meta.get("cf_metrics", [])
+        if st is None or "decoy" not in modes:
+            per.append({"seed": s, "d_thrust": None, "control_zero": None})
+            continue
+        st = st.astype(np.float64)
+        i, k = modes.index("decoy"), names.index("d_thrust")
+        aud = ms.nanmean(st[:, i, 0, :], axis=0)
+        silent = st[:, i, 1, : len(names) - 1]
+        per.append(
+            {
+                "seed": s,
+                "d_thrust": float(aud[k]),
+                "flip_attack": float(aud[names.index("flip_attack")]),
+                "control_zero": bool(np.all(np.nan_to_num(silent, nan=0.0) == 0.0)),
+            }
+        )
+    ok = bool(
+        per
+        and all(
+            p["d_thrust"] is not None and p["d_thrust"] >= rules.use_thrust and p["control_zero"] for p in per
+        )
+    )
+    return {"passed": ok, "per_seed": per, "use_thrust": rules.use_thrust}
+
+
 def decide(res: dict[str, Any], rules: Rules) -> dict[str, Any]:
     """The clauses and the verdict from the assembled numbers (see the module docstring)."""
-    thr, a = rules.thresholds, rules.alpha
-    seeds = res["seeds"]
-    none = res["arms"]["none"]
-    code = [_pass(none[s]["families"].get("code"), thr["code"]) for s in seeds]
-    trn = [_pass(none[s]["families"].get("transfer"), thr["transfer"]) for s in seeds]
-    rec = [_pass(none[s]["families"].get("reception"), thr["reception"]) for s in seeds]
-    # the arm contrast on the transfer pair, Holm over the two contrasts
-    tc = res["transfer_contrast"]
-    adj, ok_adj = holm_flags([tc[c]["call"]["p"] for c in ("deaf", "decoy")], a)
-    contrast_ok = all(
-        tc[c]["call"]["label"] == "supported" and ok_adj[i] for i, c in enumerate(("deaf", "decoy"))
-    )
-    for i, c in enumerate(("deaf", "decoy")):
-        tc[c]["call"]["p_holm"] = adj[i]
-    # fitness: Holm over the readouts within each contrast; one readout must pass in both
+    a = rules.alpha
+    prim = res["contrast_decoy"]["class"]
+    sec = res["contrast_deaf"]
+    sec_ok = bool(sec["bounds"]["mean"] is not None and sec["bounds"]["mean"] > 0)
+    speaking = bool(res["speaker_frac"]["min"] >= rules.speaking_min)
+    use = res["use"]
     fit = res["fitness"]
     passing: dict[str, dict[str, bool]] = {r: {} for r in rules.readouts}
     for c in ("deaf", "decoy"):
-        adj_f, ok_f = holm_flags([fit[r][c]["call"]["p"] for r in rules.readouts], a)
+        adj, ok = holm_flags([fit[r][c]["call"]["p"] for r in rules.readouts], a)
         for i, r in enumerate(rules.readouts):
-            fit[r][c]["call"]["p_holm"] = adj_f[i]
-            passing[r][c] = fit[r][c]["call"]["label"] == "supported" and ok_f[i]
+            fit[r][c]["call"]["p_holm"] = adj[i]
+            passing[r][c] = fit[r][c]["call"]["label"] == "supported" and ok[i]
     fitness_ok = any(all(passing[r].values()) for r in rules.readouts)
-    cost = res["cost"]
-    cost_ok = bool(cost["matched"])
+    beats = {c: [r for r in rules.readouts if passing[r][c]] for c in ("deaf", "decoy")}
+    cost_ok = bool(res["cost"]["matched"])
     clauses = {
-        "code": {"passed": all(c["passed"] for c in code), "per_seed": code},
-        "transfer": {"passed": all(c["passed"] for c in trn), "per_seed": trn},
-        "transfer_contrast": {"passed": bool(contrast_ok), "p_holm": adj},
-        "reception": {"passed": all(c["passed"] for c in rec), "per_seed": rec},
+        "speaking": {"passed": speaking, "min_share": res["speaker_frac"]["min"]},
+        "use": {"passed": use["passed"]},
+        "meaning": {
+            "passed": prim["meaning"],
+            "positive": prim["positive"],
+            "equivalent": prim["equivalent"],
+            "mean": prim["mean"],
+            "lower": prim["lower"],
+            "upper": prim["upper"],
+        },
+        "secondary_contrast": {"passed": sec_ok, "mean": sec["bounds"]["mean"]},
         "fitness": {"passed": bool(fitness_ok), "by_readout": passing},
         "cost_matched": {"passed": cost_ok},
     }
-    info = clauses["code"]["passed"] or clauses["transfer"]["passed"] or clauses["reception"]["passed"]
-    used = clauses["reception"]["passed"] or clauses["transfer_contrast"]["passed"]
+    bound = prim["upper"]
+    fit_facts = "; ".join(
+        f"none beats {c} on {', '.join(v) if v else 'no readout'}" for c, v in beats.items()
+    )
     miss = [k for k, v in clauses.items() if not v["passed"]]
-    beats = {c: [r for r in rules.readouts if passing[r][c]] for c in ("deaf", "decoy")}
-
-    def fit_facts() -> str:
-        part = [f"none beats {c} on {', '.join(v) if v else 'no readout'}" for c, v in beats.items()]
-        return "; ".join(part)
-
     if all(c["passed"] for c in clauses.values()):
-        verdict, detail = "language", "every clause of the operational definition holds"
-    elif info or used:
-        verdict = "signalling without meaning"
-        if not used:
-            detail = (
-                "information without use: the calls carry information, but hearers' behaviour does not use it"
-            )
-        elif not clauses["fitness"]["passed"]:
-            if beats["deaf"] and not beats["decoy"]:
-                kind = "use with a benefit of hearing but none specific to the calls"
-            elif beats["deaf"] or beats["decoy"]:
-                kind = "use with a partial benefit"
-            else:
-                kind = "use without benefit"
-            detail = f"{kind}: hearers use the calls; {fit_facts()}"
-        else:
-            detail = "partial: " + ", ".join(miss) + " did not hold"
-        detail += "; clauses that failed: " + ", ".join(miss)
-        if not cost_ok:
-            detail += "; the voice cost is not matched across arms, so the fitness clause cannot be read"
+        verdict, label = "language", "language"
+        detail = (
+            f"the real calls carry {prim['mean']:.4f} bits of call-specific transfer (lower bound "
+            f"{prim['lower']:.4f}), hearers use them, and hearing them pays ({fit_facts})"
+        )
+    elif not speaking:
+        verdict = label = "no evidence"
+        detail = f"only {res['speaker_frac']['min'] * 100:.1f} % of the sampled rows speak"
+    elif prim["positive"]:
+        verdict = label = "signalling with trace meaning"
+        size = "above" if prim["meaning"] else "below"
+        detail = (
+            f"the call-specific transfer (none minus decoy) is positive, {prim['mean']:.4f} bits, {size} the "
+            f"minimum effect {rules.min_effect} (lower bound {prim['lower']:.4f}, "
+            f"upper {prim['upper']:.4f}); "
+            f"clauses that failed: {', '.join(miss) if miss else 'none'}; {fit_facts}"
+        )
+    elif prim["equivalent"]:
+        verdict = "signalling, no detectable meaning"
+        label = f"signalling, no detectable meaning (bound {bound:.4f} bits)"
+        detail = (
+            f"the call-specific transfer (none minus decoy) is {prim['mean']:.4f} bits with a one-sided 95% "
+            f"upper bound of {bound:.4f}, below the equivalence bound {rules.equivalence}; hearers "
+            f"{'do' if use['passed'] else 'do not'} change their decisions with the content; {fit_facts}"
+        )
     else:
-        verdict = "no evidence"
-        detail = "no information clause passes"
-        if clauses["fitness"]["passed"]:
-            detail += " (hearing is worth something in fitness, but no measured call information explains it)"
+        verdict = label = "no evidence"
+        detail = (
+            f"the call-specific transfer is {prim['mean']} bits, not positive, and its upper bound "
+            f"{bound} does not fall below the equivalence bound {rules.equivalence}: not enough to say"
+        )
+    if not cost_ok:
+        detail += "; the voice cost is not matched across arms, so the fitness clause cannot be read"
     return {
         "verdict": verdict,
+        "label": label,
         "detail": detail,
         "clauses": clauses,
         "confirmatory": bool(rules.confirmatory and res["as_designed"]),
+        "revised_after_results": rules.revised_after_results,
     }
 
 
@@ -261,9 +390,10 @@ def run_meaning(
     rules: Rules,
     tests: Mapping[tuple[str, int], dict[str, Any]] | None = None,
     log: Callable[[str], None] = print,
+    v2: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """The full test over ``arms[name][seed]`` (names ``none``, ``deaf``, ``decoy``; the same seeds in
-    each)."""
+    """The full test over ``arms[name][seed]`` (names ``none``, ``deaf``, ``decoy``; the same seeds in each).
+    ``v2`` is the archived result of the earlier rule, shown beside the verdict."""
     for name in spec.ARMS:
         if name not in arms or not arms[name]:
             raise ValueError(f"the arm {name!r} is missing")
@@ -277,6 +407,7 @@ def run_meaning(
     steps_rel = {a.fit["last_step"][0] for d in arms.values() for a in d.values()}
     res: dict[str, Any] = {
         "version": MEANING_VERSION,
+        "rules_version": spec.RULES_VERSION,
         "seeds": seeds,
         "windows": sorted(windows),
         "prereg_hash": rules.hash,
@@ -284,66 +415,80 @@ def run_meaning(
         "as_designed": all(a.as_designed(rules) for d in arms.values() for a in d.values()),
         "fork_steps_seen": sorted(int(x) for x in steps_rel),
         "arms": {},
+        "v2": dict(v2) if v2 else None,
     }
     for name, d in arms.items():
         res["arms"][name] = {}
         for s, a in d.items():
-            tj = (tests or {}).get((name, s))
-            res["arms"][name][s] = analyse_arm(a, rules, tj, log)
-    # the transfer pair: the none arm's even blocks, per seed; estimated on odd blocks of every arm of the
-    # seed
-    T: dict[str, dict[int, np.ndarray]] = {n: {} for n in spec.ARMS}
-    pairs: dict[int, str | None] = {}
+            res["arms"][name][s] = analyse_arm(a, rules, (tests or {}).get((name, s)), log)
+    # coding: every arm of a seed with the none arm's cut points
+    preps: dict[int, dict[str, analyse.Prepared]] = {}
     for s in seeds:
         base = arms["none"][s]
         base.prep = analyse.prepare(base.tab, base.window, rules.n_blocks)
-        pair = select_transfer_pair(base.prep, rules)
-        pairs[s] = pair
-        for name in spec.ARMS:
+        preps[s] = {"none": base.prep}
+        for name in ("deaf", "decoy"):
             a = arms[name][s]
-            a.prep = (
-                base.prep
-                if name == "none"
-                else analyse.prepare(
-                    a.tab,
-                    a.window,
-                    rules.n_blocks,
-                    edges=base.prep.edges,
-                    sym_thr=base.prep.sym_thr,
-                    heard_thr=base.prep.heard_thr,
-                    dist_edges=base.prep.dist_edges,
-                )
+            a.prep = analyse.prepare(
+                a.tab,
+                a.window,
+                rules.n_blocks,
+                edges=base.prep.edges,
+                sym_thr=base.prep.sym_thr,
+                heard_thr=base.prep.heard_thr,
+                dist_edges=base.prep.dist_edges,
             )
+            preps[s][name] = a.prep
+    pair, scores = select_contrast_pair(preps, rules)
+    log(f"contrast pair (none minus decoy, even blocks): {pair}")
+    res["contrast_pair"] = pair
+    res["contrast_pair_scores"] = dict(sorted(scores.items(), key=lambda kv: -kv[1])[:8])
+    T: dict[str, dict[int, np.ndarray]] = {n: {} for n in spec.ARMS}
+    for s in seeds:
+        for name in spec.ARMS:
             rng = np.random.default_rng([rules.seed, s, 11])
             T[name][s] = (
-                analyse.pair_blocks(a.prep, "transfer", pair, rules.n_perm_block, rng, parity=1)
+                analyse.pair_blocks(preps[s][name], "transfer", pair, rules.n_perm_block, rng, parity=1)
                 if pair
                 else np.full(rules.n_blocks, np.nan)
             )
-        log(f"seed {s}: transfer pair {pair}")
-    res["transfer_pairs"] = {str(s): p for s, p in pairs.items()}
     res["transfer_blocks"] = {
         n: {str(s): [None if not np.isfinite(v) else float(v) for v in T[n][s]] for s in seeds} for n in T
     }
-    res["transfer_contrast"] = {}
-    for c in ("deaf", "decoy"):
-        per, call = contrast_blocks(T["none"], T[c], seeds)
-        res["transfer_contrast"][c] = {"per_seed": per, "call": call}
+    floor = twin_floor({n: {s: T[n][s][1::2] for s in seeds} for n in T})
+    for c in ("decoy", "deaf"):
+        ct = contrast_call(T["none"], T[c], seeds, floor)
+        if c == "decoy":
+            ct["class"] = classify_contrast(ct, rules)
+        res[f"contrast_{c}"] = ct
+    # use
+    res["use"] = use_clause(arms, rules)
+    sp = {
+        s: float((arms["none"][s].prep.s_sym > 0).mean()) if arms["none"][s].prep is not None else math.nan
+        for s in seeds
+    }
+    res["speaker_frac"] = {"per_seed": {str(s): v for s, v in sp.items()}, "min": min(sp.values())}
     # fitness and cost
     res["fitness"] = {}
     for r in rules.readouts:
         res["fitness"][r] = {}
+        fl = twin_floor({n: {s: arms[n][s].fit[r] for s in seeds} for n in spec.ARMS})
         for c in ("deaf", "decoy"):
             f_none = {s: arms["none"][s].fit[r] for s in seeds}
             f_ctrl = {s: arms[c][s].fit[r] for s in seeds}
-            per, call = contrast_blocks(f_none, f_ctrl, seeds)
+            per = [stats.paired_test(f_none[s], f_ctrl[s], direction=1) for s in seeds]
             rel = [
                 None
                 if not np.isfinite(np.nanmean(f_ctrl[s])) or np.nanmean(f_ctrl[s]) == 0
                 else float((np.nanmean(f_none[s]) - np.nanmean(f_ctrl[s])) / abs(np.nanmean(f_ctrl[s])))
                 for s in seeds
             ]
-            res["fitness"][r][c] = {"per_seed": per, "call": call, "relative_per_seed": rel}
+            res["fitness"][r][c] = {
+                "per_seed": per,
+                "call": stats.seed_call(per, fl),
+                "relative_per_seed": rel,
+                "floor": fl,
+            }
         res["fitness"][r]["means"] = {n: [_nm(arms[n][s].fit[r]) for s in seeds] for n in spec.ARMS}
     due = {n: float(np.nanmean([np.nanmean(arms[n][s].fit["comm_due"]) for s in seeds])) for n in spec.ARMS}
     base_due = due["none"]
@@ -354,7 +499,6 @@ def run_meaning(
         "tolerance": rules.cost_tol,
         "matched": bool(all(math.isfinite(v) and abs(v) <= rules.cost_tol for v in rel.values())),
     }
-    # counterfactual effects, descriptive
     res["counterfactual"] = _cf_summary(arms)
     res["decision"] = decide(res, rules)
     res["confirmatory"] = res["decision"]["confirmatory"]
@@ -406,49 +550,77 @@ def _ci(x: Mapping[str, Any], nd: int = 4) -> str:
 
 
 def to_markdown(res: dict[str, Any]) -> str:
-    """The report: verdict, clauses with their numbers, contrasts per seed, fitness readouts."""
+    """The report: verdict (and the earlier rule's), clauses with their numbers, contrasts per seed,
+    fitness."""
     d, seeds, cl = res["decision"], res["seeds"], res["decision"]["clauses"]
     if res["confirmatory"]:
         status = "Confirmatory"
     elif not res["as_designed"]:
-        status = "EXPLORATORY (a fork or a log does not match the pre-registered length or window)"
+        status = "EXPLORATORY (a fork or a log does not match the pre-registered length, window or sampling)"
     else:
         status = "EXPLORATORY (the pre-registration is missing or not frozen)"
     lines = [
-        "# Voice meaning test",
+        "# Voice meaning test (rules version 3)",
         "",
-        f"**Verdict: {d['verdict']}.** {d['detail']}.",
+        f"**Verdict: {d['label']}.** {d['detail']}.",
         "",
+    ]
+    if d["revised_after_results"]:
+        lines += [
+            "*Revised rule, decided after seeing the v2 results (pre-registration amendment A2).* The "
+            "minimum effect and the equivalence bound were chosen knowing the v2 numbers.",
+            "",
+        ]
+    if res.get("v2"):
+        v2 = res["v2"]
+        lines += [
+            f"Earlier rule (v2, archived in `{v2.get('source')}`): **{v2.get('verdict')}**. "
+            f"{v2.get('detail')}",
+            "",
+        ]
+    lines += [
         f"{status}, pre-registration sha256 `{res['prereg_hash']}`. Seeds {seeds}, windows {res['windows']}; "
-        f"the forks ran {res['fork_steps_seen']} steps.",
+        f"the forks ran {res['fork_steps_seen']} steps. The unit of inference is the seed: one evolved "
+        "checkpoint per world, so the seeds are near-replicates and the result is conditional on that "
+        "checkpoint.",
         "",
         "## Clauses",
         "",
         _row("clause", "holds", "numbers"),
         _row("---", "---", "---"),
+        _row(
+            "speaking",
+            cl["speaking"]["passed"],
+            f"share of rows that speak, lowest seed {_f(cl['speaking']['min_share'], 3)}",
+        ),
     ]
-    for k in ("code", "transfer", "reception"):
-        nums = "; ".join(
-            f"s{s}: {c.get('pair', '-')} excess {_f(c.get('excess'), 4)} bits, z {_f(c.get('z'), 1)}, "
-            f"p {_p(c.get('p_family'))}"
-            for s, c in zip(seeds, cl[k]["per_seed"], strict=True)
-        )
-        lines.append(_row(f"{k} (none arm)", cl[k]["passed"], nums))
-    tc = res["transfer_contrast"]
-
-    def contrast(c: str) -> str:
-        means = [x["mean"] for x in tc[c]["per_seed"] if x["mean"] is not None]
-        call = tc[c]["call"]
-        return (
-            f"none-{c}: mean {_f(np.mean(means) if means else None, 4)} bits, label {call['label']}, "
-            f"p {_p(call['p'])}, Holm {_p(call.get('p_holm'))}"
-        )
-
+    use = res["use"]
+    nums = "; ".join(
+        f"s{p['seed']}: |thrust| change {_f(p['d_thrust'], 4)}, control group exactly 0: {p['control_zero']}"
+        for p in use["per_seed"]
+    )
     lines.append(
         _row(
-            "transfer contrast",
-            cl["transfer_contrast"]["passed"],
-            "; ".join(contrast(c) for c in ("deaf", "decoy")),
+            "use (counterfactual none to decoy)",
+            cl["use"]["passed"],
+            f"{nums} (needs >= {use['use_thrust']})",
+        )
+    )
+    m = cl["meaning"]
+    lines.append(
+        _row(
+            "call-specific transfer (none - decoy)",
+            m["passed"],
+            f"pair `{res['contrast_pair']}`; mean {_f(m['mean'], 4)} bits, one-sided 95% bounds "
+            f"[{_f(m['lower'], 4)}, {_f(m['upper'], 4)}]; positive {m['positive']}, equivalent to nothing "
+            f"(upper < bound) {m['equivalent']}",
+        )
+    )
+    lines.append(
+        _row(
+            "secondary: none - deaf",
+            cl["secondary_contrast"]["passed"],
+            f"mean {_f(cl['secondary_contrast']['mean'], 4)} bits",
         )
     )
     lines.append(_row("fitness", cl["fitness"]["passed"], "see below"))
@@ -461,25 +633,29 @@ def to_markdown(res: dict[str, Any]) -> str:
             f"voice cost relative to none: {rel} (tolerance {cost['tolerance']})",
         )
     )
+    cd, cu = res["contrast_decoy"], res["contrast_deaf"]
     lines += [
         "",
-        "## Transfer contrast on the odd blocks (bits, 95% interval over blocks), per seed",
+        f"## Contrasts of the pair `{res['contrast_pair']}` on the odd blocks (bits, 95% CI over blocks)",
         "",
-        _row("seed", "pair", "none - deaf", "none - decoy"),
-        _row(*["---"] * 4),
+        f"Seed-twin noise floor {_f(cd['floor'], 4)} bits. Seed rule (with the floor): none - decoy "
+        f"`{cd['call']['label']}`, none - deaf `{cu['call']['label']}`.",
+        "",
+        _row("seed", "none - decoy", "none - deaf"),
+        _row(*["---"] * 3),
     ]
     for i, s in enumerate(seeds):
-        lines.append(
-            _row(
-                s,
-                res["transfer_pairs"][str(s)],
-                _ci(tc["deaf"]["per_seed"][i]),
-                _ci(tc["decoy"]["per_seed"][i]),
-            )
-        )
+        lines.append(_row(s, _ci(cd["per_seed"][i]), _ci(cu["per_seed"][i])))
     lines += [
         "",
+        "Pair scores on the even blocks (none minus decoy, raw bits; top): "
+        + ", ".join(f"{k} {_f(v, 4)}" for k, v in res["contrast_pair_scores"].items()),
+        "",
         "## Fitness readouts (none minus control, per seed; relative to the control's mean)",
+        "",
+        "Removing the heard inputs (deaf) is a knock-out of evolved brains: a gap against deaf is the cost "
+        "of "
+        "the knock-out plus any value of information; replacing the content (decoy) is the content test.",
         "",
         _row("readout", "contrast", "label", "p", "Holm p", "mean difference per seed", "relative"),
         _row(*["---"] * 7),
@@ -497,13 +673,32 @@ def to_markdown(res: dict[str, Any]) -> str:
     for r, byc in res["fitness"].items():
         arms = "; ".join(f"{n} " + ", ".join(_f(v, 4) for v in vs) for n, vs in byc["means"].items())
         lines.append(f"- {r}: {arms}")
-    lines += ["", "## Counterfactual decisions (audible rows; own control against each other control)", ""]
+    lines += ["", "## Reported, not decided on (best pair per arm, mean excess bits over seeds)", ""]
+    lines += [_row("family", "none", "deaf", "decoy"), _row(*["---"] * 4)]
+    for fam in ("code", "reception", "transfer"):
+        vals = []
+        for n in spec.ARMS:
+            xs = [res["arms"][n][s]["families"].get(fam) for s in seeds]
+            ex = [x["excess"] for x in xs if x and x.get("excess") is not None]
+            pr_ = ", ".join(x["pair"] for x in xs[:1] if x)
+            vals.append(f"{_f(float(np.mean(ex)) if ex else None, 4)} ({pr_})")
+        lines.append(_row(fam, *vals))
+    lines += [
+        "",
+        "`code` is sender-side (what the call says about the caller), not communication. `reception` is "
+        "stratified on the audible count and the distance of the loudest source and is still reported only; "
+        "the pooled z and "
+        "p are non-binding (every z is far above any threshold, and the rows are not exchangeable).",
+        "",
+        "## Counterfactual decisions (audible rows; own control against each other control)",
+        "",
+    ]
     for n, modes in res["counterfactual"].items():
-        for mode, m in modes.items():
+        for mode, mm in modes.items():
             lines.append(
-                f"- {n} -> {mode}: |thrust| change {_f(m.get('d_thrust'), 4)}, attack flips "
-                f"{_f(m.get('flip_attack'), 4)}, bond flips {_f(m.get('flip_bond'), 4)}, speech flips "
-                f"{_f(m.get('flip_speak'), 4)}, call change {_f(m.get('d_voice'), 4)}"
+                f"- {n} -> {mode}: |thrust| change {_f(mm.get('d_thrust'), 4)}, attack flips "
+                f"{_f(mm.get('flip_attack'), 4)}, bond flips {_f(mm.get('flip_bond'), 4)}, speech flips "
+                f"{_f(mm.get('flip_speak'), 4)}, call change {_f(mm.get('d_voice'), 4)}"
             )
     lines += [
         "",
@@ -511,9 +706,10 @@ def to_markdown(res: dict[str, Any]) -> str:
         "",
         "- The shuffle null removes any link between a caller's situation and a hearer's action. The shared "
         "environment (neighbours are in similar places) survives conditioning on the hearer's own situation, "
-        "so a transfer above the null is not yet evidence of a call; the contrast with `deaf` and `decoy`, "
-        "which keep the environment and cut the calls, is.",
-        "- Thresholds are provisional (DESIGN 44.8) and come from the frozen pre-registration; effect sizes "
-        "are the excess over the null mean, in bits, with 95% t-intervals over blocks of one seed.",
+        "so the transfer in the none arm alone is not evidence of a call; the none-minus-decoy contrast, "
+        "which "
+        "keeps the environment, the presence, the loudness and the bearing and cuts only the content, is.",
+        "- The thresholds (minimum effect, equivalence bound, use) are provisional and were chosen after the "
+        "v2 results; the effect sizes are the excess over the null mean, in bits.",
     ]
     return "\n".join(lines) + "\n"

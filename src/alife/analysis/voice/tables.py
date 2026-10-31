@@ -200,6 +200,12 @@ class Tables:
             np.savez_compressed(fh, **arrays)
         tmp.replace(path)
 
+    @staticmethod
+    def load_meta(path: Path) -> dict[str, Any]:
+        """Only the meta of a ``tables.npz`` (cheap: the arrays are not read)."""
+        with np.load(Path(path), allow_pickle=False) as z:
+            return json.loads(bytes(z["meta_json"]).decode("utf-8"))
+
     @classmethod
     def load(cls, path: Path) -> Tables:
         with np.load(Path(path), allow_pickle=False) as z:

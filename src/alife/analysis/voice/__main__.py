@@ -89,6 +89,7 @@ def _summarize(tab: Tables, out: Path, a: argparse.Namespace) -> int:
         n_perm_block=spec.N_PERM_BLOCK,
         top=a.top,
         seed=a.seed,
+        n_blocks=a.blocks,
         with_tests=not a.no_tests,
         log=lambda m: print(m, flush=True),
     )
@@ -156,14 +157,18 @@ def cmd_meaning(a: argparse.Namespace) -> int:
             if t:
                 tests[(arm, seed)] = t
     try:
-        res = meaning.run_meaning(arms, rules, tests, log=lambda m: print(m, flush=True))
+        v2 = None
+        if a.v2:
+            old = json.loads(Path(a.v2).read_text(encoding="utf-8"))["decision"]
+            v2 = {"source": str(a.v2), "verdict": old["verdict"], "detail": old["detail"]}
+        res = meaning.run_meaning(arms, rules, tests, log=lambda m: print(m, flush=True), v2=v2)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     out = Path(a.out)
     _write(out / "meaning.json", res)
     (out / "meaning.md").write_text(meaning.to_markdown(res), encoding="utf-8")
-    print(f"{res['decision']['verdict']}: {res['decision']['detail']}")
+    print(f"{res['decision']['label']}: {res['decision']['detail']}")
     print(f"wrote {out / 'meaning.json'} and {out / 'meaning.md'}")
     return 0
 
@@ -176,6 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--perms", type=int, default=spec.N_PERM, help="permutations of a pooled test")
         p.add_argument("--top", type=int, default=spec.TOP_LINEAGES, help="lineages reported one by one")
         p.add_argument("--seed", type=int, default=spec.SEED)
+        p.add_argument("--blocks", type=int, default=spec.N_BLOCKS, help="blocks of the window")
         p.add_argument("--no-tests", action="store_true", help="skip the information tests (tables only)")
 
     p = sub.add_parser("log", help="replay a window with the observers on and write the tables and summary")
@@ -217,6 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--prereg", type=Path)
     p.add_argument("--exploratory", action="store_true")
+    p.add_argument("--v2", type=Path, help="meaning.json of the earlier rule, shown beside the verdict")
     p.add_argument("--out", type=Path, required=True)
     p.set_defaults(fn=cmd_meaning)
     return ap

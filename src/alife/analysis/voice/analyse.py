@@ -52,6 +52,8 @@ class Prepared(NamedTuple):
     h_src_sym: np.ndarray
     h_has_src: np.ndarray  # bool
     h_dist_bin: np.ndarray
+    h_dist_code: np.ndarray  # 0 without a source, else 1 + the distance bin
+    h_audible: np.ndarray  # audible neighbours (uint8)
     h_block: np.ndarray
     h_step: np.ndarray
     h_lineage: np.ndarray
@@ -80,6 +82,8 @@ def prepare(
     if dist_edges is None:
         dist_edges = ms.quantile_edges(h["src_dist"][h["has_src"] > 0], spec.DIST_BINS)
     start, end = window
+    has_src = h["has_src"] > 0
+    dist_bin = ms.code_by_edges(np.nan_to_num(h["src_dist"], nan=0.0), dist_edges)
     return Prepared(
         width=w,
         edges=edges,
@@ -96,8 +100,10 @@ def prepare(
         h_resp=tables.code_response(h, edges),
         h_src_ctx=tables.code_context(h, edges, prefix="src_c_"),
         h_src_sym=ms.symbols(h["src_voice"], sym_thr),
-        h_has_src=h["has_src"] > 0,
-        h_dist_bin=ms.code_by_edges(np.nan_to_num(h["src_dist"], nan=0.0), dist_edges),
+        h_has_src=has_src,
+        h_dist_bin=dist_bin,
+        h_dist_code=np.where(has_src, dist_bin + 1, 0).astype(np.int8),
+        h_audible=h["audible"].astype(np.int8),
         h_block=tables.block_of(h["step"], start, end - start, n_blocks),
         h_step=h["step"],
         h_lineage=h["lineage"],
@@ -131,12 +137,17 @@ def build_family(p: Prepared, family: str, mask: np.ndarray | None = None) -> li
         return [ms.Pair(f"S~{k}", sym, p.n_sym, ctx[k], tables.n_levels(ctx[k]), strata) for k in usable(ctx)]
     sel = np.ones(len(p.h_heard), bool) if mask is None else mask
     if family == "reception":
+        # own situation AND the geometry of the hearing: how many callers are audible and how far the
+        # loudest is
+        # (a louder call is a nearer one, and nearness moves a hearer), in quarters of the window
+        quarter = np.maximum(p.h_block, 0) * 4 // max(p.n_blocks, 1)
         own = ms.combine(
             p.h_ctx["crowd"][sel],
             p.h_ctx["hurt"][sel],
-            p.h_ctx["food"][sel],
             p.h_ctx["bonded"][sel],
-            np.maximum(p.h_block[sel], 0),
+            p.h_audible[sel],
+            p.h_dist_code[sel],
+            quarter[sel],
         )
         heard = p.h_heard[sel]
         return [
@@ -201,6 +212,15 @@ def pair_blocks(
     return ms.block_excess(pairs[name], row_block(p, family), nb, n_perm, rng, min_size, use)
 
 
+def block_information(
+    p: Prepared, family: str, parity: int | None = None, min_size: int = spec.MIN_STRATUM
+) -> dict[str, np.ndarray]:
+    """The raw information of every pair of ``family`` per block (see ``measures.block_info``)."""
+    use = None if parity is None else [b for b in range(p.n_blocks) if b % 2 == parity]
+    blk = row_block(p, family)
+    return {q.name: ms.block_info(q, blk, p.n_blocks, min_size, use) for q in build_family(p, family)}
+
+
 def run_all(
     tab: Tables,
     window: tuple[int, int],
@@ -208,14 +228,17 @@ def run_all(
     n_perm: int = spec.N_PERM,
     n_perm_block: int = spec.N_PERM_BLOCK,
     seed: int = spec.SEED,
+    n_blocks: int = spec.N_BLOCKS,
     families: tuple[str, ...] = FAMILIES,
     prepared: Prepared | None = None,
     log: Callable[[str], None] = lambda m: None,
 ) -> dict[str, Any]:
-    """Pooled test and block series of every family of one run, JSON-safe."""
-    p = prepared or prepare(tab, window)
+    """Pooled test and block series of every family of one run, JSON-safe. ``params`` records what the tests
+    were run with (``meaning`` asserts them against the pre-registration)."""
+    p = prepared or prepare(tab, window, n_blocks)
     rng = np.random.default_rng(seed)
     out: dict[str, Any] = {
+        "params": {"n_perm": n_perm, "n_perm_block": n_perm_block, "seed": seed, "n_blocks": p.n_blocks},
         "n_senders": len(p.s_sym),
         "n_hearers": len(p.h_heard),
         "n_hearers_with_source": int(p.h_has_src.sum()),

@@ -1,25 +1,38 @@
 """The communication scorecard of the emergence suite: the language-score adapter (DESIGN §39.14 and §44.6,
 E6).
 
-The measurement lives in ``alife.analysis.voice`` (the voice log and the meaning test). This module is the
-~60 lines that map a logged window of one run onto ``scorecards.ScorecardResult``: it does not simulate and
-does
-not run the arms. ``available`` asks for a voice log (``python -m alife.analysis.voice log RUN --from T0
---steps
-N --out analysis_cache/voice/<run>``) of the requested window; ``compute`` reads
-its tables and returns the pre-registered primary ``transfer_bits``, the excess over the shuffle null, in
-bits, of the best (caller context, hearer response) pair, with the code and reception readings beside it.
+The measurement lives in ``alife.analysis.voice`` (the voice log and the meaning test). This module maps a
+logged
+window of one run onto ``scorecards.ScorecardResult``; it does not simulate and does not run the arms.
+``available`` asks for a voice log of the requested window (``python -m alife.analysis.voice log RUN --from T0
+--steps N --out <root>/<run>``) under the log root: ``$ALIFE_VOICE_LOGS`` if set, else
+``analysis_cache/voice``
+in the repository, whatever the working directory. The log must belong to the run (its meta names the run's
+path).
 
-The label is ``signalling`` when the calls carry information (the code or the transfer test passes its
-thresholds), else ``no signal``. ``language`` is never given from one run: it needs the arm contrast and the
-fitness clause, which are the verdict of ``python -m alife.analysis.voice meaning`` over forks with
-``comm.control`` ``none``, ``deaf`` and ``decoy``. When the panel is given control arms that have a voice log,
-``transfer_over_deaf`` and ``transfer_over_decoy`` report the same pair in them (same cut points) and the
-difference.
+``transfer_bits`` is the pre-registered primary: the excess over the shuffle null, in bits, of the transfer
+pair
+that has the largest raw information on the **even** blocks, estimated on the **odd** blocks (the pair is not
+chosen on the data that estimate it). It contains the shared environment as well as the calls, so it is a
+number
+to compare with the inert twin's, not a verdict. ``code_bits`` (what the call says about the caller) and
+``reception_bits`` are reported beside it.
+
+The label is ``signalling, meaning not tested`` unless the panel gives a ``decoy`` control arm that has a
+log of
+the same window. Then the none-minus-decoy contrast of the pair chosen on the even blocks by that contrast is
+estimated on the odd blocks, and the one-sided 95% bounds over the blocks of this one seed give ``signalling
+with
+trace meaning`` (lower bound above 0), ``signalling, no detectable meaning (bound X)`` (upper bound below the
+equivalence bound) or ``no evidence``. ``language`` is never given from one run: it needs the seeds, the
+fitness
+clause and the cost gate, which are the verdict of ``python -m alife.analysis.voice meaning``.
 """
 
 from __future__ import annotations
 
+import math
+import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
@@ -32,19 +45,43 @@ if TYPE_CHECKING:
     from alife.analysis.emergence.frames import Frames
     from alife.runio import RunDir
 
-COMM_SCORECARD_VERSION: Final = "1"
+COMM_SCORECARD_VERSION: Final = "3"
+REPO_ROOT: Final = Path(__file__).resolve().parents[3]
 
 
-LOG_ROOT: Final = Path("analysis_cache/voice")
+def log_root() -> Path:
+    """The parent of the voice logs: ``$ALIFE_VOICE_LOGS``, else ``<repository>/analysis_cache/voice``."""
+    env = os.environ.get("ALIFE_VOICE_LOGS")
+    return Path(env) if env else REPO_ROOT / "analysis_cache" / "voice"
 
 
 def _log_dir(run: Any) -> Path | None:
-    """``analysis_cache/voice/<run directory name>``, where ``voice log --out`` is pointed, if it has
-    tables."""
-    name = Path(getattr(run, "path", "")).name
-    if name and (LOG_ROOT / name / "tables.npz").is_file():
-        return LOG_ROOT / name
-    return None
+    """``<log root>/<run directory name>`` if it holds tables of exactly this run (the meta names its
+    path)."""
+    from alife.analysis.voice.tables import Tables
+
+    path = Path(getattr(run, "path", ""))
+    if not path.name:
+        return None
+    d = log_root() / path.name
+    if not (d / "tables.npz").is_file():
+        return None
+    try:
+        same = Path(Tables.load_meta(d / "tables.npz").get("run", "")).resolve() == path.resolve()
+    except (OSError, ValueError, KeyError):
+        return None
+    return d if same else None
+
+
+def _odd_mean_and_bounds(values: np.ndarray, alpha: float) -> dict[str, float | None]:
+    from alife.analysis.voice import measures as ms
+
+    v = np.asarray(values, float)
+    v = v[np.isfinite(v)]
+    if v.size < 2:
+        return {"mean": float(v.mean()) if v.size else None, "lower": None, "upper": None}
+    half = ms.t_upper(alpha, v.size - 1) * float(v.std(ddof=1)) / math.sqrt(v.size)
+    return {"mean": float(v.mean()), "lower": float(v.mean() - half), "upper": float(v.mean() + half)}
 
 
 class CommScorecard:
@@ -59,13 +96,13 @@ class CommScorecard:
         d = _log_dir(run)
         if d is None:
             return [
-                "a voice log of this run (python -m alife.analysis.voice log RUN --from T0 --steps N --out "
-                "analysis_cache/voice/<run>)"
+                f"a voice log of this run under {log_root()}/<run directory name> (python -m "
+                "alife.analysis.voice log RUN --from T0 --steps N --out ...)"
             ]
         if window is not None and window != (0, 0):
             from alife.analysis.voice.tables import Tables
 
-            have = tuple(Tables.load(d / "tables.npz").meta["window"])
+            have = tuple(Tables.load_meta(d / "tables.npz")["window"])
             if have != tuple(window):
                 return [f"a voice log of the window {tuple(window)} (the logged window is {have})"]
         return []
@@ -90,68 +127,94 @@ class CommScorecard:
         win = tuple(tab.meta["window"])
         p = analyse.prepare(tab, win)  # type: ignore[arg-type]
         rng = np.random.default_rng(spec.SEED)
-        fam = {f: analyse.run_family(p, f, spec.N_PERM, rng) for f in ("code", "reception", "transfer")}
-        best = {f: (r.best_summary() if r else None) for f, r in fam.items()}
-
-        def val(f: str, key: str = "excess") -> float | None:
-            return None if best[f] is None else best[f][key]
-
+        speaking = float((p.s_sym > 0).mean())
+        fam = {f: analyse.run_family(p, f, spec.N_PERM, rng) for f in ("code", "reception")}
         endpoint: dict[str, float | None] = {
-            "primary": val("transfer"),
-            "transfer_bits": val("transfer"),
-            "code_bits": val("code"),
-            "reception_bits": val("reception"),
+            "primary": None,
+            "transfer_bits": None,
+            "code_bits": None if fam["code"] is None else float(fam["code"].excess[fam["code"].best]),
+            "reception_bits": None
+            if fam["reception"] is None
+            else float(fam["reception"].excess[fam["reception"].best]),
+            "speaking_share": speaking,
         }
-        pair = best["transfer"]["pair"] if best["transfer"] else None
-        for ctrl in ("deaf", "decoy"):
-            cd = _log_dir(controls[ctrl]) if ctrl in controls else None
-            if pair is None or cd is None:
-                continue
+        # the transfer pair: chosen on the even blocks (largest raw information), estimated on the odd blocks
+        info = analyse.block_information(p, "transfer", parity=0)
+        score = {k: float(np.nanmean(v)) for k, v in info.items() if np.isfinite(v).any()}
+        pair = max(score, key=lambda k: score[k]) if score else None
+        if pair is not None:
+            odd = analyse.pair_blocks(p, "transfer", pair, spec.N_PERM_BLOCK, rng, parity=1)
+            endpoint["transfer_bits"] = endpoint["primary"] = float(np.nanmean(odd))
+        # the call-specific part, when the panel brings a decoy arm with a log of the same window
+        label = "signalling, meaning not tested (no decoy log)"
+        crit = [
+            Criterion(
+                f"speaking (>= {spec.SPEAKING_MIN} of the rows)",
+                speaking,
+                spec.SPEAKING_MIN,
+                speaking >= spec.SPEAKING_MIN,
+            )
+        ]
+        cd = _log_dir(controls["decoy"]) if "decoy" in controls else None
+        note = ""
+        if cd is not None and tuple(Tables.load_meta(cd / "tables.npz")["window"]) != win:
+            cd, note = None, " (the decoy log is of another window)"
+        if cd is not None:
             ct = Tables.load(cd / "tables.npz")
             pc = analyse.prepare(
                 ct,
-                tuple(ct.meta["window"]),  # type: ignore[arg-type]
+                win,  # type: ignore[arg-type]
                 edges=p.edges,
                 sym_thr=p.sym_thr,
                 heard_thr=p.heard_thr,
                 dist_edges=p.dist_edges,
             )
-            r = analyse.run_family(pc, "transfer", spec.N_PERM, np.random.default_rng(spec.SEED))
-            names = r.names if r else []
-            e = float(r.excess[names.index(pair)]) if r and pair in names else None
-            endpoint[f"transfer_{ctrl}_bits"] = e
-            endpoint[f"transfer_over_{ctrl}"] = (
-                None if e is None or endpoint["transfer_bits"] is None else endpoint["transfer_bits"] - e
-            )  # type: ignore[operator]
-        crit = []
-        for f, key in (("code", "code"), ("transfer", "transfer"), ("reception", "reception")):
-            thr = spec.THRESH[key]
-            b = best[f]
-            ok = (
-                None
-                if b is None
-                else bool(
-                    b["z"] is not None
-                    and b["z"] >= thr["z"]
-                    and b["excess"] >= thr["bits"]
-                    and b["p_family"] <= thr["p"]
-                )
-            )
-            crit.append(
-                Criterion(
-                    f"{f} excess >= {thr['bits']} bits, z >= {thr['z']}",
-                    None if b is None else b["excess"],
-                    thr["bits"],
-                    ok,
-                    "" if b is None else b["pair"],
-                )
-            )
-        signalling = any(c.passed for c in crit[:2])
+            a = analyse.block_information(p, "transfer", parity=0)
+            b = analyse.block_information(pc, "transfer", parity=0)
+            sc = {
+                k: float(np.nanmean(a[k] - b[k]))
+                for k in a.keys() & b.keys()
+                if np.isfinite(a[k] - b[k]).any()
+            }
+            cpair = max(sc, key=lambda k: sc[k]) if sc else None
+            if cpair is not None:
+                x = analyse.pair_blocks(p, "transfer", cpair, spec.N_PERM_BLOCK, rng, parity=1)
+                y = analyse.pair_blocks(pc, "transfer", cpair, spec.N_PERM_BLOCK, rng, parity=1)
+                bd = _odd_mean_and_bounds((x - y)[1::2], spec.ALPHA)
+                endpoint["transfer_over_decoy"] = bd["mean"]
+                if bd["lower"] is not None and bd["upper"] is not None:
+                    positive = bd["lower"] > 0
+                    if speaking < spec.SPEAKING_MIN:
+                        label = "no evidence"
+                    elif positive:
+                        label = "signalling with trace meaning"
+                    elif bd["upper"] < spec.EQUIVALENCE:
+                        label = f"signalling, no detectable meaning (bound {bd['upper']:.4f} bits)"
+                    else:
+                        label = "no evidence"
+                    crit.append(
+                        Criterion(
+                            f"call-specific transfer ({cpair}) >= {spec.MIN_EFFECT} bits",
+                            bd["mean"],
+                            spec.MIN_EFFECT,
+                            bool(positive and bd["mean"] >= spec.MIN_EFFECT),
+                        )
+                    )
+                    crit.append(
+                        Criterion(
+                            f"upper 95% bound below {spec.EQUIVALENCE} bits",
+                            bd["upper"],
+                            spec.EQUIVALENCE,
+                            bool(bd["upper"] < spec.EQUIVALENCE),
+                        )
+                    )
+        elif note:
+            label += note
         return ScorecardResult(
             feature="comm",
             version=COMM_SCORECARD_VERSION,
             level=None,
-            label="signalling" if signalling else "no signal",
+            label=label,
             endpoint=endpoint,
             criteria=crit,
             provisional=True,

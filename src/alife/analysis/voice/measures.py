@@ -242,6 +242,36 @@ def block_excess(
     return out
 
 
+def block_info(
+    pair: Pair, block: np.ndarray, n_blocks: int, min_size: int = 1, use: Sequence[int] | None = None
+) -> np.ndarray:
+    """The raw Miller-Madow ``I(x; y | strata)`` of one pair per block, without a null (NaN where a block
+    cannot
+    be estimated): the cheap statistic the contrast pair is selected with."""
+    out = np.full(n_blocks, np.nan)
+    for b in range(n_blocks) if use is None else use:
+        m = block == b
+        if int(m.sum()) < max(2 * min_size, 4):
+            continue
+        sid, ns = compact(pair.strata[m])
+        out[b] = cmi_from_counts(counts3(pair.x[m], pair.y[m], pair.nx, pair.ny, sid, ns), min_size)[0]
+    return out
+
+
+def t_upper(alpha: float, df: int) -> float:
+    """The one-sided critical value of Student's t, ``P(T > t) = alpha`` (bisection on ``stats.t_sf``)."""
+    from alife.analysis.emergence import stats
+
+    lo, hi = 0.0, 1000.0
+    for _ in range(80):
+        mid = 0.5 * (lo + hi)
+        if stats.t_sf(mid, df) > alpha:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
 # --- discretisation ---------------------------------------------------------------------------------------
 
 
@@ -255,7 +285,10 @@ def quantile_edges(x: np.ndarray, levels: int) -> np.ndarray:
 
 
 def code_by_edges(x: np.ndarray, edges: np.ndarray) -> np.ndarray:
-    """The number of cut points strictly below each value: codes ``0..len(edges)`` (int8)."""
+    """The number of cut points strictly below each value: codes ``0..len(edges)`` (int8). A value equal to a
+    cut point goes to the lower level, so a mode that sits on a cut point empties the level above it (the
+    sensed-neighbour count, with its mode of 8 on the upper cut point 8, has two effective levels, not
+    three)."""
     return np.searchsorted(edges, np.asarray(x, dtype=np.float64), side="left").astype(np.int8)
 
 

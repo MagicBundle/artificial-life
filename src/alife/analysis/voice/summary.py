@@ -167,11 +167,12 @@ def _js_pair(a: np.ndarray, b: np.ndarray, n_sym: int, min_n: int = 100) -> floa
     )
 
 
-def drift(p: analyse.Prepared, tab: Tables, top: int, n_blocks: int = spec.N_BLOCKS) -> dict[str, Any]:
+def drift(p: analyse.Prepared, tab: Tables, top: int) -> dict[str, Any]:
     """Dialect drift inside the window: the call-type distribution of the first quarter of the blocks
     against the
     last quarter (Jensen-Shannon, bits; 0 = same, 1 = disjoint), for the population and each top lineage, the
     shift of the mean call, and the Jensen-Shannon distance of every block to the first."""
+    n_blocks = p.n_blocks
     q = max(n_blocks // 4, 1)
     first, last = (p.s_block >= 0) & (p.s_block < q), p.s_block >= n_blocks - q
     v = tab.senders["voice"].astype(np.float64) / 255.0
@@ -247,11 +248,12 @@ def build(
     n_perm_block: int = spec.N_PERM_BLOCK,
     top: int = spec.TOP_LINEAGES,
     seed: int = spec.SEED,
+    n_blocks: int = spec.N_BLOCKS,
     with_tests: bool = True,
     log: Any = lambda m: None,
 ) -> dict[str, Any]:
     """The whole summary of one window (JSON-safe)."""
-    p = analyse.prepare(tab, window)
+    p = analyse.prepare(tab, window, n_blocks)
     rng = np.random.default_rng([seed, 1])
     out: dict[str, Any] = {
         "run": tab.meta["run"],
@@ -282,7 +284,14 @@ def build(
     }
     if with_tests:
         out["tests"] = analyse.run_all(
-            tab, window, n_perm=n_perm, n_perm_block=n_perm_block, seed=seed, prepared=p, log=log
+            tab,
+            window,
+            n_perm=n_perm,
+            n_perm_block=n_perm_block,
+            seed=seed,
+            n_blocks=n_blocks,
+            prepared=p,
+            log=log,
         )
     return out
 
@@ -323,16 +332,16 @@ def to_markdown(s: dict[str, Any]) -> str:
         "- Mean intensity per channel: " + ", ".join(_fmt(x) for x in pop["mean_voice"]) + ".",
         "- Call types: " + ", ".join(f"{k} {_pct(v)}" for k, v in pop["symbols"].items()) + ".",
         "",
-        "## Kin groups: top calls, context, response",
+        "## Tag clusters: top calls, context, response",
         "",
-        "A group is a k-means cluster of the kin tags at the window start; a birth inherits its parent's "
-        "group.",
+        "A cluster is a k-means slice of the kin tags at the window start (one continuous cloud); "
+        "a birth inherits its parent's cluster. Descriptive strata, not lineages.",
         "",
         _row(
-            "group",
+            "cluster",
             "share",
             "speaks",
-            "top calls (group / population share)",
+            "top calls (cluster / population share)",
             "best context",
             "excess bits",
             "z",
@@ -352,7 +361,7 @@ def to_markdown(s: dict[str, Any]) -> str:
         lines.append(_row(ln["lineage"], _pct(ln["share"]), _pct(ln["speaker_frac"], 0), calls, *best))
     lines += [
         "",
-        "Context of each group's commonest call (share of its callers at the highest level of a context, "
+        "Context of each cluster's commonest call (share of its callers at the highest level of a context, "
         "against the population):",
         "",
     ]
@@ -363,7 +372,7 @@ def to_markdown(s: dict[str, Any]) -> str:
                 f"{k} {_fmt(v['p_given_call'])} vs {_fmt(v['p_population'])}"
                 for k, v in tc["contexts"].items()
             )
-            lines.append(f"- group {ln['lineage']}, call {tc['call']}: {ctx}")
+            lines.append(f"- cluster {ln['lineage']}, call {tc['call']}: {ctx}")
     ha = s["hearers_after"]
     base = ", ".join(f"{k} {_fmt(v)}" for k, v in ha["baseline"].items())
     cols = ("attack", "bond", "eat", "speak", "toward", "away")
@@ -387,7 +396,7 @@ def to_markdown(s: dict[str, Any]) -> str:
         f"JS {_fmt(d['population_js'], 4)} bits "
         f"(mean-call shift {_fmt(d['population_mean_voice_shift'], 4)}).",
         "",
-        _row("group", "JS first/last (bits)", "mean-call shift", "n first / last"),
+        _row("cluster", "JS first/last (bits)", "mean-call shift", "n first / last"),
         _row(*["---"] * 4),
     ]
     for ln in d["lineages"]:
@@ -445,7 +454,7 @@ def to_markdown(s: dict[str, Any]) -> str:
 def compare_windows(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     """Dialect drift between two windows of one world (summaries from ``build``): the Jensen-Shannon distance
     of the population's call-type distributions, the shift of its mean call, and the stability of the code
-    (the correlation of the call-type to context enrichment tables). The kin groups are re-clustered at the
+    (the correlation of the call-type to context enrichment tables). The tag clusters are re-clustered at the
     start of each window, so their labels do not name the same lines of descent: not compared."""
     sa, sb = a["population"]["symbols"], b["population"]["symbols"]
     names = list(sa)
