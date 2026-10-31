@@ -88,6 +88,17 @@ def _distances(kind: str, n: int, scale: float, rows: np.ndarray) -> tuple[np.nd
     return np.sqrt(dx * dx + dy * dy), np.stack([dx, dy], axis=-1)
 
 
+def probe(kind: str, n: int, scale: float, hear_range: float, far_range: float) -> tuple[int, int]:
+    """``(s, nbytes)`` lower bounds of the table of ``build`` from eight columns, so that validation can
+    refuse an oversized table before spending its memory (``build`` holds float64 members of every column;
+    256 x 256 columns at range 24 peak at 24 GB)."""
+    rows = np.unique(np.linspace(0, ncol_of(kind, n) - 1, 8).astype(np.int64))
+    d, _ = _distances(kind, n, scale, rows)
+    s = max(int(((d >= hear_range) & (d <= far_range)).sum(axis=1).max()), 1)
+    nt = 3 if kind == "sphere" else 2
+    return s, ncol_of(kind, n) * s * (4 + 4 + 4 * nt)
+
+
 @functools.cache
 def build(kind: str, n: int, scale: float, hear_range: float, far_range: float, atten_pow: float) -> CallTab:
     """The table of a geometry (``kind`` "sphere": Nside ``n`` and radius ``scale``; "box": ``n`` x ``n``

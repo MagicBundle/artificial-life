@@ -187,14 +187,17 @@ def _far_range_problems(cfg: Any) -> list[str]:
     if c.far_range >= reach:
         bad.append(f"calls.far_range {c.far_range} must be below {reach} (the world's reach)")
     if not bad:
-        tab = calltab.build(kind, n, scale, float(r), float(c.far_range), float(cfg.comm.atten_pow))
-        if tab.s > calltab.S_MAX:
+        s, nbytes = calltab.probe(kind, n, scale, float(r), float(c.far_range))  # before the build's memory
+        if s <= calltab.S_MAX and nbytes <= calltab.TABLE_MAX_BYTES:
+            tab = calltab.build(kind, n, scale, float(r), float(c.far_range), float(cfg.comm.atten_pow))
+            s, nbytes = tab.s, tab.nbytes
+        if s > calltab.S_MAX:
             bad.append(
-                f"calls.far_range {c.far_range} gives {tab.s} table entries per column (max {calltab.S_MAX})"
+                f"calls.far_range {c.far_range} gives {s} table entries per column (max {calltab.S_MAX})"
             )
-        if tab.nbytes > calltab.TABLE_MAX_BYTES:
+        if nbytes > calltab.TABLE_MAX_BYTES:
             bad.append(
-                f"calls.far_range {c.far_range} gives a {tab.nbytes / 2**20:.1f} MB table (max "
+                f"calls.far_range {c.far_range} gives a {nbytes / 2**20:.1f} MB table (max "
                 f"{calltab.TABLE_MAX_BYTES >> 20} MB)"
             )
     return bad
