@@ -215,7 +215,6 @@ def test_the_pooled_test_is_not_grossly_wrong_under_the_null() -> None:
     assert all(h <= 0.25 * n for h in hits.values()), hits
 
 
-@pytest.mark.slow
 def test_the_largest_family_is_calibrated_on_independent_null_worlds() -> None:
     """At the 5 % level the max-T family p of ``transfer`` rejects at most 12 % of 150 independent null worlds
     (observed 6 %, Wilson 95% interval 3 to 11 %). This is a nominal check on independent rows. In the real
