@@ -433,7 +433,84 @@ def test_an_insolvent_speaker_is_silent_k4(nd: int) -> None:
     evt = to_numpy(s1.evt)
     assert not to_numpy(s1.alive)[0] and not evt[0].any()  # it starved: a dead row holds no window
     assert to_numpy(s1.alive)[1] and evt[1].tolist() == [2, 2]  # the solvent speaker's window counts down
+    # the counters: both rows had open windows (OPEN 2 per event), only the solvent one spoke (SPOKE 1)
+    c = to_numpy(out.counters)
+    for e in ("HURT", "LOST"):
+        assert (
+            c[counter_index(cfg, f"CALLS_OPEN_{e}")] == 2 and c[counter_index(cfg, f"CALLS_SPOKE_{e}")] == 1
+        )
     assert helpers.ledger_net(to_numpy(out.ledger), cfg) == int(to_numpy(s1.total) - to_numpy(s.total))
+
+
+@pytest.mark.parametrize("nd", [2, 3])
+def test_an_open_window_with_a_non_positive_output_is_open_but_does_not_speak(nd: int) -> None:
+    """OPEN counts the open windows, SPOKE the calls made: a row whose output on an open channel is <= 0 adds
+    to OPEN and not to SPOKE (the call is max(tanh(y), 0), silence is exactly 0)."""
+    cfg = calls_cfg("box2" if nd == 2 else "box3", *QUIET, events=1 + 8, micro=True)
+    d, lay = dims(cfg), dims(cfg).lay
+    v = lay.OUT_VOICE
+
+    def w2(b0: float, b1: float):
+        w = np.zeros((d.w2_rows, lay.D_OUT), np.float32)
+        w[d.h, v : v + 2] = [b0, b1]
+        return w
+
+    win = np.zeros((d.n, 2), np.uint8)
+    win[:4] = [[3, 3], [3, 3], [3, 0], [0, 0]]
+    rows = [(w2(1.0, 1.0)), (w2(-1.0, 0.0)), (w2(1.0, 1.0)), (w2(1.0, 1.0))]
+    s = helpers.make_scene(
+        cfg,
+        [dict(W2=w, energy=9000, pos=_at(nd, 5 + 9 * i, 5 + 14 * (i % 2))) for i, w in enumerate(rows)],
+        evt=mx.array(win),
+    )
+    s1, out = step1(cfg, s)
+    c = to_numpy(out.counters)
+    get = lambda k: int(c[counter_index(cfg, k)])  # noqa: E731
+    # hurt channel: rows 0, 1, 2 open; row 1 has a negative output -> SPOKE 2 of OPEN 3
+    assert (get("CALLS_OPEN_HURT"), get("CALLS_SPOKE_HURT")) == (3, 2)
+    # lost channel: rows 0, 1 open; row 1's output is exactly 0 -> SPOKE 1 of OPEN 2
+    assert (get("CALLS_OPEN_LOST"), get("CALLS_SPOKE_LOST")) == (2, 1)
+    assert get("COMM_SPEAKERS") == 2  # rows 0 and 2 speak
+    assert not to_numpy(s1.msg)[1, layout.MSG :].any()
+
+
+def test_the_host_check_of_evt_reports_a_long_window_and_a_window_on_a_dead_row() -> None:
+    """``ext.calls._check`` (run by ``full_check``): evt <= hold + 1 and 0 on dead rows (K6)."""
+    cfg = calls_cfg("box2", "calls.hold=4", micro=True)
+    s = helpers.make_scene(cfg, [dict(pos=(10.0, 10.0)), dict(pos=(30.0, 30.0))])
+    assert invariants.full_check(s, cfg) == []
+    evt = np.zeros(to_numpy(s.evt).shape, np.uint8)
+    evt[0, 0] = 5  # hold + 1: the longest legal window
+    assert invariants.full_check(s._replace(evt=mx.array(evt)), cfg) == []
+    evt[0, 1] = 6  # hold + 2
+    problems = invariants.full_check(s._replace(evt=mx.array(evt)), cfg)
+    assert any("longer than hold + 1" in p for p in problems), problems
+    evt[0, 1] = 0
+    evt[7, 0] = 1  # a dead row
+    problems = invariants.full_check(s._replace(evt=mx.array(evt)), cfg)
+    assert any("non-zero on a dead row" in p for p in problems), problems
+
+
+def test_food_q_has_no_range_check_without_the_food_bit() -> None:
+    """With ``energy.harvest_max`` below the default ``food_q`` and no food bit, the trigger is valid (the
+    default of an inert key is not range-checked); with the food bit the range applies."""
+    from alife.config import ConfigError, load_config
+
+    common = [
+        "comm.enabled=true",
+        "comm.width=2",
+        "calls.enabled=true",
+        "calls.trigger=true",
+        "energy.harvest_max=150",
+    ]
+    cfg = load_config(preset="tiny", overrides=[*common, "calls.events=9"])
+    assert cfg.calls.food_q == 200 > cfg.energy.harvest_max
+    with pytest.raises(ConfigError, match=r"calls.food_q 200 must be in \[1, energy.harvest_max = 150\]"):
+        load_config(preset="tiny", overrides=[*common, "calls.events=3"])
+    assert (
+        load_config(preset="tiny", overrides=[*common, "calls.events=3", "calls.food_q=100"]).calls.food_q
+        == 100
+    )
 
 
 # --- K3: a newborn starts with closed windows, also on a row reused in the same step -------------------

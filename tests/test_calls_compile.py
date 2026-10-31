@@ -107,8 +107,19 @@ def _run(tmpdir: Path, cases: list[dict], mode: str = "runtime") -> dict:
     return json.loads(done.stdout)
 
 
-def _printed(consts: list[str]) -> set[float]:
-    return {float(c) for c in consts}
+def _same(printed: float, value: float) -> bool:
+    """A kernel prints a float32 constant with about ten significant digits (``0.0623699985``), so compare
+    after rounding both to float32, with a relative tolerance of one part in 10^6."""
+    import numpy as np
+
+    a, b = float(np.float32(printed)), float(np.float32(value))
+    return abs(a - b) <= 1e-6 * max(abs(b), 1e-30)
+
+
+def _detected(consts: list[str], values: list[float]) -> list[bool]:
+    """For each value, whether some printed constant of the kernels is that value."""
+    printed = [float(c) for c in consts]
+    return [any(_same(p, v) for p in printed) for v in values]
 
 
 @pytest.mark.parametrize("key", sorted(CASES))
@@ -124,25 +135,26 @@ def test_e4_configs_differing_only_in_one_calls_constant_do_not_share_a_kernel(
 
 
 def test_no_config_dependent_scalar_is_printed_into_a_kernel(tmp_path: Path) -> None:
+    import numpy as np
+
     cases = [
         {"hold": 36, "food_q": 4321, "storm_frac": 0.7, "storm_u0": 0.0891},
         {"hold": 63, "food_q": 1234, "storm_frac": 1.3, "storm_u0": 0.0623},
         {"hold": 17, "food_q": 777, "storm_frac": 0.55, "storm_u0": 0.0777},
     ]
-    import numpy as np
-
-    values: set[float] = set()
-    for c in cases:
-        values |= {
-            float(c["hold"] + 1),
-            float(c["food_q"]),
-            float(np.float32(c["storm_frac"] * c["storm_u0"])),
-        }
+    classes = {
+        "hold + 1": [float(c["hold"] + 1) for c in cases],
+        "food_q": [float(c["food_q"]) for c in cases],
+        "storm threshold": [float(np.float32(c["storm_frac"] * c["storm_u0"])) for c in cases],
+    }
     res = _run(tmp_path / "runtime", cases)
     assert res["equal"] == [True, True, True]
-    printed = _printed(res["consts"])
-    assert printed and not (printed & values), sorted(printed & values)
-    # the control: with the scalars baked in, the kernels print them
+    for name, values in classes.items():
+        assert not any(_detected(res["consts"], values)), f"{name} is printed into a kernel: {res['consts']}"
+    # the control: with the scalars baked in, the kernels print every value of every class, so the scan
+    # (integers and float32 alike) can fail for each of them
     base = _run(tmp_path / "baked", cases, mode="baked")
     assert base["equal"] == [True, True, True]
-    assert len(_printed(base["consts"]) & values) >= 4, sorted(_printed(base["consts"]) & values)
+    for name, values in classes.items():
+        assert all(_detected(base["consts"], values)), f"the control does not show {name}: {base['consts']}"
+    assert _same(0.0623699985, 0.062369998544454575) and not _same(0.0623, 0.0624)

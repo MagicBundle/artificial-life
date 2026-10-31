@@ -50,6 +50,8 @@ def test_enable_alone_is_invisible_and_the_trigger_adds_the_zero_window(
     # (1) --enable calls: nothing a world can observe changes
     out1 = tmp_path / "enabled"
     assert _migrate(src, out1, "--enable", "calls", capsys=capsys) == 0
+    err = capsys.readouterr().err
+    assert "calls is enabled without calls.trigger" in err and "second migration" in err  # the L2 warning
     run1 = RunDir.open(out1)
     cfg1, meta1 = run1.config(), run1.meta()
     assert cfg1.calls.enabled and not cfg1.calls.trigger and meta1["migrated_from"]["added"] == ["calls"]
@@ -77,6 +79,7 @@ def test_enable_alone_is_invisible_and_the_trigger_adds_the_zero_window(
         "calls.hold=2",
     ]
     assert _migrate(src, out2, *args, capsys=capsys) == 0
+    assert "without calls.trigger" not in capsys.readouterr().err
     run2 = RunDir.open(out2)
     cfg2, meta2 = run2.config(), run2.meta()
     assert cfg2.calls.trigger and cfg2.calls.events == 3 and meta2["layout_features"] == "comm2@1"

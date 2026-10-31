@@ -279,3 +279,26 @@ def test_a_run_writes_the_calls_metrics_and_resumes(tmp_path: Path) -> None:
     assert cfg.calls.trigger and load_checkpoint(rd.latest_checkpoint(), cfg).evt.shape[1] == 2
     assert cli.main(["resume", str(out), "--until", "60", "--quiet"]) == 0
     assert RunDir.open(out).metrics_rows()[-1]["step"] >= 60
+
+
+def test_calls_rate_is_spoke_over_open_with_a_ratio_strictly_between_zero_and_one() -> None:
+    """Synthetic counters with SPOKE < OPEN: the rate is spoke / open and the open share is open / alive."""
+    cfg = calls_cfg("box2w", events=5, cost=8.0)
+    blocks = counter_blocks(cfg)
+    width = n_counters(2, True, blocks)
+    c = np.zeros((4, width), np.int64)
+    c[:, CounterIdx.N_ALIVE] = 100
+    c[:, counter_index(cfg, "CALLS_OPEN_HURT")] = [10, 10, 10, 10]
+    c[:, counter_index(cfg, "CALLS_SPOKE_HURT")] = [3, 3, 3, 3]
+    c[:, counter_index(cfg, "CALLS_OPEN_STORM")] = [20, 0, 20, 0]
+    c[:, counter_index(cfg, "CALLS_SPOKE_STORM")] = [5, 0, 5, 0]
+    row = metrics.interval_row(4, c, np.zeros((4, 16), np.int64), {}, {}, nd=2, weather=True, blocks=blocks)
+    assert row["calls_rate_hurt"] == pytest.approx(0.3) and row["calls_open_hurt"] == pytest.approx(0.1)
+    assert row["calls_rate_storm"] == pytest.approx(0.25) and row["calls_open_storm"] == pytest.approx(0.1)
+    none = c.copy()
+    none[:, counter_index(cfg, "CALLS_OPEN_HURT")] = 0
+    none[:, counter_index(cfg, "CALLS_SPOKE_HURT")] = 0
+    row = metrics.interval_row(
+        4, none, np.zeros((4, 16), np.int64), {}, {}, nd=2, weather=True, blocks=blocks
+    )
+    assert row["calls_rate_hurt"] is None  # no open window: no rate

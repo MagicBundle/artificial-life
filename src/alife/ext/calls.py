@@ -164,11 +164,14 @@ def _validate(cfg: Any) -> None:
                     bad.append("calls.events with the storm bit (4) needs weather.storm_u0 > 0")
         if not 0 <= c.hold <= HOLD_MAX:
             bad.append(f"calls.hold {c.hold} must be in [0, {HOLD_MAX}] (the window is a uint8)")
-        if not 1 <= c.food_q <= cfg.energy.harvest_max:
-            bad.append(
-                f"calls.food_q {c.food_q} must be in [1, energy.harvest_max = {cfg.energy.harvest_max}]"
-            )
-        elif not c.events & 2 and c.food_q != d.food_q:
+        if (
+            c.events & 2
+        ):  # the range applies only where the key is read (the default 200 may exceed harvest_max)
+            if not 1 <= c.food_q <= cfg.energy.harvest_max:
+                bad.append(
+                    f"calls.food_q {c.food_q} must be in [1, energy.harvest_max = {cfg.energy.harvest_max}]"
+                )
+        elif c.food_q != d.food_q:
             bad.append(
                 "calls.food_q is inert without the food bit (2) in calls.events: it must keep its default"
             )
