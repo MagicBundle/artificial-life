@@ -193,7 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--every", type=int, default=spec.SAMPLE_EVERY)
     p.add_argument("--rows", type=int, default=spec.SAMPLE_ROWS)
     p.add_argument("--cf-every", type=int, default=4, help="counterfactual every Nth sample (0 = never)")
-    p.add_argument("--groups", type=int, default=spec.LINEAGE_GROUPS, help="kin groups (k-means of the tags)")
+    p.add_argument("--groups", type=int, default=spec.LINEAGE_GROUPS, help="tag clusters (k-means)")
     p.add_argument(
         "--no-verify", action="store_true", help="skip the check against metrics.jsonl and the checkpoint"
     )

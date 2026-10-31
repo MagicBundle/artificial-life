@@ -388,6 +388,88 @@ def test_the_noise_floor_of_the_seed_twins_enters_the_seed_rule() -> None:
     )
 
 
+def test_the_primary_contrast_is_against_the_decoy_and_the_secondary_against_the_deaf() -> None:
+    rules = meaning.Rules()
+    rng = np.random.default_rng(17)
+    base = {s: np.where(np.arange(16) % 2 == 1, 0.03 + rng.normal(0, 0.0003, 16), np.nan) for s in (1, 2, 3)}
+    shift = lambda d, x: {s: v + x for s, v in d.items()}  # noqa: E731
+    # the real world is as informative as the decoy one and 0.02 bits above the deaf one
+    r = meaning.transfer_contrasts(
+        {"none": base, "decoy": shift(base, 0.0), "deaf": shift(base, -0.02)}, (1, 2, 3), rules
+    )
+    assert abs(r["contrast_decoy"]["class"]["mean"]) < 0.001 and not r["contrast_decoy"]["class"]["meaning"]
+    assert r["contrast_deaf"]["bounds"]["mean"] == pytest.approx(0.02, abs=1e-3)
+    # and the other way round
+    r = meaning.transfer_contrasts(
+        {"none": base, "decoy": shift(base, -0.02), "deaf": shift(base, 0.0)}, (1, 2, 3), rules
+    )
+    assert r["contrast_decoy"]["class"]["meaning"] and abs(r["contrast_deaf"]["bounds"]["mean"]) < 0.001
+
+
+def _fabricated(rules: meaning.Rules) -> dict:
+    """A result in which every clause holds, to switch one clause at a time."""
+    call = {"label": "supported", "p": 1e-6}
+    fit = {r: {c: {"call": dict(call)} for c in ("deaf", "decoy")} for r in rules.readouts}
+    return {
+        "as_designed": True,
+        "contrast_decoy": {
+            "class": {
+                "positive": True,
+                "meaning": True,
+                "equivalent": False,
+                "mean": 0.02,
+                "lower": 0.01,
+                "upper": 0.03,
+            }
+        },
+        "contrast_deaf": {"bounds": {"mean": 0.03}},
+        "speaker_frac": {"min": 0.9},
+        "use": {"passed": True},
+        "fitness": fit,
+        "cost": {"matched": True},
+    }
+
+
+def test_every_clause_of_the_language_is_needed() -> None:
+    rules = meaning.Rules()
+
+    def verdict(edit) -> str:
+        res = _fabricated(rules)
+        edit(res)
+        return meaning.decide(res, rules)["verdict"]
+
+    assert verdict(lambda r: None) == "language"
+    assert verdict(lambda r: r["speaker_frac"].update(min=0.01)) == "no evidence"
+    assert verdict(lambda r: r["use"].update(passed=False)) == "signalling with trace meaning"
+    assert (
+        verdict(lambda r: r["contrast_deaf"]["bounds"].update(mean=-0.01)) == "signalling with trace meaning"
+    )
+    assert verdict(lambda r: r["cost"].update(matched=False)) == "signalling with trace meaning"
+    one = lambda r: r["fitness"]["population"]["decoy"]["call"].update(label="mixed")  # noqa: E731
+    assert verdict(one) == "language"  # another readout still passes in both contrasts
+
+    def all_mixed(r: dict) -> None:
+        for readout in r["fitness"]:
+            r["fitness"][readout]["decoy"]["call"].update(label="mixed")
+
+    assert verdict(all_mixed) == "signalling with trace meaning"
+    for (
+        readout
+    ) in rules.readouts:  # a seed rule that says supported with an unconvincing p is not enough (Holm)
+        res = _fabricated(rules)
+        for r in rules.readouts:
+            res["fitness"][r]["deaf"]["call"]["p"] = res["fitness"][r]["decoy"]["call"]["p"] = 0.9
+        assert meaning.decide(res, rules)["verdict"] != "language", readout
+    res = _fabricated(rules)
+    res["contrast_decoy"]["class"].update(
+        positive=False, meaning=False, equivalent=True, mean=0.0, upper=0.002
+    )
+    d = meaning.decide(res, rules)
+    assert d["verdict"] == "signalling, no detectable meaning" and d["label"].endswith("(bound 0.0020 bits)")
+    res["contrast_decoy"]["class"].update(equivalent=False, upper=0.02)
+    assert meaning.decide(res, rules)["verdict"] == "no evidence"
+
+
 def test_the_rules_come_from_a_version_3_preregistration_only() -> None:
     d = spec.default_prereg()
     assert d["rules_version"] == 3 and [a["id"] for a in d["amendments"]] == ["A1", "A2"]
@@ -516,6 +598,9 @@ def test_a_planted_language_gets_the_verdict_language(language_case) -> None:
     assert d["verdict"] == "language", json.dumps(jsonable(d["clauses"]), indent=1)[:1800]
     assert all(c["passed"] for c in d["clauses"].values()) and d["revised_after_results"]
     assert res["contrast_decoy"]["class"]["meaning"] and res["contrast_decoy"]["call"]["label"] == "supported"
+    for arm_blocks in res["transfer_blocks"].values():  # the estimate uses the odd blocks only
+        for v in arm_blocks.values():
+            assert all(x is None for x in v[0::2]) and all(x is not None for x in v[1::2])
     json.dumps(jsonable(res), allow_nan=False)
     md = meaning.to_markdown(res)
     assert "Verdict: language" in md and "decided after seeing the v2 results" in md

@@ -51,7 +51,7 @@ class Snap(NamedTuple):
     alive: np.ndarray  # (N,) bool
     uid: np.ndarray  # (N,) int64
     clade: np.ndarray  # (N,) int32
-    lineage: np.ndarray  # (N,) int8 kin group of descent (see ``kin_groups``), -1 unassigned
+    lineage: np.ndarray  # (N,) int8 tag cluster carried by birth (see ``kin_groups``), -1 unassigned
     energy: np.ndarray  # (N,) float32
     loss: np.ndarray  # (N,) int32 last_loss
     harvest: np.ndarray  # (N,) int32 last_harvest (what the previous step harvested)
