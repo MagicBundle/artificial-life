@@ -236,8 +236,8 @@ def step(
     desc = sensing.neighbor_descriptors(s, nbr, cfg)  # S5
     ectx = ext.ExtCtx(nbr, desc, geom, fcell)
     ext_by: dict[str, tuple[mx.array, ...]] | None = (
-        {} if observe else None
-    )  # static: the observer keeps them
+        {} if observe or cfg.calls.far_range > 0.0 else None
+    )  # static: the observer, and the far-heard counter and oracle of calls (§47), keep them
     ext_in = ext.step_inputs(s, cfg, ectx, ext_by)  # the enabled features' brain-tail blocks, in TAIL_ORDER
     if d3:  # static
         x = sensing.build_inputs(
@@ -252,6 +252,15 @@ def step(
     )  # the enabled features' own decodes ({} while every feature is off)
     if d3:  # static: the pitch change and the buoyancy fraction (§27.2)
         mo = actions.decode_motion3(y, s.alive, cfg)
+
+    if cfg.calls.far_range > 0.0:  # static: which rows heard a far sound (the CALLS_FAR_HEARD counter)
+        assert ext_by is not None
+        xdec = {**xdec, "calls": calls.with_far(xdec.get("calls"), ext_by["calls"], s.alive)}
+    wind_orc = (  # static: the oracle's force (calls.control reflex | reflex_near), added to the wind term
+        calls.oracle_force(s, cfg, ectx, ext_by["calls"] if ext_by and "calls" in ext_by else None)
+        if cfg.calls.control in ("reflex", "reflex_near")
+        else None
+    )
 
     nb0 = bonds.n_bonds(s.partner)  # S8
     extra_due = ext.sum_due(spec.due(s, act, y, cfg) for spec in ext.active(cfg) if spec.due is not None)
@@ -334,6 +343,8 @@ def step(
 
     sv = dt.survivor  # S15
     wind_f = wind.force if wthr else None
+    if wind_orc is not None:  # static
+        wind_f = wind_f + wind_orc
     act_p = arms.physics_act(act, s, cfg)  # the armour slows the thrust (§42.3); ``act`` itself when off
     if sph:  # static: radial gravity, the floor and the hard lid, tangent motion (§46.2, §46.3)
         F = physics.forces_s(

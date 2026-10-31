@@ -2,13 +2,13 @@
 
 Step K1 builds the event windows and the gate: with ``calls.trigger`` each voice channel of ``comm`` belongs
 to one event (``hurt``, ``food``, ``storm``, ``lost``) and a row can call on it only while its window is
-open. The feature has **no brain footprint** in K1 (no input and no output is added; ``layout_on`` is never
-true, so the genome layout version and the weights of a run do not change), one conditional per-agent state
-field ``evt`` (the window, steps left, ``uint8``, present only with ``trigger``) and two counters per active
-event. The far hearing of step K2 (``far_range > 0``, the ``voice_far`` and ``far_bearing`` blocks, the
-controls ``nofar``/``reflex``/``reflex_near``) is declared in the config and refused by ``validate`` until
-it is built. The implementation lives in ``alife.calls``; imports of it are made at call time because
-``config`` imports ``ext``.
+open: one conditional per-agent state field ``evt`` (the window, steps left, ``uint8``, present only with
+``trigger``) and two counters per active event. Step K2 adds the far hearing: with ``far_range > 0`` the
+feature has a **brain footprint**, the input blocks ``voice_far`` (W) and ``far_bearing`` (2W) after comm's
+tail (token ``calls{W}@1``), the counter ``CALLS_FAR_HEARD`` and the controls ``nofar``/``reflex``/
+``reflex_near``; with ``far_range = 0`` there is none (the genome layout, the weights and the state of a run
+are those of K1). The implementation lives in ``alife.calls`` and ``alife.calltab``; imports of them are made
+at call time because ``config`` imports ``ext``.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from typing import Any
 
 import mlx.core as mx
 
-from alife.ext.base import ExtCtx, ExtSpec, FieldSpec
+from alife.ext.base import Block, ExtCtx, ExtSpec, FieldSpec
 
 _KEYS = (
     ("calls", "enabled"),
@@ -36,7 +36,7 @@ EVENTS = (("hurt", 1), ("food", 2), ("storm", 4), ("lost", 8))
 EVENTS_MAX = 15
 HOLD_MAX = 64  # evt is uint8 and holds hold + 1 <= 65 steps left
 CONTROLS = ("none", "nofar", "reflex", "reflex_near")
-K2_NOTE = "is built in step K2 of the calls series (far hearing and the oracle controls)"
+FAR_RANGE_RADII = 4.0  # far_range <= 4 sensing radii
 
 
 def event_names(events: int) -> tuple[str, ...]:
@@ -65,18 +65,37 @@ def _state_fields(cfg: Any, nd: int) -> tuple[FieldSpec, ...]:
     return (FieldSpec("evt", True, shape, mx.uint8, rest, "rest", conserved=False),)
 
 
+def _far(cfg: Any) -> bool:
+    return bool(cfg.calls.enabled) and cfg.calls.far_range > 0.0
+
+
+def _in_blocks(cfg: Any, nd: int) -> tuple[Block, ...]:
+    w = cfg.comm.width
+    return (Block("voice_far", w, False), Block("far_bearing", 2 * w, False))
+
+
+def _inputs(s: Any, cfg: Any, ctx: ExtCtx) -> Any:
+    from alife import calls
+
+    return calls.ext_inputs(s, cfg, ctx)
+
+
 def _counters(cfg: Any) -> tuple[str, ...]:
-    if not cfg.calls.trigger:
-        return ()
-    return tuple(
-        f"CALLS_{kind}_{name.upper()}" for name in event_names(cfg.calls.events) for kind in ("OPEN", "SPOKE")
-    )
+    out: tuple[str, ...] = ()
+    if cfg.calls.trigger:
+        out = tuple(
+            f"CALLS_{kind}_{name.upper()}"
+            for name in event_names(cfg.calls.events)
+            for kind in ("OPEN", "SPOKE")
+        )
+    return (*out, "CALLS_FAR_HEARD") if cfg.calls.far_range > 0.0 else out
 
 
 def _enable(cfg: Any) -> Any:
     """``alife migrate --enable calls``: the config with ``calls.enabled`` on and nothing else (the trigger
-    stays off, so the migrated world behaves as before; ``--set calls.trigger=true --set calls.events=5``
-    moves it onto the event-gated voice, DESIGN §47.8)."""
+    and the far hearing stay off, so the migrated world behaves as before; ``--set calls.trigger=true --set
+    calls.events=5 --set calls.far_range=18``, in the same call, moves it onto the event-gated voice and the
+    far block, DESIGN §47.5)."""
     import dataclasses
 
     return dataclasses.replace(cfg, calls=dataclasses.replace(cfg.calls, enabled=True))
@@ -121,6 +140,55 @@ def _snap_row(h: Any, cfg: Any) -> Any:
     from alife import featobs
 
     return featobs.calls_row(h, cfg)
+
+
+def _far_range_problems(cfg: Any) -> list[str]:
+    """Why ``calls.far_range`` (nonzero) is not valid for this config (DESIGN §47.7); empty when sound. The
+    inner edge of the far annulus is the near range, so far hearing needs ``comm.range == 0`` (the sensing
+    radius); the kernel ramps up over one column side and the sparse-caller accuracy tables hold from four of
+    them, so ``far_range >= 4`` columns; the table is bounded (S <= 512 entries per column, 64 MB). Reads the
+    world keys only: ``dims`` is not safe to call before every validator has run."""
+    import math
+
+    from alife import calltab
+
+    c, bad = cfg.calls, []
+    r = cfg.sensing.radius
+    kind, n, scale = calltab.geometry_key(cfg)
+    cell = calltab.column_side(kind, n, scale)
+    if not (math.isfinite(c.far_range) and c.far_range > 0.0):
+        return [f"calls.far_range {c.far_range} must be 0 or a finite length > 0"]
+    if cfg.comm.range != 0.0:
+        bad.append(
+            "calls.far_range > 0 needs comm.range == 0 (the near range is the inner edge of the far "
+            f"annulus: the sensing radius {r}), got comm.range = {cfg.comm.range}"
+        )
+    if cfg.comm.kin_exp > 0.0:
+        bad.append(
+            "calls.far_range > 0 needs comm.kin_exp == 0 (a mean-tag kin weight over a column is wrong in "
+            "magnitude and in direction: refused in v1)"
+        )
+    lo = max(calltab.CELLS_MIN * cell, r)
+    if not lo <= c.far_range <= FAR_RANGE_RADII * r:
+        bad.append(
+            f"calls.far_range {c.far_range} must be in [max(4 columns = {calltab.CELLS_MIN * cell:.3f}, "
+            f"the sensing radius {r}), 4 sensing radii = {FAR_RANGE_RADII * r}] (a column is {cell:.3f} wide)"
+        )
+    reach = 2.0 * scale if kind == "sphere" else scale / 2.0  # the planet diameter; half a torus side
+    if c.far_range >= reach:
+        bad.append(f"calls.far_range {c.far_range} must be below {reach} (the world's reach)")
+    if not bad:
+        tab = calltab.build(kind, n, scale, float(r), float(c.far_range), float(cfg.comm.atten_pow))
+        if tab.s > calltab.S_MAX:
+            bad.append(
+                f"calls.far_range {c.far_range} gives {tab.s} table entries per column (max {calltab.S_MAX})"
+            )
+        if tab.nbytes > calltab.TABLE_MAX_BYTES:
+            bad.append(
+                f"calls.far_range {c.far_range} gives a {tab.nbytes / 2**20:.1f} MB table (max "
+                f"{calltab.TABLE_MAX_BYTES >> 20} MB)"
+            )
+    return bad
 
 
 def _validate(cfg: Any) -> None:
@@ -185,7 +253,7 @@ def _validate(cfg: Any) -> None:
     # (enabled alone, with neither the trigger nor far hearing, is valid: it has no behaviour, the first form
     # of the migration, DESIGN §47.8)
     if c.far_range != 0.0:
-        bad.append(f"calls.far_range {c.far_range} {K2_NOTE}: it must be 0 until then")
+        bad += _far_range_problems(cfg)
     if not (math.isfinite(c.far_xref) and c.far_xref > 0.0):
         bad.append(f"calls.far_xref {c.far_xref} must be > 0")
     elif c.far_range == 0.0 and c.far_xref != d.far_xref:
@@ -199,8 +267,6 @@ def _validate(cfg: Any) -> None:
             bad.append(
                 f"calls.control {c.control!r} needs calls.trigger and the storm bit (4) in calls.events"
             )
-        if c.control != "none":
-            bad.append(f"calls.control {c.control!r} {K2_NOTE}: it must be 'none' until then")
     if bad:
         raise ConfigError("; ".join(bad))
 
@@ -208,8 +274,10 @@ def _validate(cfg: Any) -> None:
 SPEC = ExtSpec(
     name="calls",
     enabled=_enabled,
-    layout_on=lambda cfg: False,  # K1: no brain footprint (K2: far_range > 0 adds voice_far and far_bearing)
-    token=lambda cfg: "",
+    layout_on=_far,  # far_range > 0 adds voice_far and far_bearing (K2); the trigger alone has no footprint
+    token=lambda cfg: f"calls{cfg.comm.width}@1" if _far(cfg) else "",
+    in_blocks=_in_blocks,
+    block_names=("voice_far", "far_bearing"),
     state_fields=_state_fields,
     counters=_counters,
     metric_prefix="calls_",
@@ -218,6 +286,7 @@ SPEC = ExtSpec(
     overlay="calls",
     enable=_enable,
     validate=_validate,
+    inputs=_inputs,
     decode=_decode,
     count=_count,
     check=_check,
