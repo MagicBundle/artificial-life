@@ -1,0 +1,25 @@
+# calls overlay: event-triggered calls (DESIGN section 47, step K1). A WORLD overlay like `comm`, of which it is the
+# second half: it needs the voice channel and it sets it (compose `--overlay comm --overlay calls`; overlays apply in the
+# order given, and this one overrides the comm keys it names).
+#
+# Two events, one voice channel each: `hurt` (energy taken by an attacker this step) and `storm` (the air speed after
+# shelter at or above the hazard onset, `calls.storm_frac` x `weather.storm_u0`), `calls.events = 5` and `comm.width = 2`
+# (the primary experiment, section 47.6). A channel can be called on only while its window is open (the event happened
+# in the last `hold` + 1 steps); a closed channel is silent and free. The storm event needs the weather and a hazard onset
+# above 0, so this overlay validates on a weather world only (for example `mini3s` with `stormsph22h`, or a box with
+# `storm`).
+#
+# The call cost is the first value the pilot sweeps: 32 q per unit of intensity here (the comm overlay's 4 gave a
+# call rate of 98 % for 4 q, DESIGN section 39.14: no pressure to be economical), provisional, with {8, 32, 128}
+# the sweep. `hold` 4 is provisional too. Far hearing (`calls.far_range`, `calls.far_xref`) and the oracle controls
+# are step K2 and stay at their defaults.
+[comm]
+enabled = true
+width = 2
+cost = 32.0
+
+[calls]
+enabled = true
+trigger = true
+events = 5
+hold = 4

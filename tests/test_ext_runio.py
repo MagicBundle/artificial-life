@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 import ext_stub as stub
-from alife import brain, ext, rng
+from alife import brain, rng
 from alife.config import dims, load_config
 from alife.runio import CheckpointError, RunDir, checkpoint_metadata, load_checkpoint, write_state_file
 from alife.state import init_state, state_digest
@@ -83,7 +83,7 @@ def test_an_old_file_without_the_key_is_the_empty_string(tmp_path: Path) -> None
 
 
 def test_silent_blocks_start_at_zero_and_the_others_do_not() -> None:
-    cfg = _cfg(2, ext.EXTENSIONS)
+    cfg = _cfg(2, stub.ALL)
     d = dims(cfg)
     ik = rng.init_keys(0)
     w1, w2 = brain.init_weights(ik[rng.InitStream.W1], ik[rng.InitStream.W2], 16, cfg)

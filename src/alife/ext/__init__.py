@@ -55,6 +55,7 @@ __all__ = [
 
 from alife.ext.arms import SPEC as _ARMS
 from alife.ext.bonds import SPEC as _BONDS
+from alife.ext.calls import SPEC as _CALLS
 from alife.ext.comm import SPEC as _COMM
 from alife.ext.niche import SPEC as _NICHE
 from alife.ext.structures import SPEC as _STRUCTURES
@@ -65,6 +66,7 @@ REGISTRY: tuple[ExtSpec, ...] = (
     _BONDS,
     _COMM,
     _NICHE,
+    _CALLS,
 )  # a feature PR adds ONE row (ordered by ExtSpec.index)
 
 # (owner, ((in_name, width, silent), ...), ((out_name, width, silent), ...), nbr_features): hashable, so that

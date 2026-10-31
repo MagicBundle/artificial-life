@@ -1638,6 +1638,7 @@ def _cmd_bench(a: argparse.Namespace) -> int:
         bonds_arm=a.bonds,
         comm_arm=a.comm,
         niche_arm=a.niche,
+        calls_arm=a.calls,
     )
     if a.alive:
         report["steady"] = steady_summary(report, a.alive)
@@ -2067,6 +2068,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also time the step with farming on against the same config with it off (interleaved "
         "blocks; needs niche.farm, for example --overlay niche)",
+    )
+    p.add_argument(
+        "--calls",
+        action="store_true",
+        help="also time the step with the event-triggered calls on against the same config with them off "
+        "(interleaved blocks; needs calls.enabled, for example --overlay comm --overlay calls)",
     )
     p.add_argument(
         "--weather-pairs",
