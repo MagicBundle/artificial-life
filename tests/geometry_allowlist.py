@@ -158,6 +158,8 @@ NO_RAW_USE_TODAY = frozenset(
 NOT_IN_SPEC_AUDIT = frozenset(
     {
         "step.py",
+        "calls.py",  # K2: the reflex_near oracle's horizontal part in a 3D box (guarded by dims.d3)
+        "calltab.py",  # K2: the host table of the column voice grid; its box half reads the lattice
         "analysis/emergence/braid.py",
         "analysis/emergence/modes.py",
         "analysis/emergence/winding.py",
@@ -212,6 +214,15 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("analysis/w2.py", "world.height", 3, "box-only tool"),
     # bench.py: the environment block, the play-bench centre and list indexing; the staged step has its
     # sphere branches (S2: `--stages` works on a sphere)
+    # calls.py / calltab.py (calls K2, DESIGN §47.7): the far-hearing columns. The box half of the table (the
+    # torus minimum image of the column centres, `world.size`, the lattice cell) is a separate branch from the
+    # sphere's pixel centres (`geometry_key`, `_distances`); the oracle's 3D-box branch drops the vertical
+    # component (guarded by `dims.d3` and the `sph` branch before it).
+    Allow("calls.py", "xy_slice", 1, "box branch"),
+    Allow("calltab.py", "wrap", 2, "box branch"),
+    Allow("calltab.py", "world.size", 2, "box branch"),
+    Allow("calltab.py", "world.field_cell", 1, "box branch"),
+    Allow("calltab.py", "z_index", 1, "box branch"),
     Allow("bench.py", "z_index", 3, "box branch"),
     Allow("bench.py", "world.size", 2, "box branch"),
     Allow("bench.py", "world.height", 1, "box branch"),

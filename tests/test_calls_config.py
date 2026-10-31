@@ -102,7 +102,7 @@ def test_the_registry_row() -> None:
             "calls.food_q is inert without the food bit",
         ),
         ([*BASE, "calls.storm_frac=0.5"], "storm_frac is inert without the storm bit"),
-        ([*BASE, "calls.far_range=18"], "built in step K2"),
+        ([*BASE, "calls.far_range=10"], "calls.far_range 10.0 must be in"),  # under 4 columns of 4 units
         ([*BASE, "calls.far_xref=2"], "calls.far_xref is inert without calls.far_range"),
         ([*BASE, "calls.control=nofar"], "needs calls.far_range > 0"),
         ([*BASE, "calls.control=reflex_near"], "needs calls.trigger and the storm bit"),
@@ -165,10 +165,57 @@ def test_the_overlays_load_on_the_experiment_world() -> None:
         load_config(preset="tiny3s", overlays=["stormsph22h"], overrides=[])
 
 
-def test_the_far_hearing_and_the_controls_are_refused_until_k2() -> None:
-    for over in (["calls.far_range=18"], ["calls.control=reflex_near", "calls.events=5"]):
-        extra = [*WX] if "calls.events=5" in over else []
-        base = [*extra, "comm.enabled=true", "comm.width=2", "calls.enabled=true", "calls.trigger=true",
-                *(["calls.events=3"] if not extra else [])]  # fmt: skip
-        with pytest.raises(ConfigError, match="step K2"):
-            load(*base, *over)
+def test_the_controls_have_their_cross_rules() -> None:
+    """``reflex`` needs far hearing and the storm bit, ``reflex_near`` the storm bit, ``nofar`` far."""
+    base = [
+        *WX,
+        "comm.enabled=true",
+        "comm.width=2",
+        "calls.enabled=true",
+        "calls.trigger=true",
+        "calls.events=5",
+    ]
+    ok = load(*base, "calls.control=reflex_near")
+    assert ok.calls.control == "reflex_near" and ok.calls.far_range == 0.0  # near hearing only: no far block
+    with pytest.raises(ConfigError, match=r"needs calls\.far_range > 0"):
+        load(*base, "calls.control=reflex")
+    with pytest.raises(ConfigError, match=r"needs calls\.far_range > 0"):
+        load(*base, "calls.control=nofar")
+    far = load(*base, "calls.far_range=18", "calls.control=reflex")
+    assert far.calls.control == "reflex" and ext.layout_features(far) == "comm2@1,calls2@1"
+    assert load(*base, "calls.far_range=18", "calls.control=nofar").calls.control == "nofar"
+    no_storm = [
+        *WX,
+        "comm.enabled=true",
+        "comm.width=2",
+        "calls.enabled=true",
+        "calls.trigger=true",
+        "calls.events=3",
+    ]
+    with pytest.raises(ConfigError, match="storm bit"):
+        load(*no_storm, "calls.far_range=18", "calls.control=reflex")
+
+
+def test_far_hearing_has_a_brain_footprint_and_a_token_only_with_far_range() -> None:
+    """The footprint of K2: ``voice_far`` (W) and ``far_bearing`` (2W) after comm's tail, token
+    ``calls{W}@1``; D_IN 79 (2D) and 95 (3D) at W = 2; none without far_range (the trigger alone has no
+    footprint)."""
+    base = ["comm.enabled=true", "comm.width=2", "calls.enabled=true", "calls.trigger=true", "calls.events=3"]
+    off = load(*base)
+    far = load(*base, "calls.far_range=18")
+    assert ext.layout_features(off) == "comm2@1" and ext.layout_features(far) == "comm2@1,calls2@1"
+    assert dims(far).lay.D_IN == dims(off).lay.D_IN + 6 and dims(far).lay.D_OUT == dims(off).lay.D_OUT
+    assert (
+        dims(far).lay.IN_FAR_BEARING == dims(far).lay.IN_VOICE_FAR + 2 and dims(off).lay.IN_VOICE_FAR is None
+    )
+    assert dims(far).lay.D_IN == 79
+    far3 = load_config(preset="tiny3d", overrides=[*base, "calls.far_range=18", "brain.weight_dtype=float32"])
+    assert dims(far3).lay.D_IN == 95 and dims(far3).lay.D_OUT == 41
+    assert ext.mask(far) == ext.mask(off) | (1 << 5)  # bit 5: calls
+    w4 = load(
+        "comm.enabled=true", "calls.enabled=true", "calls.far_range=18"
+    )  # no trigger: W is comm's width
+    assert (
+        ext.layout_features(w4) == "comm4@1,calls4@1"
+        and dims(w4).lay.D_IN == dims(load("comm.enabled=true")).lay.D_IN + 12
+    )

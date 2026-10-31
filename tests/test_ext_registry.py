@@ -41,6 +41,8 @@ def test_with_every_feature_off_every_function_is_the_identity() -> None:
             "ROLE_B",
             "VOICE",
             "VOICE_BEARING",
+            "VOICE_FAR",
+            "FAR_BEARING",
             "FARM",
             "FARM_PUT",
         }
