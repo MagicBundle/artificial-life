@@ -59,12 +59,16 @@ def constants(cfg: Config) -> tuple[float, ...]:
         float(sp.gz),
         float(sp.th),
     )
-    return (*base, float(cfg.weather.cells)) if cfg.weather.enabled else base  # the weather's Nside (S4b)
+    out = (*base, float(cfg.weather.cells)) if cfg.weather.enabled else base  # the weather's Nside (S4b)
+    if cfg.calls.far_range > 0.0:  # the column map of the far hearing (DESIGN §47.7): Ncol
+        out = (*out, float(sp.npix))
+    return out
 
 
 def _lookups(cfg: Config):  # -> Callable[[mx.array], tuple[mx.array, ...]]
     sp = sphere.geometry(cfg)
     nw = cfg.weather.cells if cfg.weather.enabled else 0
+    far = cfg.calls.far_range > 0.0
 
     def f(pos: mx.array) -> tuple[mx.array, ...]:
         alive = mx.ones((pos.shape[0],), dtype=mx.bool_)
@@ -77,7 +81,13 @@ def _lookups(cfg: Config):  # -> Callable[[mx.array], tuple[mx.array, ...]]
             sphere.hash_cell(pos, alive, sp.radius, sp.th, sp.gz, sp.nside_h),
         )
         # the weather's cell lookup (the wind at the agents and the fan's departure points, S4b)
-        return (*out, sphere.ang2pix(pos, nw)) if nw else out
+        out = (*out, sphere.ang2pix(pos, nw)) if nw else out
+        if far:  # the column map of the far hearing (its column count is a runtime array: nothing baked)
+            from alife import calls
+
+            cell = sphere.field_cell(pos, sp.rp3, sp.dv, sp.layers, sp.nside)
+            out = (*out, calls.column_of(cell, cfg, calls.runtime(cfg)))
+        return out
 
     return f
 
@@ -110,6 +120,7 @@ def require_compile_safe(cfg: Config) -> None:
             "field_cell",
             "hash_cell",
             "ang2pix(Nw)",
+            *(("calls.column_of",) if cfg.calls.far_range > 0.0 else ()),
         )
         raise RuntimeError(
             "the compiled sphere lookups differ from the eager ones for this configuration "

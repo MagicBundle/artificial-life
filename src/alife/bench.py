@@ -39,10 +39,14 @@ bool, None, lists and dicts only); ``format_report`` renders it for a terminal.
 - **Comm** (``comm_arm``, C1, DESIGN §39): the step with the voice channel on (the hear pass, the wider brain,
   the voice due) against the same config with it off, the same (off, on, on, off) blocks; the trajectories
   differ by construction. The gate of the comm spec (§5): within 8 % of the fused step on 64k3d.
-- **Calls** (``calls_arm``, K1, DESIGN §47): the step with the event windows and the gate on (the window
+- **Calls** (``calls_arm``, K1/K2, DESIGN §47): the step with the event windows and the gate on (the window
   update at the survivor stage, the gated voice) against the same config with ``calls`` off but the same
   ``comm``, the same (off, on, on, off) blocks; the trajectories differ by construction (a closed channel is
-  silent). The spec's estimate (§47.7): a few tenths of a millisecond at most; K2 adds the far-hearing pass.
+  silent). With ``calls.far_range > 0`` a second comparison, ``calls_far``, is the K2 gate: the same config
+  against itself without the far hearing (``far_range = 0``: no deposit, no table, no ``voice_far`` and
+  ``far_bearing`` inputs), the marginal cost of the grid and of the wider brain; the gate is +5 % of the
+  step at 64k3s. With ``stages`` the report also holds ``calls_parts`` (isolated timings of the gate, the
+  window and the grid, which are inside ``sense``, ``interact`` and ``reproduce`` of the staged step).
 - **Niche** (``niche_arm``, F1, DESIGN §41): the step with farming on (the soil bonus inside the regrowth
   clip, the dithered soil update, the farm sensor and output) against the same config with it off, the same
   (off, on, on, off) blocks; the trajectories differ by construction.
@@ -77,9 +81,12 @@ from alife import (
     bonds,
     brain,
     calls,
+    calltab,
+    comm,
     ext,
     fields,
     invariants,
+    layout,
     lifecycle,
     metrics,
     niche,
@@ -276,6 +283,14 @@ def run_bench(
             **_bench_weather(cfg, steps, warmup, weather_pairs, off=replace(cfg, calls=CallsConfig())),
             "calls_config": dataclasses.asdict(cfg.calls),
         }
+        if (
+            cfg.calls.far_range > 0.0
+        ):  # the K2 gate: far hearing over the same calls without it (DESIGN §47.7)
+            no_far = replace(cfg.calls, far_range=0.0, far_xref=1.0, control="none")
+            report["calls_far"] = {
+                **_bench_weather(cfg, steps, warmup, weather_pairs, off=replace(cfg, calls=no_far)),
+                "calls_config": dataclasses.asdict(cfg.calls),
+            }
     return report
 
 
@@ -801,6 +816,8 @@ class _Sense(NamedTuple):
     grounded: mx.array | None = None  # 3D only: physics.grounded of the start-of-step pos
     ctx: ext.ExtCtx | None = None  # the extension hooks' view (§43)
     sn: structures.Sense | None = None  # the material at the cell (structures on, §38)
+    calls_in: tuple[mx.array, ...] | None = None  # the far blocks the brain saw (§47)
+    orc: mx.array | None = None  # (N, nd) the oracle's force (calls.control reflex | reflex_near, §47)
 
 
 class _Interact(NamedTuple):
@@ -838,6 +855,10 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         key_next, ks = step_keys(key)
         return key_next, ks, spatial.find_neighbors(pos, alive, cfg)
 
+    def oracle(s: State, ectx: ext.ExtCtx, by: dict[str, tuple[mx.array, ...]]) -> mx.array | None:
+        """The calls oracle's force (mirror of ``step.step``; None for any other control)."""
+        return calls.oracle_force(s, cfg, ectx, by.get("calls"))
+
     def sense(s: State, nbr: spatial.Neighbors, ks: mx.array) -> _Sense:
         a = age(s.step, s.birth_step)
         geom = bonds.bond_geometry(s.pos, s.partner, cfg)
@@ -853,6 +874,7 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
                 fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg, pitch=s.pitch)
             desc = sensing.neighbor_descriptors(s, nbr, cfg)
             ectx = ext.ExtCtx(nbr, desc, geom, fcell)
+            by: dict[str, tuple[mx.array, ...]] = {}
             x = sensing.build_inputs(
                 s,
                 a,
@@ -863,16 +885,17 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
                 ks[Stream.NOISE],
                 cfg,
                 grounded=gr,
-                ext_in=ext.step_inputs(s, cfg, ectx),
+                ext_in=ext.step_inputs(s, cfg, ectx, by),
             )
-            return _Sense(a, geom, fcell, desc, x, gr, ectx, sn)
+            return _Sense(a, geom, fcell, desc, x, gr, ectx, sn, by.get("calls"), oracle(s, ectx, by))
         fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg)
         desc = sensing.neighbor_descriptors(s, nbr, cfg)
         ectx = ext.ExtCtx(nbr, desc, geom, fcell)
+        by = {}
         x = sensing.build_inputs(
-            s, a, nbr, desc, geom, fobs, ks[Stream.NOISE], cfg, ext_in=ext.step_inputs(s, cfg, ectx)
+            s, a, nbr, desc, geom, fobs, ks[Stream.NOISE], cfg, ext_in=ext.step_inputs(s, cfg, ectx, by)
         )
-        return _Sense(a, geom, fcell, desc, x, None, ectx, sn)
+        return _Sense(a, geom, fcell, desc, x, None, ectx, sn, by.get("calls"), oracle(s, ectx, by))
 
     def think(W1: mx.array, W2: mx.array, x: mx.array, h: mx.array) -> tuple[mx.array, mx.array]:
         return brain.forward(W1, W2, x, h, cfg)
@@ -914,6 +937,10 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         else:
             c = en.pay_costs(s.energy, act, bonds.n_bonds(s.partner), bcost, s.alive, cfg, **due_kw)
         xdec = ext.mask_all(ext.decode_all(s, y, se.ctx, cfg), c.solvent, cfg)
+        if cfg.calls.far_range > 0.0:  # static: the rows that heard a far sound (CALLS_FAR_HEARD, §47)
+            xdec = {**xdec, "calls": calls.with_far(xdec.get("calls"), se.calls_in, s.alive)}
+        if se.orc is not None:  # static: the rows the oracle's force acted on (CALLS_ORACLE_ON, §47)
+            xdec = {**xdec, "calls": calls.with_oracle(xdec.get("calls"), se.orc)}
         act = actions.mask(act, c.solvent)
         flag = act.release | (se.geom.length > cfg.bonds.break_length)
         if wind is not None and wind.breaks is not None:  # static: storm_break_u > 0
@@ -1000,8 +1027,11 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         gr: mx.array | None,
         wind: wthr.AgentForce | None,
         sn: structures.Sense | None,
+        orc: mx.array | None = None,
     ) -> tuple[mx.array, ...]:
         wind_f = wind.force if wind is not None else None  # static
+        if orc is not None:  # static: the calls oracle's force joins the wind term (§47)
+            wind_f = wind_f + orc
         act_p = arms.physics_act(act, s, cfg)  # the armour slows the thrust (DESIGN §42.3)
         if sph:  # static: IntegratedS (pos, vel, hdg, heading, ...), DESIGN §46.3
             sv = dt.survivor
@@ -1176,7 +1206,7 @@ class _StagedStep:
         wind = self._run("wind", s, se.sn) if wthr_on else None
         it = self._run("interact", s, act, se, ks, mo, wind, y)
         st_on = self.cfg.structures.enabled  # static
-        moved = self._run("physics", s, it.act, nbr, it.dt, it.mo, se.grounded, wind, se.sn)
+        moved = self._run("physics", s, it.act, nbr, it.dt, it.mo, se.grounded, wind, se.sn, se.orc)
         moved, dm = moved if st_on else (moved, None)
         (parent, slot, kind, counts), rp = self._run("reproduce", s, it, h_new, moved, se.age, ks, wind)
         lanes = lifecycle.Lanes(parent, slot, kind, counts[0], counts[1], counts[2])
@@ -1244,7 +1274,7 @@ def _bench_stages(cfg: Config, steps: int, warmup: int, fused_ms: float) -> dict
         staged(holder)
     ms = {name: 1e3 * statistics.fmean(staged.times[name]) for name, _ in staged.stages}
     total = math.fsum(ms.values())
-    return {
+    out = {
         "labels": dict(staged.stages),
         "ms": ms,
         "frac": {name: v / total if total > 0 else 0.0 for name, v in ms.items()},
@@ -1252,6 +1282,60 @@ def _bench_stages(cfg: Config, steps: int, warmup: int, fused_ms: float) -> dict
         "fused_ms": fused_ms,
         "inflation": total / fused_ms if fused_ms > 0 else None,
     }
+    if cfg.calls.enabled:  # the parts of the calls layer, which are inside the rows above
+        out["calls_parts"] = _calls_parts(cfg, holder[0])
+    return out
+
+
+CALLS_PART_REPS: Final = 40
+
+
+def _calls_parts(cfg: Config, s: State) -> dict[str, float]:
+    """Isolated timings (ms, median of ``CALLS_PART_REPS``, each part compiled when ``cfg.run.compile`` and
+    evaluated alone on the state ``s``) of the pieces of the calls layer that sit inside the rows of the
+    staged step: ``eval_overhead`` (a trivial compiled function: the fixed cost of one evaluation, in every
+    figure below), ``gate`` (``comm.sig_of`` with the windows minus without, net of the overhead),
+    ``window`` (``calls.windows``), and with far hearing ``grid`` (the whole pipeline), ``deposit`` and
+    ``apply`` (its two parts; the hearer's read is the rest). These are not a partition of the step: a part
+    alone cannot fuse with its neighbours, so the fused cost is the ``calls_far`` comparison."""
+    use = cfg.run.compile
+    wrap = mx.compile if use else (lambda f: f)
+    rt = calls.runtime(cfg)
+    d = dims(cfg)
+    out: dict[str, float] = {}
+
+    def time_fn(fn: Callable[..., Any], *args: Any) -> float:
+        f = wrap(fn)
+        mx.eval(f(*args))  # compile
+        return _median_ms(lambda: mx.eval(f(*args)), CALLS_PART_REPS)
+
+    out["eval_overhead"] = time_fn(lambda e: e + 1, s.energy)
+    if cfg.calls.trigger:  # static
+        y = mx.random.normal((d.n, d.lay.D_OUT), key=mx.random.key(0))
+        mx.eval(y)
+        gated = time_fn(lambda y_, g: comm.sig_of(y_, cfg, g), y, s.evt > 0)
+        plain = time_fn(lambda y_: comm.sig_of(y_, cfg), y)
+        out["gate"] = gated - plain
+        wind = None
+        if cfg.weather.enabled:
+            wind = wthr.agent_wind(wthr.unpack(s.wx), s.pos, s.buoy_cap if d.d3 else None, s.alive, cfg)
+            mx.eval(wind)
+
+        def window(s_: State) -> mx.array:
+            return calls.windows(s_, s_, s_.alive, wind, cfg)
+
+        out["window"] = time_fn(window, s)
+    if cfg.calls.far_range > 0.0:  # static
+        voice = s.msg[:, layout.MSG :]
+        col = calls.column_of(fields.cell_index(s.pos, cfg), cfg, rt)
+        ncol = calltab.ncol_of(*calltab.geometry_key(cfg)[:2])
+        dep = calls.deposit(voice, col, s.alive, rt, ncol)
+        mx.eval(voice, col, dep)
+        out["grid"] = time_fn(lambda s_, v, c: calls.hear_far(s_, v, c, rt, cfg), s, voice, col)
+        out["deposit"] = time_fn(lambda v, c, a: calls.deposit(v, c, a, rt, ncol), voice, col, s.alive)
+        tab = calls.device_table(cfg)
+        out["apply"] = time_fn(lambda dp: calls.apply(dp, tab), dep)
+    return out
 
 
 # --- text report ----------------------------------------------------------------------------------------
@@ -1979,6 +2063,8 @@ def format_report(report: dict[str, Any]) -> str:
         ("weather_org", "weather-org (seeding and shade)", "the couplings"),
         ("structures", "structures", "built structures"),
         ("bonds", "bonds", "bonds that pay"),
+        ("calls", "calls (events and gate, against calls off)", "the calls"),
+        ("calls_far", "calls far hearing (against the same calls without it)", "far hearing"),
     ):
         if key in r:
             wt = r[key]

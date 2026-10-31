@@ -15,7 +15,7 @@ with `tests/geometry_allowlist.py`, the sphere config keys), S1, the fields (`fi
 `docs/DESIGN.md` §37 is the mini world (preset `mini3d`, overlay `storm160`, a 160-wide 3D world of about 10,500 organisms for quick
 play-tests; no simulation change); the launcher passes `storm160` for a 160-wide source and `storm` otherwise.
 The sphere's GUI (PR S6, `DESIGN.md` §46.8): `gui/Sources/AlifeCore/Sphere*.swift`, `Healpix.swift`, `gui/Sources/AlifeControl/Sphere*.swift`; its fixtures come from `tests/make_sphere_gui_fixture.py`.
-`DESIGN.md` §47 is the event-triggered calls series (extension `calls`: event windows that gate the voice; K1, the events, windows, gate, migration and bench, is built; K2 far hearing and the oracle controls, K3 analysis and K4 stream/GUI are designed there and their keys are refused until built).
+`DESIGN.md` §47 is the event-triggered calls series (extension `calls`: event windows that gate the voice; K1, the events, windows, gate, migration and bench, and K2, far hearing by the column voice grid and the `nofar`/`reflex`/`reflex_near` oracle controls, are built; K3 analysis and K4 stream/GUI are designed there).
 `docs/GAMES.md` is the design of the gaming vertical (owner decisions in its §10); its build step G1, the observer
 layer (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`; normative spec `DESIGN.md` §28), is
 implemented, with `INTENT_VERSION` 2 (`RULES_V2`, the default until W2a made `RULES_V3` the default, calibrated offline on the G1 study windows; it

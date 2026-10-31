@@ -24,8 +24,9 @@ def test_every_key_is_off_by_default_hashed_and_omitted_from_config_json() -> No
     d = CallsConfig()
     assert (d.enabled, d.trigger, d.far_range, d.control) == (False, False, 0.0, "none")
     assert (d.events, d.hold, d.food_q, d.storm_frac, d.far_xref) == (15, 4, 200, 1.0, 1.0)
+    assert (d.oracle_min, d.oracle_gain) == (0.05, 1.0)
     keys = {("calls", f.name) for f in dataclasses.fields(CallsConfig)}
-    assert keys == set(ext.lever_keys()["calls"]) == set(SPEC.lever_keys) and len(keys) == 9
+    assert keys == set(ext.lever_keys()["calls"]) == set(SPEC.lever_keys) and len(keys) == 11
     assert keys <= set(config.POST_V01_KEYS) and keys <= set(config.SERIAL_OMIT_KEYS)
     cfg = load("brain.weight_dtype=float32")
     assert "calls" not in config_to_dict(cfg, omit_defaults=True)
@@ -53,7 +54,7 @@ def test_the_registry_row() -> None:
         8,
     ]
     assert event_names(5) == ("hurt", "storm") and event_names(15) == ("hurt", "food", "storm", "lost")
-    assert CONTROLS == ("none", "nofar", "reflex", "reflex_near")
+    assert CONTROLS == ("none", "nofar", "reflex", "reflex_near", "reflex_call")
     assert "calls" in config.SPHERE_READY and config.SPHERE_FEATURE_PR["calls"] == "K1"
 
 
@@ -102,7 +103,7 @@ def test_the_registry_row() -> None:
             "calls.food_q is inert without the food bit",
         ),
         ([*BASE, "calls.storm_frac=0.5"], "storm_frac is inert without the storm bit"),
-        ([*BASE, "calls.far_range=18"], "built in step K2"),
+        ([*BASE, "calls.far_range=10"], "calls.far_range 10.0 must be in"),  # under 4 columns of 4 units
         ([*BASE, "calls.far_xref=2"], "calls.far_xref is inert without calls.far_range"),
         ([*BASE, "calls.control=nofar"], "needs calls.far_range > 0"),
         ([*BASE, "calls.control=reflex_near"], "needs calls.trigger and the storm bit"),
@@ -165,10 +166,105 @@ def test_the_overlays_load_on_the_experiment_world() -> None:
         load_config(preset="tiny3s", overlays=["stormsph22h"], overrides=[])
 
 
-def test_the_far_hearing_and_the_controls_are_refused_until_k2() -> None:
-    for over in (["calls.far_range=18"], ["calls.control=reflex_near", "calls.events=5"]):
-        extra = [*WX] if "calls.events=5" in over else []
-        base = [*extra, "comm.enabled=true", "comm.width=2", "calls.enabled=true", "calls.trigger=true",
-                *(["calls.events=3"] if not extra else [])]  # fmt: skip
-        with pytest.raises(ConfigError, match="step K2"):
-            load(*base, *over)
+def test_the_controls_have_their_cross_rules() -> None:
+    """``reflex`` needs far hearing and the storm bit, ``reflex_near`` the storm bit, ``nofar`` far."""
+    base = [
+        *WX,
+        "comm.enabled=true",
+        "comm.width=2",
+        "calls.enabled=true",
+        "calls.trigger=true",
+        "calls.events=5",
+    ]
+    ok = load(*base, "calls.control=reflex_near")
+    assert ok.calls.control == "reflex_near" and ok.calls.far_range == 0.0  # near hearing only: no far block
+    with pytest.raises(ConfigError, match=r"needs calls\.far_range > 0"):
+        load(*base, "calls.control=reflex")
+    with pytest.raises(ConfigError, match=r"needs calls\.far_range > 0"):
+        load(*base, "calls.control=nofar")
+    far = load(*base, "calls.far_range=18", "calls.control=reflex")
+    assert far.calls.control == "reflex" and ext.layout_features(far) == "comm2@1,calls2@1"
+    assert load(*base, "calls.far_range=18", "calls.control=nofar").calls.control == "nofar"
+    no_storm = [
+        *WX,
+        "comm.enabled=true",
+        "comm.width=2",
+        "calls.enabled=true",
+        "calls.trigger=true",
+        "calls.events=3",
+    ]
+    with pytest.raises(ConfigError, match="storm bit"):
+        load(*no_storm, "calls.far_range=18", "calls.control=reflex")
+
+
+def test_far_hearing_has_a_brain_footprint_and_a_token_only_with_far_range() -> None:
+    """The footprint of K2: ``voice_far`` (W) and ``far_bearing`` (2W) after comm's tail, token
+    ``calls{W}@1``; D_IN 79 (2D) and 95 (3D) at W = 2; none without far_range (the trigger alone has no
+    footprint)."""
+    base = ["comm.enabled=true", "comm.width=2", "calls.enabled=true", "calls.trigger=true", "calls.events=3"]
+    off = load(*base)
+    far = load(*base, "calls.far_range=18")
+    assert ext.layout_features(off) == "comm2@1" and ext.layout_features(far) == "comm2@1,calls2@1"
+    assert dims(far).lay.D_IN == dims(off).lay.D_IN + 6 and dims(far).lay.D_OUT == dims(off).lay.D_OUT
+    assert (
+        dims(far).lay.IN_FAR_BEARING == dims(far).lay.IN_VOICE_FAR + 2 and dims(off).lay.IN_VOICE_FAR is None
+    )
+    assert dims(far).lay.D_IN == 79
+    far3 = load_config(preset="tiny3d", overrides=[*base, "calls.far_range=18", "brain.weight_dtype=float32"])
+    assert dims(far3).lay.D_IN == 95 and dims(far3).lay.D_OUT == 41
+    assert ext.mask(far) == ext.mask(off) | (1 << 5)  # bit 5: calls
+    w4 = load(
+        "comm.enabled=true", "calls.enabled=true", "calls.far_range=18"
+    )  # no trigger: W is comm's width
+    assert (
+        ext.layout_features(w4) == "comm4@1,calls4@1"
+        and dims(w4).lay.D_IN == dims(load("comm.enabled=true")).lay.D_IN + 12
+    )
+
+
+def test_reflex_call_oracle_keys_and_the_strict_range_bound() -> None:
+    """K2 review: ``reflex_call`` (calls at 0.5, no force) has the cross rules of ``reflex``, the oracle keys
+    are valid only for an oracle control, with ranges; ``far_range == sensing.radius`` is a ConfigError (an
+    empty annulus), not a ValueError from the table."""
+    base = [
+        *WX,
+        "comm.enabled=true",
+        "comm.width=2",
+        "calls.enabled=true",
+        "calls.trigger=true",
+        "calls.events=5",
+    ]
+    ok = load(*base, "calls.far_range=18", "calls.control=reflex_call")
+    assert ok.calls.control == "reflex_call" and ext.layout_features(ok) == "comm2@1,calls2@1"
+    with pytest.raises(ConfigError, match=r"needs calls\.far_range > 0"):
+        load(*base, "calls.control=reflex_call")
+    with pytest.raises(ConfigError, match="storm bit"):
+        load(*WX, "comm.enabled=true", "comm.width=2", "calls.enabled=true", "calls.trigger=true",
+             "calls.events=3", "calls.far_range=18", "calls.control=reflex_call")  # fmt: skip
+    for control in ("reflex", "reflex_near"):
+        cfg = load(
+            *base,
+            "calls.far_range=18",
+            f"calls.control={control}",
+            "calls.oracle_min=0.2",
+            "calls.oracle_gain=2",
+        )
+        assert (cfg.calls.oracle_min, cfg.calls.oracle_gain) == (0.2, 2.0)
+    for bad, msg in (
+        ("calls.oracle_min=0", r"oracle_min 0\.0 must be in"),
+        ("calls.oracle_min=1.5", r"oracle_min 1\.5 must be in"),
+        ("calls.oracle_gain=0", r"oracle_gain 0\.0 must be in"),
+        ("calls.oracle_gain=9", r"oracle_gain 9\.0 must be in"),
+    ):
+        with pytest.raises(ConfigError, match=msg):
+            load(*base, "calls.far_range=18", "calls.control=reflex", bad)
+    for control in ("none", "nofar", "reflex_call"):  # inert unless the control is an oracle
+        for key in ("calls.oracle_min=0.2", "calls.oracle_gain=2"):
+            with pytest.raises(ConfigError, match=r"inert unless calls\.control is an oracle"):
+                load(*base, "calls.far_range=18", f"calls.control={control}", key)
+    with pytest.raises(ConfigError, match=r"inert while calls\.enabled is false"):
+        load("calls.oracle_gain=2")
+    # a range equal to the sensing radius: columns of 1 unit would admit it by the 4-column rule alone
+    small = ["world.size=48", "world.field_cell=1", "comm.enabled=true", "comm.width=2", "calls.enabled=true"]
+    with pytest.raises(ConfigError, match="exclusive"):
+        load_config(preset="tiny", overrides=[*small, "calls.far_range=6"])
