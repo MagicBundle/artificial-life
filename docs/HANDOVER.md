@@ -94,8 +94,27 @@ costs its value on average), booked in `HEAT_ACTION`: no 17th ledger term. `comm
 heard, with costs and speaking unchanged (the causal arms). Enable with `--overlay comm`, `--set comm.enabled=true`, or
 `alife migrate --enable comm` (a silent start from an evolved world). Founders with random brains: about 94 % speak at the start
 (arithmetic of the random outputs, not selection) at about 2 q per agent-step, so `comm.cost` 4 is no pressure yet; the sweep is C4.
-Absent: the observer channel `Acts.ext.comm`, `FSIG`, the GUI and the colour mode (C2), `analysis/comm.py` and the language score (C3),
-the runs (C4).
+Built since: the observer channel `Acts.ext.comm` and `FSIG` (C2, §39.8), the analysis and the language score (C3, §39.14, next
+section). Absent: the GUI and the colour mode, the cost/kin sweeps (C4).
+
+## The voice analysis (DESIGN §39.14, row I7x; branch `analysis/voice`)
+
+PR C3 is built: the log of what is said and heard, the meaning test of §39.9 (rules version 3) and the language-score adapter of the emergence suite (E6). Host-side and observer-only; no engine file, key or digest changes (the CPU identity matrix against `5984583` is bit-identical). Code: `src/alife/analysis/voice/` and `src/alife/analysis/comm.py`; tests `tests/test_voice_analysis.py`, `tests/test_voice_replay.py`, `tests/voice_synth.py`.
+
+```
+python -m alife.analysis.voice log RUN --from STEP --steps 10000 --out DIR      # tables.npz, summary.json, summary.md
+python -m alife.analysis.voice summarize DIR                                    # rebuild the summary, no simulation
+python -m alife.analysis.voice drift DIR_A DIR_B --out FILE                     # dialect drift between two windows
+python -m alife.analysis.voice prereg --out prereg_voice.json --freeze          # the pre-registration (hashed, rules version 3)
+alife run --init-from RUN:STEP --set comm.control=deaf --seed 1 --steps 30000 --checkpoint-every 10000 --out F
+python -m alife.analysis.voice meaning --arm none:1=F_none_s1,LOGDIR ... --prereg prereg_voice.json --out OUT [--v2 OLD.json]
+```
+
+* **What the log reads.** The replay is `labels.study`'s (observed step, metrics rows verified, end digest verified when the run has a checkpoint there). Per sample (every 50 steps, 2048 rows): senders (call, caller's context), hearers (call heard, own context, response, loudest source and its call and context), and the one-step counterfactual under `none`, `deaf` and `decoy` (eager steps, so no second compiled graph). The strata are **tag clusters** (k-means of the kin tags at the window start, inherited by births): a mature run is one clade and the tags are one continuous cloud, so they are not lineages.
+* **The test (rules version 3).** The language score is the **call-specific transfer**: none minus **decoy** (content cut, presence and loudness kept) of the information that a caller's situation gives about a hearer's action, for the pair with the largest such contrast on the even blocks, estimated on the odd blocks, per seed; across seeds the one-sided 95% bounds and the seed rule with the seed-twin floor. A minimum effect (0.005 bits) and an equivalence bound (the upper bound below 0.005 bits) are the decision constants; use is the counterfactual; fitness and cost as before. `code` (sender-side) and `reception` (geometry-confounded even with the audible count and the distance in its strata) and the pooled z and p are **reported, not decided on**. Labels: `language`, `signalling with trace meaning`, `signalling, no detectable meaning (bound X)`, `no evidence`. The unit of inference is one evolved checkpoint per world; the seeds are near-replicates.
+* **Pitfalls.** `keep_checkpoints` is 3 by default: a fork needs `--checkpoint-every 10000` so that the window's start checkpoint survives, and the source run `64k3s_a` has no checkpoint at 100 000 (only 0, 160 000, 180 000, 200 000). `meaning` refuses a `summary.json` whose tests ran with other permutations, seed or blocks (run `summarize`). The deaf arm is a **knock-out** of inputs the evolved brains are tuned to. The constants are provisional until the calibration of the suite (E7). The p-value floor is `1/(1 + n_perm)`.
+* **Not built:** plots, compositionality and syntax, a per-channel ablation, kin-weighted source choice, cluster permutation of the pooled test, and the two arms that would separate knock-out from information: a **mean-field arm** (heard input replaced by its per-row time mean) and an **evolve-from-silence arm** (`alife migrate --enable comm`).
+* **First result** (2026-10-31, DESIGN §39.14 "Evidence"): `64k3s_a` at 200 000 and `allfeat_a` at 40 000, forks none/deaf/decoy x 3 seeds. **No language emerged in either world.** Rules version 3 (revised after the v2 results were read): `signalling, no detectable meaning (bound 0.0032 bits)` and `(bound 0.0042 bits)`; rules version 2: `signalling without meaning`. The calls are used (a stranger's calls change a hearer's thrust by 4 %), hearing is worth +1.2 to +1.6 % population against deafness (a knock-out), but not against a stranger's calls (+0.1 to +0.2 %), and the call-specific transfer is 0.001 bits. At `comm.cost` 4, 98 % of the population speaks: the first thing to vary is `comm.cost` ({16, 64}, DESIGN §39.13 C4).
 
 ## Farming (DESIGN §41, I70)
 
