@@ -741,3 +741,36 @@ def test_far_range_validation() -> None:
         load_config(
             preset="tiny", overrides=[*base, "calls.far_range=24", "world.field_cell=0.5", "world.size=128"]
         )
+
+
+def test_an_oversized_table_is_refused_before_it_is_built(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Validation must not spend the table's memory to refuse it (256 x 256 columns, range 24: 24 GB)."""
+
+    def no_build(*args: object) -> None:
+        raise AssertionError("the table was built")
+
+    monkeypatch.setattr(calltab, "build", no_build)
+    base = [
+        "brain.weight_dtype=float32",
+        "comm.enabled=true",
+        "comm.width=2",
+        "calls.enabled=true",
+        "calls.far_range=24",
+        "world.field_cell=0.5",
+        "world.size=128",
+    ]
+    with pytest.raises(ConfigError, match=r"max 512"):
+        load_config(preset="tiny", overrides=base)
+
+
+@pytest.mark.parametrize(
+    ("kind", "n", "scale", "hear", "far"),
+    [("sphere", 11, 48.0, 6.0, 18.0), ("sphere", 21, 90.0, 6.0, 24.0), ("box", 32, 128.0, 8.0, 20.0)],
+)
+def test_the_probe_is_a_lower_bound_of_the_table(
+    kind: str, n: int, scale: float, hear: float, far: float
+) -> None:
+    s, nbytes = calltab.probe(kind, n, scale, hear, far)
+    tab = calltab.build(kind, n, scale, hear, far, 1.0)
+    assert s <= tab.s
+    assert nbytes <= tab.nbytes

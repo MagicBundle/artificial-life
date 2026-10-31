@@ -405,3 +405,53 @@ Changed: `tests/test_calls_config.py::test_the_overlays_load_on_the_experiment_w
 The two failures are outside this change: `tests/test_stream.py::test_reader_closing_early_exits_zero_without_a_traceback` passes when rerun alone, and
 `tests/test_golden_run.py::test_a_cold_child_sees_no_kernel_cache_although_the_shared_and_private_ones_are_warm` fails alone too (the probe of a child process on the `tiny` preset finds no new kernel library; it loads no overlay);
 it was not run on the base commit, so whether it is pre-existing is not established here. The K2 report's known failure (`test_lifecycle_compiles_and_matches_eager`) passed in this run.
+
+## 15. Coordinator's check and extension (supersedes the chosen inputs of section 0)
+
+Sections 0 to 14 are the pilot driver's report on `storm_u0` 0.05 and `far_xref` 3.0 and stay as written. The numbers of `nofar` and `decoy` were recomputed from the raw metrics and agree. The check found two gaps.
+
+**Gap 1, the noise.** The paired sd of 1.4 % comes from forks of one evolved lineage. M1 has one fork per F seed, so its pairs come from different lineages, and the variation of the effect between lineages was not measured. Section 4 already hinted at it (the channel flip). Blocks are also too narrow: the within-seed block SE of a 20 000-step contrast is 0.9 to 1.1 % against a seed-to-seed sd of 1.4 to 1.5 %.
+
+**Gap 2, the dial.** 3.7 % of deaths bounds any benefit, and the share dipped below the band for 30 000 steps. A rough sweep estimate: lifespan about 650 steps, so about 460 to 670 generations in 300 000 steps; a variant that removes 5 % of storm deaths has s of about 0.2 %, and needs thousands of generations.
+
+**Ladder at far_xref 3.0 (seed 0, 80 000 steps), then far_xref at 0.04.**
+
+| run | storm_u0 | far_xref | storm % of deaths, last 20k | open hurt / storm | call rate hurt / storm | due % | n_alive |
+|---|---|---|---|---|---|---|---|
+| `P1_u045_x3` | 0.045 | 3 | 4.55 | 0.087 / 0.105 | 0.25 / 0.58 | 1.9 | 9 895 |
+| `P1_u04_x3` | 0.04 | 3 | 5.85 | 0.097 / 0.150 | 0.47 / 0.98 | 4.6 | 9 374 |
+| `P1_u04_x6` | 0.04 | 6 | 7.23 | 0.125 / 0.157 | 0.49 / 0.39 | 1.8 | 10 073 |
+| `P1_u04_x10` | 0.04 | 10 | 4.48 | 0.125 / 0.132 | 0.72 / 0.88 | 3.6 | 8 403 |
+
+At 0.04 and far_xref 3 the storm channel saturates (median heard 0.92). Median heard at 6: 0.12 / 0.38; at 10: 0.28 / 0.32. Chosen without a further run: 8.0, between the two. **The overlays now carry 0.04 and 8.0.**
+
+**Three independent lineages at 0.04 and 8.0** (`L10`, `L11`, `L12`, run seeds 10 to 12, 80 000 steps, last 20 000):
+
+| lineage | storm % of deaths | open hurt / storm | call rate hurt / storm | due % | n_alive | median heard 60k / 80k |
+|---|---|---|---|---|---|---|
+| L10 | 6.13 | 0.092 / 0.147 | 0.69 / 0.71 | 3.63 | 12 002 | 0.41 / 0.44 |
+| L11 | 6.46 | 0.090 / 0.146 | 0.64 / 0.60 | 2.65 | 12 220 | 0.40 / 0.35 |
+| L12 | 6.32 | 0.151 / 0.146 | 0.84 / 0.45 | 3.39 | 12 062 | 0.20 / 0.22 |
+
+G1, G2, G3 pass in all three; the storm share is inside the band in every 10 000-step window after the first. Ledger error 0. L12 is below the median-heard target. No lineage lost the storm channel.
+
+**Forks** (20 000 steps from step 80 000, seeds 1 and 2 of each lineage; log ratio against `none` of the same lineage and seed, %):
+
+| contrast | L10 | L11 | L12 | mean | sd between lineages | 95 % h, 3 lineages |
+|---|---|---|---|---|---|---|
+| `nofar` storm deaths / agent-step | -1.5 (-0.3, -2.6) | +5.0 (+5.6, +4.4) | +1.3 (+2.2, +0.4) | +1.6 | 3.2 | 8.0 |
+| `decoy` storm deaths / agent-step | +4.1 (+4.5, +3.8) | +12.3 (+12.4, +12.2) | +4.9 (+5.8, +3.9) | +7.1 | 4.5 | 11.2 |
+| `nofar` births / agent-step | -4.2 | +1.1 | +1.4 | -0.5 | 3.2 | 7.9 |
+| `decoy` births / agent-step | -3.0 | -1.1 | +2.9 | -0.4 | 3.0 | 7.5 |
+| `nofar` `n_alive` | -0.9 | +2.2 | -1.3 | 0.0 | 1.9 | 4.7 |
+| `decoy` `n_alive` | +0.7 | +4.5 | +0.1 | +1.8 | 2.4 | 5.9 |
+
+The sd of one paired contrast within a lineage is 1.1 %; between lineages it is 3.2 to 4.5 %. The h for n lineages with sd 3.2 is 8.0 % (3), 3.4 % (6), 2.5 % (9). An sd from three lineages is itself rough (its 95 % interval runs from about half to about six times the value), and it was measured at 80 000 steps, not 300 000.
+
+Reading: `decoy` raises storm deaths in all six pairs, by 4 to 12 %. `decoy` replaces both hearing blocks, and its calls land where no event is, so this may be misinformation as much as the loss of a warning (spec 7.3). The population under `decoy` is not lower, so it is not a net gain to F. Over lineages the one-sided lower bound is -0.5 %, narrowly below 0. `nofar` is not distinguishable from 0 and changes sign between lineages.
+
+**Oracle at 0.04 and 8.0** (fork seed 1, per lineage, against `none`, storm deaths / `n_alive`): `reflex` -30.7 / -80.1, -27.2 / -79.3, -53.1 / -69.2 (`calls_oracle_on_frac` 0.31 to 0.42); `reflex_near` -32.3 / -4.2, -27.4 / -2.9, -25.9 / -10.2 (0.14 to 0.15); `reflex_call` -3.0 / -0.2, -6.9 / -1.4, +1.0 / -1.2. G5's first clause holds in each lineage against the pilot's 2h of 15 to 24 %; net fitness falls, so R licenses no refutation.
+
+**Budget of the extension:** 1.1 M steps, 1.62 h of GPU wall time. In all 4.1 GPU-h of wall time against the ceiling of 5, and about 7.6 process-hours.
+
+Not done: `deaf` at the new values, null forks on the same design as the pilot's section 7, hazard-off and the shipped dial at the new values (M1 has hazard-off), one more far_xref check at 8 in other seeds, runs past 80 000 steps. `tests/test_golden_run.py`'s cold-child test is the known failure on the GPU default device.
