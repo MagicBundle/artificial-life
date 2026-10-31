@@ -52,6 +52,7 @@ def test_the_registry_row_and_the_hash_of_every_off_config() -> None:
         "bonds",
         "comm",
         "niche",
+        "calls",
     ] and ext.check_registry() == []
     assert config_hash(Config()) == PRE_ARMS_HASH["default"]
     assert config_hash(load_config(preset="tiny")) == PRE_ARMS_HASH["tiny"]

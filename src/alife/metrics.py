@@ -587,6 +587,17 @@ def interval_row(
                     "comm_due_share": _ratio(int(col("COMM_DUE")), int(ls[LedgerIdx.HEAT_ACTION])),
                 }
             )
+        elif bname == "calls":  # event-triggered calls (§47.9): per event the open share and the call rate
+            by = {n: i for i, n in enumerate(names)}
+            for n in names:
+                if not n.startswith("CALLS_OPEN_"):
+                    continue
+                ev = n.removeprefix("CALLS_OPEN_").lower()
+                opened, spoke = int(cs[at + by[n]]), int(cs[at + by[f"CALLS_SPOKE_{ev.upper()}"]])
+                row[f"calls_open_{ev}"] = _ratio(opened, alive_steps)  # open windows per alive agent-step
+                row[f"calls_rate_{ev}"] = _ratio(spoke, opened)  # spoke over open
+            if weather:  # the fitness readout of the storm warning: storm deaths per alive agent-step
+                row["calls_deaths_storm_rate"] = _ratio(int(row["deaths_storm"]), alive_steps)
         elif (
             bname == "niche"
         ):  # farming (§41.8): the work, the soil, the yield, and the E20 blocked-births alarm

@@ -60,7 +60,7 @@ def test_keys_default_to_a_box_and_are_post_v01_keys() -> None:
     # and gated the layers that are not converted: S3 converted the features and roles, S4b the weather, S5
     # the observers and the director: every layer of the series is ready
     assert {
-        "structures", "niche", "comm", "bonds", "roles", "arms", "weather", "observers", "director",
+        "structures", "niche", "comm", "bonds", "roles", "arms", "calls", "weather", "observers", "director",
     } == config.SPHERE_READY  # fmt: skip
 
 

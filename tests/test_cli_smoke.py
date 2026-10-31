@@ -299,6 +299,7 @@ def test_view_and_bench_delegate(run_dir: Path, tmp_path: Path, monkeypatch: pyt
         "bonds_arm": False,
         "comm_arm": False,
         "niche_arm": False,
+        "calls_arm": False,
         "n": 1024,
         "hidden": 24,
     }

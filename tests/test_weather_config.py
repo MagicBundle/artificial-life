@@ -90,13 +90,14 @@ def test_the_section_has_the_41_keys_and_all_are_hashed() -> None:
     assert not [
         1 for sk in POST_V01_KEYS if sk[0] == "weather" and (sk in UNHASHED_KEYS or sk in OBSERVER_KEYS)
     ]
-    assert [f.name for f in fields(Config)][-7:] == [
+    assert [f.name for f in fields(Config)][-8:] == [
         "weather",
         "arms",
         "structures",
         "roles",
         "comm",
         "niche",
+        "calls",
         "run",
     ]  # the feature sections follow weather (DESIGN §43)
 
@@ -261,11 +262,13 @@ def test_overlay_names() -> None:
         "bonds",
         "comm",
         "niche",
+        "calls",
         "niche3d",
         "stormsph",
         "stormsph16",
         "stormsph22",
-    )  # build..niche: features; niche3d: farming at the 3D cost; stormsph*: a sphere's weather
+        "stormsph22h",
+    )  # build..calls: features; niche3d: farming at the 3D cost; stormsph*: a sphere's weather
     assert ALL_OVERLAYS == (
         "fast",
         "storm",
@@ -274,10 +277,12 @@ def test_overlay_names() -> None:
         "bonds",
         "comm",
         "niche",
+        "calls",
         "niche3d",
         "stormsph",
         "stormsph16",
         "stormsph22",
+        "stormsph22h",
     )
 
 
@@ -310,7 +315,7 @@ def test_the_storm_overlay_fails_on_a_world_that_cannot_hold_it() -> None:
 def test_unknown_overlays_name_all_of_them() -> None:
     with pytest.raises(
         ConfigError,
-        match=r"'stormsph', 'stormsph16', 'stormsph22'\)",
+        match=r"'stormsph', 'stormsph16', 'stormsph22', 'stormsph22h'\)",
     ):
         load_config(overlays=["nope"])
     with pytest.raises(ConfigError, match="storm"):

@@ -20,7 +20,7 @@ def test_with_every_feature_off_every_function_is_the_identity() -> None:
     """PR 0a shipped the machinery with an empty registry; A1 registers the arms row and S1 the structures
     row, B1 the bonds row, C1 the comm row and F1 the niche (farming) row. With every feature off (the
     default), nothing a feature-off run sees can change."""
-    assert [s.name for s in ext.REGISTRY] == ["arms", "structures", "bonds", "comm", "niche"]
+    assert [s.name for s in ext.REGISTRY] == ["arms", "structures", "bonds", "comm", "niche", "calls"]
     cfg = load_config(preset="tiny")
     assert ext.active(cfg) == () and ext.layout_features(cfg) == "" and ext.mask(cfg) == 0
     assert (
@@ -47,8 +47,8 @@ def test_with_every_feature_off_every_function_is_the_identity() -> None:
     )
     n_feature_keys = sum(len(v) for v in config.FEATURE_KEYS.values())
     assert config.POST_V01_KEYS[-n_feature_keys - 1] == ("combat", "protect_floor")
-    assert set(config.FEATURE_KEYS) == {"arms", "structures", "bonds", "comm", "niche"}
-    assert config.POST_V01_KEYS[-1] == ("niche", "control")
+    assert set(config.FEATURE_KEYS) == {"arms", "structures", "bonds", "comm", "niche", "calls"}
+    assert config.POST_V01_KEYS[-1] == ("calls", "control")
     assert config.WORLD_OVERLAYS == (
         "storm",
         "storm160",
@@ -56,10 +56,12 @@ def test_with_every_feature_off_every_function_is_the_identity() -> None:
         "bonds",
         "comm",
         "niche",
+        "calls",
         "niche3d",
         "stormsph",
         "stormsph16",
         "stormsph22",
+        "stormsph22h",
     )
     assert ext.check_registry() == []
 
@@ -76,7 +78,8 @@ def test_act_flag_values_are_fixed_by_the_extension_index() -> None:
     assert [ext.ACT_FLAG_BASE << i for i in range(5)] == [128, 256, 512, 1024, 2048]
     base = {f.value for f in ActFlag if f.name not in expect}
     assert base == {1, 2, 4, 8, 16, 32, 64} and all(v < 65536 for v in expect.values())
-    assert [ext.EXTENSIONS.index(n) for n in ext.EXTENSIONS] == [0, 1, 2, 3, 4]
+    assert [ext.EXTENSIONS.index(n) for n in ext.EXTENSIONS] == [0, 1, 2, 3, 4, 5]
+    assert ext.EXTENSIONS[5] == "calls" and ext.ACT_FLAG_BASE << 5 == 4096  # calls sets no ActFlag bit
 
 
 def test_the_stub_registry_is_sound_and_its_flags_match(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -85,7 +88,7 @@ def test_the_stub_registry_is_sound_and_its_flags_match(monkeypatch: pytest.Monk
     assert ext.flag_values() == {stub.FLAGS[s.name]: s.flag_value for s in reg}
     for name, flag in stub.FLAGS.items():
         assert ActFlag[flag].value == ext.ACT_FLAG_BASE << ext.EXTENSIONS.index(name)
-    assert [s.index for s in reg] == [0, 1, 2, 3, 4] and [s.tail_rank for s in reg] == [4, 0, 1, 2, 3]
+    assert [s.index for s in reg] == [0, 1, 2, 3, 4] and [s.tail_rank for s in reg] == [5, 0, 1, 2, 4]
 
 
 def test_collisions_are_reported() -> None:

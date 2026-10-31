@@ -31,7 +31,7 @@ from alife.state import (
 )
 from alife.step import make_step
 
-ALL = ext.EXTENSIONS
+ALL = stub.ALL
 PAIRS = list(itertools.combinations(ALL, 2))
 F32 = ["brain.weight_dtype=float32"]
 

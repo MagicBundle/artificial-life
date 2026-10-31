@@ -13,11 +13,12 @@ from dataclasses import dataclass, field
 from typing import Any, Final, NamedTuple
 
 # The canonical order of the features. It orders state fields, counter blocks, ActFlag bits, mask bits, config
-# sections and the ``layout_features`` string. ``niche`` is farming (marks would join the same feature).
-EXTENSIONS: Final[tuple[str, ...]] = ("arms", "structures", "bonds", "comm", "niche")
+# sections and the ``layout_features`` string. ``niche`` is farming (marks would join the same feature);
+# ``calls`` (event-triggered calls and far hearing, DESIGN §47) comes last.
+EXTENSIONS: Final[tuple[str, ...]] = ("arms", "structures", "bonds", "comm", "niche", "calls")
 # The order of the brain tails: the same list with the arms perception tail last (arms stages 1 to 5 have no
-# brain footprint).
-TAIL_ORDER: Final[tuple[str, ...]] = ("structures", "bonds", "comm", "niche", "arms")
+# brain footprint) and the far-hearing tail of ``calls`` right after the voice tail of ``comm``.
+TAIL_ORDER: Final[tuple[str, ...]] = ("structures", "bonds", "comm", "calls", "niche", "arms")
 MAX_EXTENSIONS: Final = 31  # mask bits: genome_layout_version = base + 4·mask stays in int32
 ACT_FLAG_BASE: Final = (
     128  # Acts.flags bit of extension i is ACT_FLAG_BASE << i (bits 1..64 are the base flags)

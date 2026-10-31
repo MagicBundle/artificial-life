@@ -15,10 +15,10 @@ import ext_stub as stub
 from alife import ext, layout
 from alife.config import dims, load_config
 
-SUBSETS = [c for r in range(6) for c in itertools.combinations(ext.EXTENSIONS, r)]
+SUBSETS = [c for r in range(6) for c in itertools.combinations(stub.ALL, r)]
 TOTALS = {  # (nd, subset) -> (D_IN, D_OUT): the table of section 1.2 of the plan
     (2, ()): (69, 35), (3, ()): (84, 39),
-    (2, ext.EXTENSIONS): (97, 44), (3, ext.EXTENSIONS): (113, 48),
+    (2, stub.ALL): (97, 44), (3, stub.ALL): (113, 48),
     (2, ("structures",)): (70, 36), (3, ("structures",)): (85, 40),
     (2, ("bonds",)): (82, 37), (3, ("bonds",)): (97, 41),
     (2, ("comm",)): (75, 39), (3, ("comm",)): (91, 43),
@@ -63,7 +63,7 @@ def test_feature_off_is_todays_layout_object() -> None:
 
 
 def test_all_on_offsets_3d_and_2d() -> None:
-    lay3, lay2 = dims(_cfg(3, ext.EXTENSIONS)).lay, dims(_cfg(2, ext.EXTENSIONS)).lay
+    lay3, lay2 = dims(_cfg(3, stub.ALL)).lay, dims(_cfg(2, stub.ALL)).lay
     # inputs: material 84, bonds 85..97, voice 98..104, farm 105, arms 106..112
     assert (lay3.IN_MATERIAL, lay3.IN_ROLE, lay3.IN_BOND_ROLE, lay3.IN_BOND_KIN, lay3.IN_BOND_FLOW) == (
         84, 85, 86, 90, 94,
@@ -101,13 +101,13 @@ def test_unregistered_names_are_attribute_errors() -> None:
 
 
 def test_silent_blocks_are_the_declared_ones() -> None:
-    lay = dims(_cfg(3, ext.EXTENSIONS)).lay
+    lay = dims(_cfg(3, stub.ALL)).lay
     assert lay.silent_in_rows() == ((105, 1), (106, 1), (107, 1), (108, 1), (109, 1), (110, 3))
     assert lay.silent_out_cols() == ((46, 1), (47, 1))
 
 
 def test_version_integer_and_features_string() -> None:
-    cfg = _cfg(3, ext.EXTENSIONS)
+    cfg = _cfg(3, stub.ALL)
     assert ext.mask(cfg) == 0b11111
     assert layout.genome_layout_version(3, ext.mask(cfg)) == 2 + 4 * 31 == 126
     assert layout.genome_layout_version(2, 0) == layout.genome_layout_version(2) == 1
@@ -120,10 +120,11 @@ def test_version_integer_and_features_string() -> None:
 
 
 def test_tail_order_puts_arms_last_and_state_order_is_extensions_order() -> None:
-    assert ext.TAIL_ORDER == ("structures", "bonds", "comm", "niche", "arms")
-    assert ext.EXTENSIONS == ("arms", "structures", "bonds", "comm", "niche")
-    blocks = ext.layout_blocks(_cfg(2, ext.EXTENSIONS), 2)
-    assert [owner for owner, *_ in blocks] == list(ext.TAIL_ORDER)
+    # the real orders: calls (DESIGN §47) is the sixth feature, its far-hearing tail (step K2) follows comm's
+    assert ext.TAIL_ORDER == ("structures", "bonds", "comm", "calls", "niche", "arms")
+    assert ext.EXTENSIONS == ("arms", "structures", "bonds", "comm", "niche", "calls")
+    blocks = ext.layout_blocks(_cfg(2, stub.ALL), 2)  # the stub mirrors the five features of PR 0a to F1
+    assert [owner for owner, *_ in blocks] == [n for n in ext.TAIL_ORDER if n != "calls"]
 
 
 def test_dims_plumbing_of_the_voice_width(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -138,5 +139,5 @@ def test_dims_plumbing_of_the_voice_width(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_params_follow_the_composed_layout() -> None:
-    d = dims(_cfg(2, ext.EXTENSIONS))
+    d = dims(_cfg(2, stub.ALL))
     assert d.w1_rows == d.lay.D_IN + d.h == 97 + d.h and d.params == d.w1_rows * d.h + d.w2_rows * 44

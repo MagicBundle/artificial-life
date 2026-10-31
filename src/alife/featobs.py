@@ -288,6 +288,36 @@ def niche_row(h: Mapping[str, np.ndarray], cfg: Config) -> dict[str, Any]:
     }
 
 
+# --- event-triggered calls ----------------------------------------------------------------------------------
+
+
+def calls_dev(s: Any, cfg: Config, heavy: bool) -> dict[str, mx.array]:
+    """The event windows (``State.evt``, (N, E) uint8); nothing without ``calls.trigger``."""
+    return {"calls.evt": s.evt} if cfg.calls.trigger else {}
+
+
+def calls_row(h: Mapping[str, np.ndarray], cfg: Config) -> dict[str, Any]:
+    """``calls_win_<event>``: the share of the alive rows whose window is open at the snapshot; with the
+    weather ``calls_exposure``, the mean hazard ramp of the alive rows (the same
+    ``weather_obs.storm_exposure`` as the weather block, as a flat key for the per-arm time series of the
+    calls experiment, DESIGN §47.7). The interval keys (event rates, call rates, storm deaths per agent-step)
+    are the counters' (``metrics``)."""
+    from alife import weather_obs
+    from alife.ext.calls import event_names
+
+    alive = h["alive"]
+    n = int(alive.sum())
+    out: dict[str, Any] = {}
+    if cfg.calls.trigger:
+        opened = (h["calls.evt"][alive] > 0).sum(axis=0)
+        for c, name in enumerate(event_names(cfg.calls.events)):
+            out[f"calls_win_{name}"] = float(opened[c]) / n if n else None
+    if cfg.weather.enabled:
+        wc = cfg.weather
+        out["calls_exposure"] = weather_obs.storm_exposure(h["air_speed"][alive], wc.storm_u0, wc.storm_span)
+    return out
+
+
 # --- the registry rows --------------------------------------------------------------------------------------
 
 __all__ = [
@@ -296,6 +326,8 @@ __all__ = [
     "assortativity",
     "bonds_dev",
     "bonds_row",
+    "calls_dev",
+    "calls_row",
     "circular",
     "gini",
     "niche_dev",

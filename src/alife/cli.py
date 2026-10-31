@@ -723,6 +723,17 @@ def _cmd_migrate(a: argparse.Namespace) -> int:
         overwrite=a.overwrite,
         origin=origin,
     )
+    new_cfg = RunDir.open(rep.out).config() if "calls" in rep.change.added else None
+    if new_cfg is not None and not new_cfg.calls.trigger:  # DESIGN §47.5: the first form cannot be extended
+        print(
+            "warning: calls is enabled without calls.trigger (and without calls.far_range): this world "
+            "cannot gain either by a second migration (a state field or brain block of a feature already "
+            "on is a restart, DESIGN §43.8, §47.5). Migrate again from the source with "
+            "--set calls.trigger=true --set calls.events=N in the same call, or fork this run "
+            "(alife run --init-from).",
+            file=sys.stderr,
+            flush=True,
+        )
     if not a.quiet:
         ch = rep.change
         print(
@@ -1638,6 +1649,7 @@ def _cmd_bench(a: argparse.Namespace) -> int:
         bonds_arm=a.bonds,
         comm_arm=a.comm,
         niche_arm=a.niche,
+        calls_arm=a.calls,
     )
     if a.alive:
         report["steady"] = steady_summary(report, a.alive)
@@ -2067,6 +2079,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also time the step with farming on against the same config with it off (interleaved "
         "blocks; needs niche.farm, for example --overlay niche)",
+    )
+    p.add_argument(
+        "--calls",
+        action="store_true",
+        help="also time the step with the event-triggered calls on against the same config with them off "
+        "(interleaved blocks; needs calls.enabled, for example --overlay comm --overlay calls)",
     )
     p.add_argument(
         "--weather-pairs",
