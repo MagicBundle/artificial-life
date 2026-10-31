@@ -203,7 +203,7 @@ def test_the_shared_environment_reaches_the_transfer_test_but_not_the_calls(
 
 def test_the_pooled_test_is_not_grossly_wrong_under_the_null() -> None:
     """A gross-failure guard (25 % at the 5 % level over 24 worlds) for the code and reception families; the
-    tight check of the largest family is the slow test below."""
+    tight check of the largest family is the 150-world test below."""
     hits = {f: 0 for f in ("code", "reception", "transfer")}
     n = 24
     for seed in range(n):
