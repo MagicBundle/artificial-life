@@ -502,4 +502,6 @@ Estimated reduction of storm deaths: 1.09 % against `nofar`, 2.10 % against `dec
 - The two near-silent lineages (F21 rate 0.12, F25 0.06) show effects near 0; the loudest (F26) shows +4.5 and +4.4. A small real effect that scales with use would look like this.
 - F26 is the one lineage whose channels separate: over 300 000 steps its storm rate rose from 0.81 to 0.92 by 100 000-step thirds, and its hurt rate fell from 0.42 to 0.12. F25 fell on both, F24 slightly on both. One lineage cannot separate selection from drift.
 
-**Not done.** O2 and O3 need K3 and were not read. Voice logs can be replayed from the checkpoints in `~/alife-calls-m1` if K3 is built; with O1 and O4 negative they can no longer change the label. Stage 2 has no D or hazard-off reference, by design. The run directories (18 GB) are on the internal disk only, and the external drive was disconnected when M1 finished.
+**Not done.** O2 and O3 need K3 and were not read. Voice logs can be replayed from the checkpoints in `~/alife-calls-m1` if K3 is built; with O1 and O4 negative they can no longer change the label. Stage 2 has no D or hazard-off reference, by design. The run directories (18 GB) are on the external drive under `alife/calls_m1_2026-11-01`; the metrics, configs and metadata are also kept locally.
+
+**Decision (owner, 2026-11-01).** M2 and K3 are not pursued.

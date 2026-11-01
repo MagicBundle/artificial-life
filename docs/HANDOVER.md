@@ -97,7 +97,7 @@ heard, with costs and speaking unchanged (the causal arms). Enable with `--overl
 Built since: the observer channel `Acts.ext.comm` and `FSIG` (C2, §39.8), the analysis and the language score (C3, §39.14, next
 section). Absent: the GUI and the colour mode, the cost/kin sweeps (C4).
 
-## The voice analysis (DESIGN §39.14, row I7x; branch `analysis/voice`)
+## The voice analysis (DESIGN §39.14, row I78; branch `analysis/voice`)
 
 PR C3 is built: the log of what is said and heard, the meaning test of §39.9 (rules version 3) and the language-score adapter of the emergence suite (E6). Host-side and observer-only; no engine file, key or digest changes (the CPU identity matrix against `5984583` is bit-identical). Code: `src/alife/analysis/voice/` and `src/alife/analysis/comm.py`; tests `tests/test_voice_analysis.py`, `tests/test_voice_replay.py`, `tests/voice_synth.py`.
 
@@ -176,7 +176,9 @@ their helpers (eager; the compiled step is in `tests/test_sphere_features_compil
 
 **S4c (the calibration of the weather, DESIGN §46.6) makes the storms of a planet meet the criteria of STORMS_W0**: `python -m alife.analysis.w0_sphere run|sweep|table` is the W0-style study of the sphere's weather alone (named-storm counts per hemisphere, Kaplan-Meier lifetimes, tracks, spin-up lengths, the exposure of the storms to the grid's vertices, seams and poles; `sweep` runs a JSON list of candidates in parallel workers, the GPU being the limit) and `alife.analysis.w0_sphere_wind` the wind-coupling experiment. **The overlays are calibrated** (named storms 2 to 6 per hemisphere at 90 % of the ticks or more, lifetime above 3 000; the numbers are in §46.6): `stormsph` three `40 x 20` pools per hemisphere with `seed_rate` 0.05 (living storms: 0.9 to 1.8 deaths per 10 000 steps; 0.02 was a frozen world), `stormsph22` the 24 x 16 pools with `seed_rate` 0.04, `stormsph16` `18 x 12` pools with `seed_rate` 0.0032; `rain_gain` 52 000 / 26 000 / 4 400 and `storm_u0` 0.09 / 0.095 / 0.06 are set against the box's early weather. The window of the small planets is narrow (the slow gates in `test_sphere_presets_slow.py` guard it). **The agents' wind is `α·dt·u`** (S4b had `α·u`: the drift of a free agent on a weather sphere is 21 % smaller at `Nw` 42; the CPU and Metal digests of `tiny3s` with the weather were re-pinned); **the launcher's spin-up is per planet** (`weather_spinup.SPHERE_SPINUP` and `PlanetSpec.sphereSpinups`: 15 000, 10 000, 8 000 steps) and a repeated launch reads a cached spun-up state (`~/.cache/alife/weather_spinup/`, off with `ALIFE_SPINUP_CACHE=0`). To reproduce a calibration run: `uv run python -m alife.analysis.w0_sphere run --preset 64k3s --overlay stormsph --steps 100000 --spinup 20000 --seed 0 --out /tmp/k3s_s0` (about 6 minutes on a quiet GPU; `--pools '{"per_hemisphere":3,"sx":40,"sy":20}'` replaces the overlay's pools, `--set weather.seed_rate=0.04` any key). Next: `docs/RESULTS_SPHERE.md` (the first long runs, S7b), the owner's look at the storms of a planet (the hazard values are the early-run calibration), the stability bound re-run if a damping key is ever touched.
 
-## Event-triggered calls (DESIGN §47, row I7y; K1 and K2 built)
+## Event-triggered calls (DESIGN §47, row I79; K1, K2 and the K5 pilot built, M1 run, negative)
+
+**M1 result (2026-11-01, `docs/RESULTS_CALLS.md` section 16):** O1 fails in five of six lineages, and storm deaths fall by 1.09 % against `nofar` and 2.10 % against `decoy` (below the 5 % band, h valid), so no `warning` label. Owner decision: M2 and K3 are not pursued. The run directories are on the external drive (`alife/calls_m1_2026-11-01`).
 
 The `calls` extension (`ext/calls.py`, `src/alife/calls.py`) gates the voice of `comm` with per-event windows: with
 `calls.trigger`, voice channel c belongs to the c-th active event of `calls.events` (bits 1 hurt, 2 food, 4 storm, 8 lost;
