@@ -254,10 +254,10 @@ def geometry_hits(tree: ast.AST) -> dict[str, int]:
     return _Scanner(tree).hits()
 
 
-# The modules that DEFINE the geometry (the config keys, the torus primitives, the two accessor modules):
-# their raw
+# The modules that DEFINE the geometry (the config keys, the torus primitives, the two accessor modules, and
+# the sphere's field tables and kernels, S1): their raw
 # reads are the point of them, so they are not counted (a count there would break on every legitimate edit).
-DEFINITION_FILES = frozenset({"config.py", "ops.py", "geom.py", "sphere.py"})
+DEFINITION_FILES = frozenset({"config.py", "ops.py", "geom.py", "sphere.py", "fieldtab.py", "fields_sph.py"})
 
 
 def geometry_scan() -> dict[tuple[str, str], int]:

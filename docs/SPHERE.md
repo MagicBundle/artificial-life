@@ -6,6 +6,11 @@
 > angles for Nside 2..72 ship as `src/alife/data/healpix_coverage_reach2.json` (no 3 s wait per process), `lsq_weights` exists for the 4 edge and the 8 touching neighbours,
 > the greedy colouring gives 15, 16, 15 colours at Nside 8, 11, 21, D10 changed (no astropy-healpix: `tests/hp_oracle.py`), and the geometry lint scans all arrays indexed `[..., 2]`,
 > not only names ending in `pos`/`vel`. The probe scripts named below are not in the repository; the numbers that S0 builds are reproduced by its tests.
+>
+> **S1 (2026-10-30).** Built section 3.1 (resource, chemicals), the fields part of 2.1 (`StateS`), 2.7 (patches, founders) and the S1 row of section 10; see DESIGN §46.5. Deviations: the gradient uses the 4 edge neighbours
+> (`W (Npix, 4, 3)`); the chemical sub-steps are 4, 4, 3 (the 64k3s row sum 16.4 gives 3, not 4), at most 16 by a `validate` rule; the chemical update costs about +0.7 ms at 64k3s on Metal (not +0.3); `wx` is a zero placeholder
+> `(11, 12·(2·Nf)²)` until S4; the founders and `ops.body_axes_s`/`to_body_s` come in S1; the horizontal diffusivity at the floor is 1.2 to 1.4 times the box's `d_q8/256·field_cell²`; the S1 spherical-harmonic gate allows 4 %
+> at Nside 8, l = 6 (the measured −3.4 %; the spec's own text says 3.3 %); `fieldtab.py` and `fields_sph.py` are geometry-definition files of the lint.
 
 Status: proposal for owner review, 2026-10-29; **Revision 1** (same day) applies the independent review `review.md` (changelog at the end). Planned identifiers: DESIGN §46, Review-log row I77 (I76 is taken by a GUI fix).
 Owner request (2026-10-29): "a true sphere and not a wrapped sheet". This document is a specification only: no engine code

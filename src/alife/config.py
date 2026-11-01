@@ -24,7 +24,7 @@ from urllib.parse import urlsplit
 import mlx.core as mx
 import numpy as np
 
-from alife import ext, geom, layout, weather
+from alife import ext, fieldtab, geom, layout, ops, weather
 from alife.weather import DEFAULT_POOLS as _WEATHER_POOLS
 
 log = logging.getLogger(__name__)
@@ -1141,8 +1141,8 @@ SPHERE_RADIUS_MAX: Final = 1e6  # keeps radius³ and every derived float finite;
 
 def _validate_sphere(cfg: Config) -> list[str]:
     """The rules of a sphere world (DESIGN §46.9), as messages. The rules that need tables of later PRs are
-    absent by design: the diffusion tables and bounds (S1), the feature set a sphere run may enable
-    (``SPHERE_READY``, S2) and the weather (S4).
+    absent by design: the feature set a sphere run may enable (``SPHERE_READY``, S2) and the weather (S4).
+    The fields' rules (S1) are ``_sphere_field_rules``.
 
     Ordered by cost, and total: the refusal comes first and alone (nothing else is computed for a config the
     engine cannot run); the cheap arithmetic rules come next and every quantity they derive is bounded
@@ -1209,6 +1209,10 @@ def _validate_sphere(cfg: Config) -> list[str]:
                 f"the cell volume {vol:.4g} must be in [{lo}, {hi}]·world.field_cell³ = "
                 f"[{lo * w.field_cell**3:.4g}, {hi * w.field_cell**3:.4g}]",
             )
+    # the fields (S1): the conductance tables need the shell that passed the rules above; before the hash
+    # block so that a bad diffusion constant is reported without the expensive derivation
+    if sane and nside_ok and layers_ok and w.field_cell > 0 and not errs:
+        errs.extend(_sphere_field_rules(cfg))
     # the hash: Nh from the exact reach-2 coverage, then C from the lid cell. Only for a config that passed
     # everything above (the derivation is the expensive part), and only for inputs it is defined for.
     hash_ok = sane and not errs and sen.radius > 0 and math.isfinite(sen.radius) and r > 0
@@ -1237,6 +1241,55 @@ def _validate_sphere(cfg: Config) -> list[str]:
                     f"sensing.cell_capacity {sen.cell_capacity} must be ≥ ceil(0.167·V_lid) + 4 = {c_min} "
                     f"(the lid hash cell holds {geom.lid_cell_volume(rad, h, sen.radius, nh):.4g} units³)",
                 )
+    return errs
+
+
+SPHERE_CHEM_SUBSTEPS_MAX: Final = 16  # the unrolled sub-steps of the chemical update (3 to 6 for the presets)
+
+
+def _sphere_field_rules(cfg: Config) -> list[str]:
+    """The rules of the sphere's fields (DESIGN §46.5, sphere series S1), from the conductance tables. Called
+    by ``_validate_sphere`` before the hash block, only for a shell that passed its geometry rules (the tables
+    need a sane shell).
+
+    The integer resource diffusion needs ``Σ_j α_ij <= 0.9`` in every cell (``α_ij = d_q8·w_ij / 2^16``), i.e.
+    ``d_q8 <= floor(0.9·2^16 / rowsum_max)`` (11, 11, 14 for the three presets), and then the cap bound
+    ``R <= R_HARD`` is verified exhaustively on the actual tables (``ops.check_diffusion_tables``). The patch
+    drift is a rotation by a series whose truncation is below 3e-11 for ``|ω| <= 0.05`` and 2e-9 for
+    ``|ω| <= 0.1`` (``fields_sph.rotate``), under the float32 rounding; ``patch_drift <= 0.005·radius`` keeps
+    ``|ω| <= 0.1`` at the largest device-valid ``drift_mult`` (20). The chemical update unrolls
+    ``ceil(D·rowsum_max/256)`` sub-steps, at most ``SPHERE_CHEM_SUBSTEPS_MAX``."""
+    w, fi = cfg.world, cfg.fields
+    errs: list[str] = []
+    cond = fieldtab.conductance(*fieldtab.shell(cfg))
+    bound = cond.d_q8_max()
+    if fi.resource_diffusion_q8 > bound:
+        errs.append(
+            f"fields.resource_diffusion_q8 {fi.resource_diffusion_q8} must be <= {bound} on this shell "
+            f"(the largest row of pair weights sums to {cond.rowsum_max}/256; the content a cell sends away "
+            "per step must stay below 0.9 of it)"
+        )
+    else:
+        try:
+            ops.check_diffusion_tables(
+                cond.wt * fi.resource_diffusion_q8, cond.wz * fi.resource_diffusion_q8, R_HARD
+            )
+        except ValueError as e:
+            errs.append(f"fields.resource_diffusion_q8 {fi.resource_diffusion_q8}: {e}")
+    d_max = max((v for v in fi.chem_diffusion if math.isfinite(v)), default=0.0)
+    n_sub = cond.chem_substeps(d_max)
+    if n_sub > SPHERE_CHEM_SUBSTEPS_MAX:
+        errs.append(
+            f"the chemical update of this shell needs {n_sub} sub-steps (fields.chem_diffusion {d_max} times "
+            f"the largest row sum {cond.rowsum_max}/256); the limit is {SPHERE_CHEM_SUBSTEPS_MAX}: lower "
+            "fields.chem_diffusion or use a thicker layer spacing"
+        )
+    if fi.patch_drift * 20.0 > 0.1 * w.radius:
+        errs.append(
+            f"fields.patch_drift {fi.patch_drift} must be <= 0.005·world.radius = {0.005 * w.radius} "
+            "(a patch rotates by |ω| = drift/radius per step; the rotation series must stay accurate, "
+            "|ω| <= 0.1, at the largest device-valid drift_mult 20)"
+        )
     return errs
 
 

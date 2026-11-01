@@ -8,6 +8,7 @@ Helpers that scatter or index check integer dtypes; the checks are on static dty
 from __future__ import annotations
 
 import math
+from typing import NamedTuple
 
 import mlx.core as mx
 import numpy as np
@@ -252,6 +253,159 @@ def int_diffuse_3d(r: mx.array, d_q8: int) -> mx.array:
         + mx.concatenate([zero, q[:-1]], axis=0)  # from the layer below
         + mx.concatenate([q[1:], zero], axis=0)  # from the layer above
     )
+
+
+def cross3(a: mx.array, b: mx.array) -> mx.array:
+    """The cross product of 3-vectors ``(..., 3)``, elementwise."""
+    return mx.stack(
+        [
+            a[..., 1] * b[..., 2] - a[..., 2] * b[..., 1],
+            a[..., 2] * b[..., 0] - a[..., 0] * b[..., 2],
+            a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0],
+        ],
+        axis=-1,
+    )
+
+
+def local_frame_s(up: mx.array) -> tuple[mx.array, mx.array]:
+    """East and north unit vectors ``(..., 3)`` at unit vectors ``up``: ``east = normalise(ẑ × û)`` (x̂ within
+    1e-6 of a pole, where ẑ × û vanishes), ``north = û × east`` (DESIGN §46.2; the frame of the bearing)."""
+    ex, ey = -up[..., 1], up[..., 0]
+    ne = mx.sqrt(ex * ex + ey * ey)
+    polar = ne < 1e-6
+    safe = mx.where(polar, 1.0, ne)
+    east = mx.stack(
+        [mx.where(polar, 1.0, ex / safe), mx.where(polar, 0.0, ey / safe), mx.zeros_like(ne)], axis=-1
+    )
+    ax, ay, az = up[..., 0], up[..., 1], up[..., 2]
+    bx, by, bz = east[..., 0], east[..., 1], east[..., 2]
+    north = mx.stack([ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx], axis=-1)
+    return east, north
+
+
+def body_axes_s(
+    hdg: mx.array, up: mx.array, cos_p: mx.array, sin_p: mx.array
+) -> tuple[mx.array, mx.array, mx.array]:
+    """The sphere body frame ``(fwd, lat, up)`` of heading ``hdg`` (a unit tangent), local up ``up`` (a unit
+    vector) and pitch φ, each ``(..., 3)`` in planet axes (DESIGN §46.2): ``fwd = cφ·hdg + sφ·û``, ``lat = û ×
+    hdg``, ``up = cφ·û − sφ·hdg``. The box frame of ``body_axes`` with ``(hdg, û)`` in place of ``(cos θ, sin
+    θ; ẑ)``: right-handed and orthonormal, and at φ = 0 on a locally level scene ``hdg → cos θ, sin θ``,
+    ``û → ẑ`` it reproduces it. The angle arrays must broadcast against ``hdg[..., 0]``."""
+    ax, ay, az = up[..., 0], up[..., 1], up[..., 2]
+    bx, by, bz = hdg[..., 0], hdg[..., 1], hdg[..., 2]
+    lat = mx.stack([ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx], axis=-1)
+    c, s = cos_p[..., None], sin_p[..., None]
+    return c * hdg + s * up, lat, c * up - s * hdg
+
+
+def to_body_s(v: mx.array, hdg: mx.array, up: mx.array, cos_p: mx.array, sin_p: mx.array) -> mx.array:
+    """Project planet-axes vectors ``(..., 3)`` on the sphere body frame ``(fwd, lat, up)`` of
+    ``body_axes_s``: three elementwise dot products (no matmul, F20). ``hdg``, ``up`` and the angles broadcast
+    against ``v``'s leading axes (pass ``hdg[:, None]`` etc. for (N,K,3) vectors)."""
+    fwd, lat, upv = body_axes_s(hdg, up, cos_p, sin_p)
+    return mx.stack([(v * fwd).sum(axis=-1), (v * lat).sum(axis=-1), (v * upv).sum(axis=-1)], axis=-1)
+
+
+def int_diffuse_sph(r: mx.array, nbr: mx.array, a_t: mx.array, a_z: mx.array) -> mx.array:
+    """Exact integer flux diffusion on a sphere shell (DESIGN §46.5); conserves the total exactly.
+
+    ``r`` is the (FZ, Npix) int32 resource, ``nbr`` (Npix, 4) int32 the edge neighbours of an angular cell,
+    ``a_t`` (FZ, Npix, 4) the tangential pair coefficients and ``a_z`` (FZ−1, 1) the radial ones between the
+    layers ``k`` and ``k+1``: integers ``a = d_q8·w`` with ``w`` the symmetric pair weight in 1/256 units
+    (``fieldtab.conductance``), so ``a / 2^16`` is the fraction of a cell's content that crosses the pair per
+    step. With ``w = 256`` it is the box stencil: ``(R·d_q8·256) >> 16 = (R·d_q8) >> 8``.
+
+    Every pair moves ``q_ij = (int64(R_i)·a_ij) >> 16`` from ``i`` to ``j`` and ``q_ji`` back, and the cell
+    ``i`` ends at ``R_i − Σ_j q_ij + Σ_j q_ji``: the transfers are pairwise antisymmetric, so the total is
+    conserved. The product is **int64**: ``R`` reaches ``2^24 − 1`` and ``a`` several thousand (``2^41``);
+    int32 wraps above ``R = 0.24 M``. ``R_i' >= 0`` holds when every row sum ``Σ_j a_ij / 2^16 <= 1``, and
+    ``R_i' <= R_HARD`` is the property ``check_diffusion_tables`` verifies exhaustively for the actual tables.
+    Gathers only (no scatter): the inflow of ``i`` is read from its neighbours' side with the same weight.
+    """
+    _require_i32(r, "r")
+    r64 = r.astype(mx.int64)
+    at, az = a_t.astype(mx.int64), a_z.astype(mx.int64)
+    out_t = ((r64[:, :, None] * at) >> 16).sum(axis=2)  # i -> its 4 edge neighbours
+    in_t = ((mx.take(r64, nbr, axis=1) * at) >> 16).sum(axis=2)  # their q_ji, a_ji = a_ij
+    q_up = (r64[:-1] * az) >> 16  # layer k -> k+1
+    q_dn = (r64[1:] * az) >> 16  # layer k+1 -> k
+    zero = mx.zeros((1, r.shape[1]), dtype=mx.int64)
+    out = out_t + mx.concatenate([q_up, zero], axis=0) + mx.concatenate([zero, q_dn], axis=0)
+    inn = in_t + mx.concatenate([zero, q_up], axis=0) + mx.concatenate([q_dn, zero], axis=0)
+    return (r64 - out + inn).astype(_I32)
+
+
+class DiffusionCheck(NamedTuple):
+    """The result of ``check_diffusion_tables``."""
+
+    rows: int  # distinct coefficient rows (4 tangential, up, down) of the tables
+    row_sum_max: float  # max over cells of Σ_j a_ij / 2^16
+    window: int  # R_i values below R_HARD enumerated per row: R_HARD − window .. R_HARD
+    min_slack: int  # min over the enumeration of R_HARD − R_i' (>= 0 means the cap held)
+
+
+def check_diffusion_tables(
+    a_t: np.ndarray,
+    a_z: np.ndarray,
+    r_hard: int = (1 << 24) - 1,
+    max_sum: float = 0.9,
+    chunk: int = 16384,
+) -> DiffusionCheck:
+    """Host check of the integer diffusion tables of ``int_diffuse_sph`` (§46.5); raises ``ValueError``.
+
+    1. every row sum ``Σ_j a_ij / 2^16`` is at most ``max_sum`` (< 1): then ``R_i' >= 0``, since
+       ``Σ_j q_ij <= R_i·Σ_j α_ij``;
+    2. ``R_i' <= R_HARD`` whenever every ``R <= R_HARD``. With ``s`` the row sum and ``n`` its non-zero terms,
+       ``R_i' <= R_i·(1 − s) + R_HARD·s + n`` (each floor loses less than 1), which is ``<= R_HARD`` for
+       ``R_HARD − R_i >= n / (1 − s)`` (60 at ``s = 0.9``, ``n = 6``). Below that distance the bound is not
+       monotone in ``R_i`` (the six floors can step together), so for **every distinct row** the cell value
+       is enumerated over ``R_HARD − window .. R_HARD`` against the worst neighbourhood (all neighbours at
+       ``R_HARD``: the inflow is monotone in each neighbour's value).
+    """
+    at = np.asarray(a_t, dtype=np.int64)
+    az = np.asarray(a_z, dtype=np.int64).reshape(-1)
+    fz = at.shape[0]
+    if (at < 0).any() or (az < 0).any():
+        raise ValueError("diffusion coefficients must be non-negative")
+    up = np.concatenate([az, [0]])
+    dn = np.concatenate([[0], az])
+    rows = np.concatenate(
+        [
+            at.reshape(fz, -1, 4),
+            np.broadcast_to(up[:, None, None], (fz, at.shape[1], 1)),
+            np.broadcast_to(dn[:, None, None], (fz, at.shape[1], 1)),
+        ],
+        axis=2,
+    ).reshape(-1, 6)
+    rows = np.unique(rows, axis=0)
+    sums = rows.sum(axis=1)
+    s_max = float(sums.max()) / (1 << 16)
+    if s_max > max_sum:
+        raise ValueError(
+            f"a diffusion row sums to {s_max:.4f} > {max_sum} of the cell content per step "
+            "(lower fields.resource_diffusion_q8)"
+        )
+    s = sums / float(1 << 16)
+    n = (rows > 0).sum(axis=1)
+    window = int(np.ceil((n / (1.0 - s)).max()))
+    lo = max(0, r_hard - window)
+    cell = np.arange(lo, r_hard + 1, dtype=np.int64)
+    slack = r_hard
+    for i in range(0, len(rows), chunk):
+        blk = rows[i : i + chunk]
+        out = ((cell[None, :, None] * blk[:, None, :]) >> 16).sum(axis=2)
+        inflow = ((r_hard * blk) >> 16).sum(axis=1)
+        new = cell[None, :] - out + inflow[:, None]
+        if (new < 0).any():
+            raise ValueError("a diffusion row drives a cell below zero")
+        slack = min(slack, int((r_hard - new).min()))
+        if slack < 0:
+            bad = blk[int(np.argmax((new > r_hard).any(axis=1)))]
+            raise ValueError(
+                f"a diffusion row pushes a cell above R_HARD = {r_hard} (coefficients {bad.tolist()}; "
+                f"excess {-slack}): lower fields.resource_diffusion_q8"
+            )
+    return DiffusionCheck(len(rows), s_max, window, slack)
 
 
 def floor_i32(x: mx.array) -> mx.array:

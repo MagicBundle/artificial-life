@@ -136,7 +136,9 @@ The owner asked for a true sphere (`world.geometry = "sphere"`: HEALPix cells on
 `src/alife/geom.py` (host: the HEALPix scheme, the exact neighbour tables, the exact coverage of the hash stencils and the `Nh`/`C` derivations, the equal-volume layers, the host accessors),
 `src/alife/sphere.py` (device: the float32 lookup, `move`, the device accessors), the five config keys (`config.SPHERE_KEYS`, omitted from `config.json` at their defaults), the geometry lint with
 `tests/geometry_allowlist.py` (the audit of the box-geometry consumers, a ratchet; each PR of the series bumps `CURRENT_PR` and deletes the entries it converts), and the oracle `tests/hp_oracle.py`
-(the review's independent HEALPix), plus `docs/SPHERE.md` (the series specification, revision 1). `validate` refuses a sphere (`config.GEOMETRY_SUPPORTED = ("box",)`) until S2. Next: S1, the sphere fields (int64 diffusion flux, `StateS`), then S2 (agents, search,
+(the review's independent HEALPix), plus `docs/SPHERE.md` (the series specification, revision 1). `validate` refuses a sphere (`config.GEOMETRY_SUPPORTED = ("box",)`) until S2. S1 (sphere fields, DESIGN §46.5, `src/alife/fieldtab.py` + `fields_sph.py`, `ops.int_diffuse_sph` / `check_diffusion_tables`, `StateS`) is built on top and
+also runs nothing: the resource step is an int64 flux with symmetric geometric weights (`resource_diffusion_q8 <= 11 / 11 / 14` on tiny3s / mini3s / 64k3s, verified exhaustively by `validate`), the chemicals are sub-stepped, the patches
+rotate about a stored angular velocity, and `fields.py` dispatches to the sphere on `dims(cfg).sph`. Next: S2 (agents, search,
 `tiny3s`; needs the compile-collision guard `fix/mlx-compile-collision` merged, or the subprocess fallback of DESIGN §46.11).
 
 ## How to run
