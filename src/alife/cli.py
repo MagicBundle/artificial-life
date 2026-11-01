@@ -724,16 +724,22 @@ def _cmd_migrate(a: argparse.Namespace) -> int:
         origin=origin,
     )
     new_cfg = RunDir.open(rep.out).config() if "calls" in rep.change.added else None
-    if new_cfg is not None and not new_cfg.calls.trigger:  # DESIGN §47.5: the first form cannot be extended
-        print(
-            "warning: calls is enabled without calls.trigger (and without calls.far_range): this world "
-            "cannot gain either by a second migration (a state field or brain block of a feature already "
-            "on is a restart, DESIGN §43.8, §47.5). Migrate again from the source with "
-            "--set calls.trigger=true --set calls.events=N in the same call, or fork this run "
-            "(alife run --init-from).",
-            file=sys.stderr,
-            flush=True,
-        )
+    if new_cfg is not None:  # DESIGN §47.5: what calls lacks now cannot be added by a second migration
+        lacks = [
+            f"calls.{k}"
+            for k, on in (("trigger", new_cfg.calls.trigger), ("far_range", new_cfg.calls.far_range > 0.0))
+            if not on
+        ]
+        if lacks:
+            print(
+                f"warning: calls is enabled without {' and without '.join(lacks)}: this world cannot gain "
+                "either by a second migration (a state field or brain block of a feature already on is a "
+                "restart, DESIGN §43.8, §47.5). Migrate again from the source with --set calls.trigger=true "
+                "--set calls.events=N --set calls.far_range=R in the same call (a fork "
+                "(alife run --init-from) can add the trigger, not the far blocks).",
+                file=sys.stderr,
+                flush=True,
+            )
     if not a.quiet:
         ch = rep.change
         print(

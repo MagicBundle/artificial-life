@@ -30,6 +30,8 @@ from alife.config import Config, dims
 SALT: Final = rng.HASH_SALTS["comm"]  # ops.hash32 salt of the comm feature (DESIGN §43.3)
 SIG_MAX: Final = 1.0 - 2.0**-24  # the largest f32 below 1: tanh saturates to exactly 1.0, a call stays < 1
 BEARING_FLOOR: Final = 1e-3  # denominator floor of the bearing (no sound -> exactly 0)
+ORACLE_INTENSITY: Final = 0.5  # the fixed call of an open window under the controls of ORACLE_CALLING
+ORACLE_CALLING: Final = ("reflex", "reflex_near", "reflex_call")  # = ext.calls.CALLING (comm imports no ext)
 _I32 = mx.int32
 _F32 = mx.float32
 
@@ -64,6 +66,8 @@ def sig_of(y: mx.array, cfg: Config, gate: mx.array | None = None) -> mx.array:
     exactly 0: silent and free (edge case K1)."""
     d = dims(cfg)
     o = d.lay.OUT_VOICE
+    if gate is not None and cfg.calls.control in ORACLE_CALLING:  # static: the oracle (DESIGN §47.7)
+        return mx.where(gate, ORACLE_INTENSITY, 0.0).astype(_F32)  # every open window calls at 0.5, y ignored
     sig = mx.clip(mx.tanh(y[:, o : o + d.voice_w]), 0.0, SIG_MAX)
     return sig if gate is None else mx.where(gate, sig, 0.0)
 
@@ -123,15 +127,10 @@ def decoy_index(step: mx.array, alive: mx.array) -> mx.array:
     return mx.where(alive, src, rows)
 
 
-def hear(voice: mx.array, nbr: Any, desc: mx.array, cfg: Config) -> mx.array:
-    """What each row hears: ``(N, W + nd)`` f32, the heard intensity per channel in ``[0, 1]`` then the
-    body-frame bearing of the sound in ``[-1, 1]`` (0 with no sound).
-
-    ``voice (N, W)`` is the stored call of every row (a pure argument, so the offline counterfactuals call
-    this with a modified array). Neighbour ``j`` of ``i`` weighs
-    ``a = clip(1 - dist/range, 0, 1) ** atten_pow`` (times ``kin ** kin_exp`` with ``kin_exp > 0``), 0 where
-    invalid; the intensity is the saturating sum of ``a · voice_j``, the bearing the loudness-weighted mean of
-    the neighbours' body-frame offsets (``desc``)."""
+def weights(nbr: Any, desc: mx.array, cfg: Config) -> mx.array:
+    """(N, K) f32: the hearing weight ``a = clip(1 - dist/range, 0, 1) ** atten_pow`` of each sensed neighbour
+    (times ``kin ** kin_exp`` with ``kin_exp > 0``), 0 where invalid. Shared by ``hear``,
+    ``audible_count`` and the near oracle of ``calls`` (``calls.control = reflex_near``)."""
     c, d = cfg.comm, dims(cfg)
     valid = desc[..., layout.NBR_PRESENT] > 0.5  # desc is zero where invalid or dead
     a = mx.clip(1.0 - nbr.dist / d.ext("comm").hear_range, 0.0, 1.0)
@@ -141,6 +140,20 @@ def hear(voice: mx.array, nbr: Any, desc: mx.array, cfg: Config) -> mx.array:
     if c.kin_exp > 0.0:  # static
         kin = desc[..., layout.NBR_KIN]
         a = a * (kin if c.kin_exp == 1.0 else kin**c.kin_exp)
+    return a
+
+
+def hear(voice: mx.array, nbr: Any, desc: mx.array, cfg: Config) -> mx.array:
+    """What each row hears: ``(N, W + nd)`` f32, the heard intensity per channel in ``[0, 1]`` then the
+    body-frame bearing of the sound in ``[-1, 1]`` (0 with no sound).
+
+    ``voice (N, W)`` is the stored call of every row (a pure argument, so the offline counterfactuals call
+    this with a modified array). Neighbour ``j`` of ``i`` weighs
+    ``a = clip(1 - dist/range, 0, 1) ** atten_pow`` (times ``kin ** kin_exp`` with ``kin_exp > 0``), 0 where
+    invalid; the intensity is the saturating sum of ``a · voice_j``, the bearing the loudness-weighted mean of
+    the neighbours' body-frame offsets (``desc``)."""
+    d = dims(cfg)
+    a = weights(nbr, desc, cfg)
     sig = voice[nbr.idx]  # (N, K, W): a gather, no scatter
     heard = mx.minimum((a[..., None] * sig).sum(axis=1), 1.0)
     w = a * sig.sum(axis=-1)  # loudness of each source at the listener
@@ -171,18 +184,9 @@ def audible_count(nbr: Any, desc: mx.array, cfg: Config) -> mx.array:
     ``hear``: valid, inside the range, and with ``kin_exp > 0`` a positive kin similarity). 0 under the
     ``deaf``
     control. Observer channel only."""
-    c, d = cfg.comm, dims(cfg)
-    if c.control == "deaf":  # static
-        return mx.zeros((d.n,), dtype=_I32)
-    valid = desc[..., layout.NBR_PRESENT] > 0.5
-    a = mx.clip(1.0 - nbr.dist / d.ext("comm").hear_range, 0.0, 1.0)
-    if c.atten_pow != 1.0:  # static
-        a = a**c.atten_pow
-    a = mx.where(valid, a, 0.0)
-    if c.kin_exp > 0.0:  # static
-        kin = desc[..., layout.NBR_KIN]
-        a = a * (kin if c.kin_exp == 1.0 else kin**c.kin_exp)
-    return (a > 0.0).astype(_I32).sum(axis=1)
+    if cfg.comm.control == "deaf":  # static
+        return mx.zeros((dims(cfg).n,), dtype=_I32)
+    return (weights(nbr, desc, cfg) > 0.0).astype(_I32).sum(axis=1)
 
 
 def with_heard(v: Voice, heard: mx.array, audible: mx.array) -> Voice:

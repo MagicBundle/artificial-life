@@ -587,7 +587,9 @@ def interval_row(
                     "comm_due_share": _ratio(int(col("COMM_DUE")), int(ls[LedgerIdx.HEAT_ACTION])),
                 }
             )
-        elif bname == "calls":  # event-triggered calls (§47.9): per event the open share and the call rate
+        elif (
+            bname == "calls"
+        ):  # event-triggered calls (§47.9): per event the open share and the call rate; the far-heard share
             by = {n: i for i, n in enumerate(names)}
             for n in names:
                 if not n.startswith("CALLS_OPEN_"):
@@ -596,6 +598,10 @@ def interval_row(
                 opened, spoke = int(cs[at + by[n]]), int(cs[at + by[f"CALLS_SPOKE_{ev.upper()}"]])
                 row[f"calls_open_{ev}"] = _ratio(opened, alive_steps)  # open windows per alive agent-step
                 row[f"calls_rate_{ev}"] = _ratio(spoke, opened)  # spoke over open
+            if "CALLS_FAR_HEARD" in by:  # far hearing (§47.7): the share of alive agent-steps that heard it
+                row["calls_far_heard_frac"] = _ratio(int(cs[at + by["CALLS_FAR_HEARD"]]), alive_steps)
+            if "CALLS_ORACLE_ON" in by:  # the oracle controls (§47.7): the share of agent-steps it pushed
+                row["calls_oracle_on_frac"] = _ratio(int(cs[at + by["CALLS_ORACLE_ON"]]), alive_steps)
             if weather:  # the fitness readout of the storm warning: storm deaths per alive agent-step
                 row["calls_deaths_storm_rate"] = _ratio(int(row["deaths_storm"]), alive_steps)
         elif (

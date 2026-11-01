@@ -442,7 +442,11 @@ class CallsConfig:  # event-triggered calls and far hearing (DESIGN §47); post 
     storm_frac: float = 1.0  # the `storm` level: air speed >= storm_frac * weather.storm_u0, (0, 2]
     far_range: float = 0.0  # far hearing reach (step K2); 0 = off
     far_xref: float = 1.0  # gain of the far intensity 1 - exp(-x / far_xref) (step K2)
-    control: str = "none"  # start-of-run oracle/ablation: none | nofar | reflex | reflex_near (step K2)
+    control: str = (
+        "none"  # start-of-run oracle/ablation: none | nofar | reflex | reflex_near | reflex_call (K2)
+    )
+    oracle_min: float = 0.05  # the oracle acts on a storm channel heard at or above this, (0, 1] (K2 review)
+    oracle_gain: float = 1.0  # multiplies physics.thrust_max in the oracle's force, (0, 4] (K2 review)
 
 
 @dataclass(frozen=True)

@@ -80,6 +80,8 @@ FROZEN_OMITTED_DEFAULTS = {
     ("calls", "far_range"): 0.0,
     ("calls", "far_xref"): 1.0,
     ("calls", "control"): "none",
+    ("calls", "oracle_min"): 0.05,
+    ("calls", "oracle_gain"): 1.0,
     (
         "arms",
         "dump_n",

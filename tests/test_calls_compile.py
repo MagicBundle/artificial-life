@@ -20,6 +20,7 @@ import sys
 import textwrap
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 SCRIPT = textwrap.dedent(
@@ -158,3 +159,186 @@ def test_no_config_dependent_scalar_is_printed_into_a_kernel(tmp_path: Path) -> 
     for name, values in classes.items():
         assert all(_detected(base["consts"], values)), f"the control does not show {name}: {base['consts']}"
     assert _same(0.0623699985, 0.062369998544454575) and not _same(0.0623, 0.0624)
+
+
+# --- step K2: the constants of the far hearing --------------------------------------------------------------
+
+FAR_SCRIPT = textwrap.dedent(
+    """
+    import dataclasses, hashlib, json, re, sys, pathlib
+    import mlx.core as mx
+    import numpy as np
+    mx.set_default_device(mx.cpu)
+    from alife import calls
+    from alife.config import load_config, dims
+
+    mode = sys.argv[2]
+    rs = np.random.default_rng(5)
+    n = 512
+    xh = mx.array((rs.random(n) * 3.0).astype(np.float32))
+    keep, ok, sigs, consts_expected = [], [], [], []
+    for kv in json.loads(sys.argv[1]):
+        cfg = load_config(preset="tiny3d", overrides=[
+            "brain.weight_dtype=float32", "comm.enabled=true", "comm.width=2", "calls.enabled=true",
+            f"calls.far_range=18", f"calls.far_xref={kv['xref']}", f"physics.thrust_max={kv['thrust']}",
+            f"world.size={kv['size']}"])
+        ncol = dims(cfg).fg ** 2
+        fcell = mx.array(rs.integers(0, ncol * 7, n).astype(np.int32))
+
+        def f(fcell_, xh_, cfg=cfg, ncol=ncol):
+            if mode == "runtime":
+                rt = calls.runtime(cfg)
+                col = calls.column_of(fcell_, cfg, rt)
+                heard = 1.0 - mx.exp(-xh_ / rt.floats[calls.F_XREF])
+                push = rt.floats[calls.F_THRUST] * xh_
+            else:  # the control: the same law with the scalars baked in as Python numbers
+                col = fcell_ % ncol
+                heard = 1.0 - mx.exp(-xh_ / cfg.calls.far_xref)
+                push = cfg.physics.thrust_max * xh_
+            return col, heard, push
+
+        cf = mx.compile(f)
+        keep.append(cf)
+        got, want = cf(fcell, xh), f(fcell, xh)
+        ok.append(all(bool(mx.array_equal(a, b).item()) for a, b in zip(got, want)))
+        sigs.append(hashlib.sha1(b"".join(np.asarray(a).tobytes() for a in got)).hexdigest())
+    consts = set()
+    for p in pathlib.Path(sys.argv[3]).rglob("*.cpp"):
+        for m in re.finditer(r"tmp_\\w+ = (-?[0-9][-+0-9.eE]*);", p.read_text()):
+            consts.add(m.group(1))
+    print(json.dumps({"equal": ok, "sig": sigs, "consts": sorted(consts)}))
+    """
+)
+FAR_CASES = [
+    {"xref": 1.7, "thrust": 0.0713, "size": 96},
+    {"xref": 3.3, "thrust": 0.1239, "size": 128},
+    {"xref": 0.45, "thrust": 0.0345, "size": 160},
+]
+
+
+def _run_far(tmpdir: Path, mode: str) -> dict:
+    tmpdir.mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, "TMPDIR": f"{str(tmpdir).rstrip(os.sep)}{os.sep}"}
+    done = subprocess.run(
+        [sys.executable, "-c", FAR_SCRIPT, json.dumps(FAR_CASES), mode, str(tmpdir)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def test_no_far_hearing_scalar_is_printed_into_a_kernel(tmp_path: Path) -> None:
+    """The column count (a 3D box's ``fcell % Ncol``), the far intensity reference and ``physics.thrust_max``
+    of the oracle are runtime arrays: three configurations that differ only in them compile one after the
+    other in one process, each equals its eager result, and none of the values is a printed constant of a
+    kernel source (the control with the scalars baked in prints them, so the scan can fail)."""
+    ncols = [float((c["size"] // 4) ** 2) for c in FAR_CASES]
+    classes = {
+        "Ncol": ncols,
+        "far_xref": [float(np.float32(c["xref"])) for c in FAR_CASES],
+        "thrust_max": [float(np.float32(c["thrust"])) for c in FAR_CASES],
+    }
+    res = _run_far(tmp_path / "runtime", "runtime")
+    assert res["equal"] == [True, True, True] and len(set(res["sig"])) == 3
+    for name, values in classes.items():
+        assert not any(_detected(res["consts"], values)), f"{name} is printed into a kernel: {res['consts']}"
+    base = _run_far(tmp_path / "baked", "baked")
+    assert base["equal"] == [True, True, True]
+    for name in ("Ncol", "thrust_max"):
+        assert all(_detected(base["consts"], classes[name])), (
+            f"the control does not show {name}: {base['consts']}"
+        )
+
+
+# --- step K2 review: the same scan on the REAL functions (calls.hear_far, calls.oracle_force) ---------------
+
+REAL_SCRIPT = textwrap.dedent(
+    """
+    import dataclasses, hashlib, json, re, sys, pathlib
+    from types import SimpleNamespace
+    import mlx.core as mx
+    import numpy as np
+    mx.set_default_device(mx.cpu)
+    sys.path.insert(0, sys.argv[4])
+    from alife import calls, fields
+    from alife.config import dims, load_config
+    import calls_grid_helpers as G
+    import weather_helpers as wh
+
+    BASE = ["brain.weight_dtype=float32", "comm.enabled=true", "comm.width=2", "comm.cost=32",
+            "calls.enabled=true"]
+    keep, ok, sig = [], [], []
+    for kv in json.loads(sys.argv[1]):
+        if kv["kind"] == "grid":  # the column count varies with the world size
+            cfg = load_config(preset="tiny3d", overrides=[*BASE, f"calls.far_range={kv['far']}",
+                              f"calls.far_xref={kv['xref']}", f"world.size={kv['size']}"])
+        else:  # the oracle: far range, reference, thrust, gain and threshold vary
+            cfg = wh.storm3d_config(*BASE, "calls.trigger=true", "calls.events=5", "calls.control=reflex",
+                                    f"calls.far_range={kv['far']}", f"calls.far_xref={kv['xref']}",
+                                    f"physics.thrust_max={kv['thrust']}", f"calls.oracle_gain={kv['gain']}",
+                                    f"calls.oracle_min={kv['omin']}")
+        d = dims(cfg)
+        ns = G.scene(cfg, min(300, d.n // 2), 1)
+        rs = np.random.default_rng(3)
+        voice = mx.array((rs.random((d.n, 2)) * 0.9).astype(np.float32))
+
+        def f(pos, heading, alive, voice, cfg=cfg, ns=ns, kind=kv["kind"]):
+            s = SimpleNamespace(pos=pos, heading=heading, alive=alive, n=ns.n, step=ns.step)
+            rt = calls.runtime(cfg)
+            col = calls.column_of(fields.cell_index(pos, cfg), cfg, rt)
+            h, b = calls.hear_far(s, voice, col, rt, cfg)
+            return (h, b) if kind == "grid" else (h, b, calls.oracle_force(s, cfg, None, (h, b)))
+
+        args = (ns.pos, ns.heading, ns.alive, voice)
+        cf = mx.compile(f)
+        keep.append(cf)
+        got, want = cf(*args), f(*args)
+        ok.append(all(bool(mx.array_equal(a, b).item()) for a, b in zip(got, want)))
+        sig.append(hashlib.sha1(b"".join(np.asarray(a).tobytes() for a in got)).hexdigest()[:12])
+    consts = set()
+    for p in pathlib.Path(sys.argv[3]).rglob("*.cpp"):
+        for m in re.finditer(r"tmp_\\w+ = (-?[0-9][-+0-9.eE]*);", p.read_text()):
+            consts.add(m.group(1))
+    print(json.dumps({"equal": ok, "sig": sig, "consts": sorted(consts)}))
+    """
+)
+REAL_CASES = [
+    {"kind": "grid", "size": 96, "far": 17.0, "xref": 1.7},
+    {"kind": "grid", "size": 128, "far": 18.0, "xref": 3.3},
+    {"kind": "grid", "size": 160, "far": 19.5, "xref": 0.45},
+    {"kind": "oracle", "far": 17.0, "xref": 1.7, "thrust": 0.0713, "gain": 1.7, "omin": 0.23},
+    {"kind": "oracle", "far": 18.0, "xref": 3.3, "thrust": 0.0912, "gain": 0.6, "omin": 0.31},
+    {"kind": "oracle", "far": 19.5, "xref": 0.45, "thrust": 0.0345, "gain": 2.9, "omin": 0.08},
+]
+
+
+def test_no_config_dependent_scalar_is_printed_by_the_real_far_functions(tmp_path: Path) -> None:
+    """The scan of the K2 constants on ``calls.hear_far`` and ``calls.oracle_force`` themselves (no replica):
+    six configurations that differ in the column count, ``far_range``, ``far_xref``, ``thrust_max``,
+    ``oracle_gain`` and ``oracle_min`` compile one after the other in one process; each equals its eager
+    result, results differ, and none of the values is a printed constant of any kernel source."""
+    tests_dir = str(Path(__file__).resolve().parent)
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, "TMPDIR": f"{str(tmp_path).rstrip(os.sep)}{os.sep}"}
+    done = subprocess.run(
+        [sys.executable, "-c", REAL_SCRIPT, json.dumps(REAL_CASES), "real", str(tmp_path), tests_dir],
+        env=env, capture_output=True, text=True, timeout=1200,
+    )  # fmt: skip
+    assert done.returncode == 0, done.stderr
+    res = json.loads(done.stdout)
+    assert res["equal"] == [True] * 6 and len(set(res["sig"])) == 6
+    f32 = lambda v: float(np.float32(v))  # noqa: E731
+    classes = {
+        "Ncol": [576.0, 1024.0, 1600.0],
+        "far_xref": [f32(c["xref"]) for c in REAL_CASES],
+        "far_range": [c["far"] for c in REAL_CASES],
+        "thrust_max": [f32(c["thrust"]) for c in REAL_CASES[3:]],
+        "thrust_max x gain": [f32(f32(c["thrust"]) * f32(c["gain"])) for c in REAL_CASES[3:]],
+        "oracle_gain": [f32(c["gain"]) for c in REAL_CASES[3:]],
+        "oracle_min": [f32(c["omin"]) for c in REAL_CASES[3:]],
+    }
+    for name, values in classes.items():
+        assert not any(_detected(res["consts"], values)), f"{name} is printed into a kernel: {res['consts']}"
