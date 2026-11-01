@@ -56,7 +56,7 @@ import Testing
         defer { scratch.cleanup() }
         let runs = try runs(scratch)
         try LibraryTestFolders.many(runs, count: 30)
-        let library = library(runs)
+        let library = WorldLibrary(runsDirectory: { runs }, observesApp: false, watchesFolder: false)  // (the watch's own first scan is another test's)
         for _ in 0..<10 { library.refresh() }
         #expect(await eventually { library.hasScanned && !library.isScanning && library.scans >= 1 })
         try await Task.sleep(for: .milliseconds(200))
@@ -85,9 +85,11 @@ import Testing
         library.refresh()
         #expect(await eventually { library.hasScanned })
         library.select("goner")
-        #expect(library.selected == "goner" && library.stillThere("goner"))
+        let before = await library.checkThere("goner")
+        #expect(library.selected == "goner" && before == .there)
         try FileManager.default.removeItem(at: dir)
-        #expect(!library.stillThere("goner"))
+        let after = await library.checkThere("goner")
+        #expect(after == .gone)
         library.noteGone("goner")
         #expect(library.vanished == "goner" && library.selected == nil)
         #expect(await eventually { library.state.rows.map(\.name) == ["stays"] })

@@ -227,6 +227,7 @@ extension SidebarItem {
     /// it is cleared); the rows that open a list show the list and leave nothing chosen.
     @MainActor
     func choose(shell: ShellModel, library: WorldLibrary) {
+        library.sidebarAnchor = self == .page(.worlds) ? nil : self
         switch self {
         case .page(let page):
             if page == .worlds { library.selected = nil }
@@ -251,9 +252,13 @@ extension SidebarItem {
 /// A world in the sidebar: its name (cut in the middle when long) and, under it, its state.
 struct WorldSidebarRow: View {
     let row: LibraryRow
-    let now: Date
 
     var body: some View {
+        // ("Saved 2 hours ago" is read again every minute: the time does not freeze on the page that was drawn first.)
+        TimelineView(.everyMinute) { context in line(now: context.date) }
+    }
+
+    private func line(now: Date) -> some View {
         HStack(spacing: 8) {
             Image(systemName: row.kind.symbol).foregroundStyle(.secondary).frame(width: 16).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
@@ -282,7 +287,6 @@ struct LibrarySidebarSection: View {
     var body: some View {
         let rows = library.state.rows
         let nodes = LibraryState.tree(rows)
-        let now = Date()
         Section("Your worlds") {
             if !library.hasScanned {
                 HStack(spacing: 6) {
@@ -294,14 +298,14 @@ struct LibrarySidebarSection: View {
             }
             ForEach(nodes.prefix(Self.cap)) { node in
                 if node.children.isEmpty {
-                    WorldSidebarRow(row: node.row, now: now).tag(SidebarItem.world(node.row.name))
+                    WorldSidebarRow(row: node.row).tag(SidebarItem.world(node.row.name))
                 } else {
                     DisclosureGroup(isExpanded: binding(node)) {
                         ForEach(node.children) { child in
-                            WorldSidebarRow(row: child, now: now).tag(SidebarItem.world(child.name))
+                            WorldSidebarRow(row: child).tag(SidebarItem.world(child.name))
                         }
                     } label: {
-                        WorldSidebarRow(row: node.row, now: now).tag(SidebarItem.world(node.row.name))
+                        WorldSidebarRow(row: node.row).tag(SidebarItem.world(node.row.name))
                     }
                 }
             }

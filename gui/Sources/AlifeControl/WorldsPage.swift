@@ -18,7 +18,7 @@ struct WorldsPage: View {
         WorldsGuide.Facts(
             folderExists: controller.repoFolderExists, folderProblem: Self.folderSentence(controller), engineReady: controller.repoReady,
             catalog: library.state.catalog, openWorld: play.isActive ? play.world : nil, openWorldIsStarting: play.phase == .starting,
-            saving: Set(play.retiredWorlds))
+            saving: Set(play.retiredWorlds), growing: controller.runningRunName)
     }
 
     /// What the page says about a folder that is not there: what the folder is for. (The form below says what is wrong with the one
@@ -75,10 +75,15 @@ struct WorldsPage: View {
 
     /// Play and Make planet are the player's own action: the world that goes live from them is shown (`ShellModel.playerStartsWorld`).
     private func playWorld(_ name: String) {
-        guard library.stillThere(name) else { return library.noteGone(name) }
-        guard let world = library.state.catalog.worlds.first(where: { $0.name == name }) else { return }
-        shell.playerStartsWorld()
-        model.resume(world)
+        // The folder is looked at off the main thread with a deadline; an answer that does not come does not stop the play (the engine says).
+        Task {
+            guard await library.checkThere(name) != .gone else { return library.noteGone(name) }
+            guard let world = library.state.catalog.worlds.first(where: { $0.name == name }) else { return }
+            // (The reason is read again at the moment of the click: another process may have taken the world since the card was drawn.)
+            guard WorldsGuide.reason(forPlaying: world, in: facts) == nil else { return }
+            shell.playerStartsWorld()
+            model.resume(world)
+        }
     }
 
     private func makePlanet() {
@@ -317,7 +322,8 @@ struct WorldsPage: View {
             let f = facts
             let playable = Dictionary(state.catalog.worlds.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
             let seeds = Self.seedParents(LibraryState.tree(state.rows))
-            let now = Date()
+            TimelineView(.everyMinute) { context in
+            let now = context.date
             LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 12) {
                 ForEach(rows) { row in
                     WorldCard(
@@ -329,9 +335,10 @@ struct WorldsPage: View {
                         onPlay: { playWorld(row.name) },
                         onWatch: { shell.select(.watch) },
                         onMakePlanet: { library.select(row.name, scroll: false); openPlanetForm(from: row.name) },
-                        onReveal: { library.reveal(row.name) })
+                        onReveal: { Task { await library.reveal(row.name) } })
                         .id(row.name)
                 }
+            }
             }
         }
     }
@@ -350,27 +357,31 @@ struct WorldsPage: View {
             emptyMessage
         } else {
             let f = facts
-            let now = Date()
             Text("A planet that was cancelled or failed while it was being made. It cannot be played, and nothing is deleted.")
                 .font(.caption).foregroundStyle(.secondary)
+            TimelineView(.everyMinute) { context in
+            let now = context.date
             LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 12) {
                 ForEach(builds) { build in
-                    let source = model.startedSpecs[build.name]?.source ?? build.source?.name
+                    let spec = model.startedSpecs[build.name]
+                    let source = spec?.source ?? build.source?.name
+                    let step = spec.map { $0.sourceStep } ?? build.source?.step
                     UnfinishedCard(
                         build: build, selected: library.selected == build.name, now: now,
                         again: CardAction(
                             label: "Make again with a new name",
                             reason: WorldsGuide.reasonToMakeAgain(
-                                source: source, sourceHasSavePoint: source.map { s in state.catalog.sources.contains { $0.name == s } } ?? false,
-                                in: f)),
+                                source: source, sourceStep: step ?? nil,
+                                sourceSteps: source.flatMap { s in state.catalog.sources.first { $0.name == s }?.checkpoints }, in: f)),
                         onSelect: { library.select(build.name, scroll: false) },
                         onMakeAgain: {
                             model.prepareAgain(build)
                             planetSheet = true
                         },
-                        onReveal: { library.reveal(build.name) })
+                        onReveal: { Task { await library.reveal(build.name) } })
                         .id(build.name)
                 }
+            }
             }
         }
     }
@@ -400,6 +411,9 @@ struct WorldsPage: View {
                     Text(unfinished == 1 ? "1 unfinished build is under Unfinished." : "\(unfinished) unfinished builds are under Unfinished.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                ForEach(library.problemSentences, id: \.self) { sentence in
+                    Label(sentence, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary)
+                }
                 if let others = library.othersSentence { Text(others).font(.caption).foregroundStyle(.secondary) }
             }
             .fixedSize(horizontal: false, vertical: true)
@@ -409,7 +423,7 @@ struct WorldsPage: View {
     /// The words beside a grey Make planet in the form's sheet: the page's reason first, then the form's own.
     private var planetReasons: [String] {
         if let why = WorldsGuide.reasonToMakePlanet(facts) { return [why] }
-        return model.planetErrors
+        return model.planetMessages
     }
 }
 
@@ -475,7 +489,7 @@ struct PlanetForm: View {
                 }
                 Toggle("Turn the weather on", isOn: Binding(get: { model.planet.storm }, set: { model.setStorm($0) }))
                     .disabled(model.selectedSource?.weatherOn == true || model.weatherObstacle != nil)
-                if let obstacle = model.weatherObstacle { note(obstacle) }
+                if let obstacle = model.weatherNote { note(obstacle) }
                 if model.planet.storm {
                     Stepper("Weather warm-up: \(WorldsGuide.grouped(model.planet.weatherSpinup)) steps",
                             value: $model.planet.weatherSpinup, in: 1...200_000, step: 1000)
@@ -492,7 +506,7 @@ struct PlanetForm: View {
                             ForEach(PlayHouses.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                         }
                         .pickerStyle(.segmented)
-                        if let housesNote = model.housesNote { note(housesNote) }
+                        if let housesNote = model.housesMessage { note(housesNote) }
                     }
                     .padding(.top, 6)
                 }

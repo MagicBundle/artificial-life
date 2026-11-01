@@ -54,6 +54,8 @@ struct AppShellView: View {
             // A world that stopped while it was starting is an unfinished build; the library keeps what this session knows of it.
             shell.buildEnded = { [weak library] world, note in library?.note(note, forBuild: world) }
             controller.pollsRunList = shell.page == .lab
+            // The Lab does not continue a played world, or a directory another process or this window is writing.
+            controller.resumeRefusal = { [weak library] name in library?.reasonNotToResume(name) }
             library.update(live: liveFacts)
             applyCatalog()
             library.refresh()
@@ -111,10 +113,7 @@ struct AppShellView: View {
     /// button more than a place: choosing it shows the list and the selection goes back to the page.
     private var sidebarSelection: Binding<SidebarItem?> {
         Binding(
-            get: {
-                if shell.page == .worlds, let name = library.selected { return .world(name) }
-                return .page(shell.page)
-            },
+            get: { SidebarItem.current(page: shell.page, library: library) },
             set: { item in item?.choose(shell: shell, library: library) })
     }
 

@@ -118,9 +118,20 @@ final class WorldLauncherModel: ObservableObject {
             : 0
     }
 
-    func suggestName() {
+    func suggestName() { planet.name = freeName(after: "planet_a") }
+
+    /// `name` when no folder has it, else the next free variant: names that differ only in capitals are the same folder on a disk that does
+    /// not tell them apart.
+    func freeName(after name: String) -> String {
         let taken = catalog.existingNames
-        planet.name = taken.contains("planet_a") ? RunName.nextFree(after: "planet_a", taken: taken) : "planet_a"
+        let folded = Set(taken.map { $0.lowercased() })
+        var candidate = name
+        var guardCount = 0
+        while folded.contains(candidate.lowercased()), guardCount < 1000 {
+            candidate = RunName.nextFree(after: candidate, taken: taken.union([candidate]))
+            guardCount += 1
+        }
+        return candidate
     }
 
     /// Why the weather toggle is off and disabled for the selected source; nil when the weather can be turned on.
@@ -130,6 +141,29 @@ final class WorldLauncherModel: ObservableObject {
     }
 
     var planetErrors: [String] { planet.validate(existing: catalog.existingNames) }
+
+    /// What is wrong with the form, in the `alife` window's words (`WorldsGuide.plain`), including a name that differs from a taken one only
+    /// in capitals. (`planetErrors` is the launcher's own, which the two old apps still show.)
+    var planetMessages: [String] {
+        var messages = planetErrors.map(WorldsGuide.plain)
+        let name = planet.name.trimmingCharacters(in: .whitespaces)
+        if !name.isEmpty, !catalog.existingNames.contains(name),
+           let clash = catalog.existingNames.first(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
+            messages.append("A world named \u{201C}\(clash)\u{201D} is already here, and names that differ only in capitals count as the same.")
+        }
+        return messages
+    }
+
+    /// `housesNote` in the `alife` window's words.
+    var housesMessage: String? {
+        guard let source = selectedSource else { return nil }
+        if planet.houses == .exact, !source.hasEvents { return "\(source.name) has no event record, so family lines cannot be rebuilt exactly." }
+        if planet.houses == .auto, !source.hasEvents { return "There is no event record, so family lines will be rebuilt from the clades, approximately." }
+        return nil
+    }
+
+    /// `weatherObstacle` in the `alife` window's words.
+    var weatherNote: String? { weatherObstacle.map(WorldsGuide.plain) }
 
     /// Whether the exact houses can be rebuilt from the chosen source (it has event chunks).
     var housesNote: String? {
@@ -145,7 +179,7 @@ final class WorldLauncherModel: ObservableObject {
 
     func startPlanet() {
         guard planetErrors.isEmpty else { return }
-        startedSpecs[planet.name] = planet
+        startedSpecs[planet.name.trimmingCharacters(in: .whitespaces)] = planet
         launch(.planet(planet))
     }
 
@@ -167,7 +201,7 @@ final class WorldLauncherModel: ObservableObject {
             selectSource(source.name)
             if let step = source.step, selectedSource?.checkpoints.contains(step) == true { selectCheckpoint(step) }
         }
-        planet.name = RunName.nextFree(after: build.name, taken: catalog.existingNames)
+        planet.name = freeName(after: RunName.nextFree(after: build.name, taken: catalog.existingNames))
     }
 }
 

@@ -89,4 +89,63 @@ import Testing
         model.refresh(saving: ["x"])
         #expect(model.catalog.worlds.map(\.name) == ["planet_a"] && model.saving == ["x"])
     }
+
+    @Test func aNameThatDiffersOnlyInCapitalsOrIsALinkToADriveIsTaken() throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let runs = scratch.url.appendingPathComponent("runs")
+        _ = try catalog(runs)
+        try FileManager.default.createSymbolicLink(atPath: runs.appendingPathComponent("archived_a").path, withDestinationPath: "/Volumes/Gone/runs/archived_a")
+        let (model, _) = launcher()
+        model.apply(catalog: LibraryState.resolve(LibraryScanner().scan(runsDirectory: runs)).catalog, saving: [])
+        model.selectSource("seed")
+        model.planet.name = "archived_a"
+        #expect(model.planetMessages == ["A world named archived_a is already here."], "a link to an archive drive holds its name")
+        model.planet.name = "PLANET_A"
+        #expect(model.planetMessages.count == 1 && model.planetMessages[0].contains("planet_a") && model.planetMessages[0].contains("capitals"))
+        model.planet.name = "planet_b2"
+        #expect(model.planetErrors.isEmpty)
+        // the suggestions never pick a name that a capital letter would make the same folder
+        let free = model.freeName(after: "planet_a")
+        #expect(free != "planet_a" && free != "PLANET_A", "planet_a is taken")
+        #expect(!model.catalog.existingNames.map { $0.lowercased() }.contains(free.lowercased()))
+        #expect(model.freeName(after: "Planet_A") != "Planet_A", "and so is the same name with capitals")
+    }
+
+    @Test func aSpecIsRememberedUnderTheNameTheDirectoryHas() throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let (model, _) = launcher()
+        model.apply(catalog: try catalog(scratch.url), saving: [])
+        model.selectSource("seed")
+        model.planet.name = "  spaced  "
+        model.planet.weatherSpinup = 777
+        model.startPlanet()
+        #expect(model.startedSpecs["spaced"]?.weatherSpinup == 777, "the directory is `spaced`, not `  spaced  `")
+        #expect(model.startedSpecs["  spaced  "] == nil)
+    }
+
+    @Test func theFormsOwnWordsAreThePagesWords() throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let (model, _) = launcher()
+        model.apply(catalog: try catalog(scratch.url), saving: [])
+        model.planet.source = ""
+        model.planet.name = ""
+        var texts = model.planetMessages
+        model.planet.source = "planet_a"
+        model.planet.name = "planet_a"
+        model.planet.sourceStep = -3
+        texts += model.planetMessages
+        model.planet.sourceDims = 2
+        model.planet.storm = true
+        texts += model.planetMessages
+        texts += [model.weatherNote ?? "", model.housesMessage ?? ""]
+        #expect(texts.count >= 5)
+        for text in texts {
+            for word in ["source", "Source", "checkpoint", "Checkpoint", "spin-up", "chunks", "runs/"] {
+                #expect(!text.contains(word), "'\(word)' in \"\(text)\"")
+            }
+        }
+    }
 }

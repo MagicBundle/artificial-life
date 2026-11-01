@@ -124,6 +124,9 @@ final class RunController: ObservableObject {
     /// library scans on its own, off the main thread, and turns this off while the Lab is not shown (docs/APP.md §5.3). The two old apps
     /// leave it on.
     var pollsRunList = true
+    /// Asks whether a directory must not be continued (the `alife` window's library: a played world, a world in use). Nil in the two old
+    /// apps, which keep today's checks.
+    var resumeRefusal: ((String) -> String?)?
     /// The runs whose `play.lock` is held by a process (a world being played or saving).
     @Published private(set) var playLocked: Set<String> = []
     /// The runs with a `director.jsonl`: what a random director can be yoked to (newest first).
@@ -219,6 +222,7 @@ final class RunController: ObservableObject {
         if settings.mode == .resume, playLocked.contains(settings.sourceRun) {
             errors.append("'runs/\(settings.sourceRun)' is being played in the World window (play.lock).")
         }
+        if settings.mode == .resume, let refusal = resumeRefusal?(settings.sourceRun) { errors.append(refusal) }
         return errors
     }
 
@@ -775,7 +779,7 @@ final class RunController: ObservableObject {
 
     // MARK: Ticker (1 s): timer, elapsed time; every 2 s: metrics and run list
 
-    private func tick() {
+    func tick() {
         tickCount += 1
         if job == .run, let started = startedAt {
             let now = Date()

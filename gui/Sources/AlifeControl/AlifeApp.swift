@@ -45,9 +45,9 @@ struct ShellCommands: Commands {
             Button("Close World") { shell.closeWorld() }
                 .disabled(!shell.worldIsOpen)
             Button("Reveal in Finder") {
-                // The world that is chosen on the Worlds page; else the Lab's run, else the alife folder.
-                if let name = library.selected, library.reveal(name) { return }
-                controller.revealInFinder()
+                // The world that is chosen while the Worlds page is in view (a world that is gone is told, and no other folder is shown in
+                // its place); on any other page the Lab's run, else the alife folder.
+                Task { await library.revealFromMenu(page: shell.page) { controller.revealInFinder() } }
             }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
         }
