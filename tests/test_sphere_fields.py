@@ -173,8 +173,7 @@ def test_regen_rate_is_the_floor_of_regen_max_times_fertility() -> None:
     rate = np.array(fields.regen_rate(pp, cfg))
     assert rate.dtype == np.int32 and rate.shape == fert.shape
     assert np.array_equal(rate, np.floor(np.float32(cfg.fields.regen_max) * fert).astype(np.int32))
-    with pytest.raises(AssertionError, match="rain is not defined on the sphere"):
-        fields.regen_rate(pp, cfg, rain=object())
+    # the rain term of a sphere is S4b's (weather_sph.rain_regen): tests/test_weather_sph_engine.py
 
 
 # --- the patches -----------------------------------------------------------------------------------

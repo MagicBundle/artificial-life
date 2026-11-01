@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-CURRENT_PR = 3  # the sphere series' PR this tree is: S3. Bump it in each PR (S4 sets 4, ...)
+CURRENT_PR = 4  # the sphere series' PR this tree is: S4 (S3 and S4b). Bump it in each PR (S5 sets 5, ...)
 REASONS = ("pair", "box-only tool", "box branch", "converted")
 
 
@@ -62,9 +62,12 @@ AUDIT: dict[str, tuple[str, int | None]] = {
     "state.py": (_BB, None),  # S1 converted it: the sphere branches use Dims; the box half stays
     "energy.py": (_P, None),
     "bonds.py": (_P, None),
-    "weather.py": (_C, 4),
-    "weather_obs.py": (_C, 4),
-    "weather_spinup.py": (_C, 4),
+    "weather.py": (_BB, None),  # S4b converted it: the sphere half is weather_sph.py; the box half stays
+    "weather_obs.py": (
+        _BB,
+        None,
+    ),  # S4b: the sphere has its own block (weather_sph.weather_block); the box half stays
+    "weather_spinup.py": (_BB, None),  # S4b: dispatches through weather.advance/rest_array, no raw use
     "bench.py": (_BB, None),
     "ext/structures.py": (_C, 3),
     "ext/niche.py": (_C, 3),
@@ -91,9 +94,18 @@ AUDIT: dict[str, tuple[str, int | None]] = {
     "game/housefile.py": (_C, 5),
     "analysis/labels.py": (_C, 5),
     "storms.py": (_C, 5),
-    "analysis/w0.py": (_C, 4),
-    "analysis/w0_plots.py": (_C, 4),
-    "analysis/w2.py": (_C, 4),
+    "analysis/w0.py": (
+        _B,
+        None,
+    ),  # the box storm study drivers; the sphere\'s calibration driver (S4c) is a new tool
+    "analysis/w0_plots.py": (
+        _B,
+        None,
+    ),  # the box storm study drivers; the sphere\'s calibration driver (S4c) is a new tool
+    "analysis/w2.py": (
+        _B,
+        None,
+    ),  # the box storm study drivers; the sphere\'s calibration driver (S4c) is a new tool
     "director/actions.py": (_C, 5),
     "director/yoked.py": (_C, 5),
     "director/llm.py": (_C, 5),
@@ -176,18 +188,18 @@ ALLOWLIST: tuple[Allow, ...] = (
     # analysis/signals.py: 2D only: `require_2d` already refuses dims 3, which covers the sphere
     Allow("analysis/signals.py", "wrap", 1, "box-only tool"),
     Allow("analysis/signals.py", "world.size", 1, "box-only tool"),
-    # analysis/w0.py: the W0 storm study driver (S4)
-    Allow("analysis/w0.py", "z_index", 29, "converted", 4),
-    Allow("analysis/w0.py", "xy_slice", 1, "converted", 4),
-    Allow("analysis/w0.py", "wrap", 35, "converted", 4),
-    Allow("analysis/w0.py", "world.size", 3, "converted", 4),
-    Allow("analysis/w0.py", "world.height", 4, "converted", 4),
-    Allow("analysis/w0.py", "world.field_cell", 3, "converted", 4),
-    Allow("analysis/w0.py", "lattice", 15, "converted", 4),
+    # analysis/w0.py: the W0 storm study driver (box-only; S4c writes the sphere's)
+    Allow("analysis/w0.py", "z_index", 29, "box-only tool"),
+    Allow("analysis/w0.py", "xy_slice", 1, "box-only tool"),
+    Allow("analysis/w0.py", "wrap", 35, "box-only tool"),
+    Allow("analysis/w0.py", "world.size", 3, "box-only tool"),
+    Allow("analysis/w0.py", "world.height", 4, "box-only tool"),
+    Allow("analysis/w0.py", "world.field_cell", 3, "box-only tool"),
+    Allow("analysis/w0.py", "lattice", 15, "box-only tool"),
     # analysis/w0_plots.py: W0 plots (S4)
-    Allow("analysis/w0_plots.py", "z_index", 1, "converted", 4),
+    Allow("analysis/w0_plots.py", "z_index", 1, "box-only tool"),
     # analysis/w2.py: the W2 study driver (S4)
-    Allow("analysis/w2.py", "world.height", 3, "converted", 4),
+    Allow("analysis/w2.py", "world.height", 3, "box-only tool"),
     # bench.py: the environment block, the play-bench centre and list indexing; the staged step has its
     # sphere branches (S2: `--stages` works on a sphere)
     Allow("bench.py", "z_index", 4, "box branch"),
@@ -324,11 +336,11 @@ ALLOWLIST: tuple[Allow, ...] = (
     # viewer.py: 2D viewer: box-only tool
     Allow("viewer.py", "wrap", 8, "box-only tool"),
     Allow("viewer.py", "world.size", 7, "box-only tool"),
-    # weather.py: wind sampling, vertical profile, remap (S4)
-    Allow("weather.py", "z_index", 11, "converted", 4),
-    Allow("weather.py", "xy_slice", 2, "converted", 4),
-    Allow("weather.py", "wrap", 6, "converted", 4),
-    Allow("weather.py", "world.size", 12, "converted", 4),
-    Allow("weather.py", "world.height", 5, "converted", 4),
-    Allow("weather.py", "world.field_cell", 14, "converted", 4),
+    # weather.py: wind sampling, vertical profile, remap (S4b converted it: the sphere half is weather_sph.py)
+    Allow("weather.py", "z_index", 11, "box branch"),
+    Allow("weather.py", "xy_slice", 2, "box branch"),
+    Allow("weather.py", "wrap", 6, "box branch"),
+    Allow("weather.py", "world.size", 12, "box branch"),
+    Allow("weather.py", "world.height", 5, "box branch"),
+    Allow("weather.py", "world.field_cell", 14, "box branch"),
 )

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 import mlx.core as mx
 import numpy as np
 
-from alife import bonds, ext, layout, sphere, weather
+from alife import bonds, ext, layout, sphere, weather, weather_tab
 from alife.config import Config, dims
 from alife.state import R_HARD, Diag, LedgerIdx, State, expected_layout, sinks, to_numpy, total_energy
 
@@ -495,6 +495,33 @@ def _check_weather(r: _Report, a: dict[str, np.ndarray], cfg: Config) -> None:
     wx = a["wx"]
     if not np.isfinite(wx).all():
         r.problems.append("weather: wx has a non-finite value")
+        return
+    if dims(cfg).sph:  # static: (11, N): h1, h2, u1 (3), u2 (3), Q, P, Dc on the cells of the HEALPix grid
+        w = wx.astype(np.float64)
+        h1, h2, q = w[0], w[1], w[8]
+        r.check(
+            not (h1 < p.h_min - _WEATHER_H_TOL).any(),
+            f"weather: a layer-1 thickness below h_min = {p.h_min:g}",
+        )
+        r.check(
+            not (h2 < p.h_min - _WEATHER_H_TOL).any(),
+            f"weather: a layer-2 thickness below h_min = {p.h_min:g}",
+        )
+        r.check(not (q < 0).any(), "weather: negative humidity Q")
+        drift = (h1 + h2).sum() / (h1.size * (p.H1 + p.H2)) - 1.0
+        r.check(abs(drift) < _WEATHER_MASS_TOL, f"weather: column mass drifted by {drift:.3g} (relative)")
+        # the velocities are tangent vectors: radial parts at rounding, speeds under the tripwire
+        x = weather_tab.weather_tab(p.n).x
+        for k, name in ((2, "layer-1"), (5, "layer-2")):
+            u = w[k : k + 3].T
+            rad = np.abs((u * x).sum(axis=1)).max()
+            r.check(rad < 1e-5 + 1e-4 * p.u_safe, f"weather: the {name} wind has a radial part {rad:.3g}")
+            top = p.u_safe * (1 + 1e-4) + p.seed_v * (
+                1 + p.seed_jitter
+            )  # the tripwire, then this step's seed
+            r.check(
+                np.sqrt((u * u).sum(axis=1)).max() <= top, f"weather: the {name} wind exceeds the tripwire"
+            )
         return
     ws = weather.WeatherState(*(wx[i].astype(np.float64) for i in range(weather.N_WX)))
     r.rows(

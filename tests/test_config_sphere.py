@@ -57,9 +57,9 @@ def test_keys_default_to_a_box_and_are_post_v01_keys() -> None:
     )
     assert not set(config.SPHERE_KEYS) & (set(config.UNHASHED_KEYS) | set(config.OBSERVER_KEYS))
     assert config.GEOMETRY_SUPPORTED == ("box", "sphere")  # S2 enabled it
-    # and gated the layers that are not converted: S3 converted the five features and the roles
-    assert {"structures", "niche", "comm", "bonds", "roles", "arms"} >= config.SPHERE_READY
-    assert config.SPHERE_READY.isdisjoint({"weather", "director", "observers"})
+    # and gated the layers that are not converted: S3 converted the features and roles, S4b the weather
+    assert {"structures", "niche", "comm", "bonds", "roles", "arms", "weather"} == config.SPHERE_READY
+    assert config.SPHERE_READY.isdisjoint({"director", "observers"})
 
 
 @pytest.mark.parametrize("preset", sorted(BASE_HASHES))
