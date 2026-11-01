@@ -155,6 +155,7 @@ package enum SetupRules {
             if let open = facts.openWorld { return open == row.name ? "Close it first" : "Close \(open) first" }
             if row.state == .saving || facts.guardState.writer(of: row.name)?.writer == .saving { return "Saving…" }
             if !row.hasSavePoint { return "No save point to start from yet." }
+            if row.shape == .flat { return WorldsGuide.flatHasNoPlanet }
             return nil
         }
     }

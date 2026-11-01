@@ -7,7 +7,7 @@ import Testing
 
 /// A scratch alife folder with a stand-in engine, and the objects of the set-up page wired to it as the app wires them. The stand-in is a bash
 /// script that makes the files the real engine makes (config, meta, save points, metrics) and behaves as `.mode` says, `run:play`:
-/// - run: `ok` (finishes at once), `long` (runs until it gets SIGINT, then saves at step 12,000 and exits 130), `refuse` (prints a traceback, exit 2)
+/// - run: `ok` (finishes at once), `silent` (makes its directory and nothing else, and ends on SIGINT as a signal: the engine in its first seconds), `long` (runs until it gets SIGINT, then saves at step 12,000 and exits 130), `refuse` (prints a traceback, exit 2)
 /// - play: `ok` (progress lines, then the committed play stream until `quit`), `slow` (progress lines, then waits for SIGINT: exit 130, leaves an
 ///   unfinished build), `fail` (prints its reason, exit 4)
 @MainActor
@@ -188,6 +188,9 @@ final class PipelineRig {
               echo "Traceback (most recent call last):" >&2
               echo "ValueError: refused by the stand-in" >&2
               exit 2;;
+            silent)
+              mkdir -p "$out"
+              exec sleep 30;;
             long)
               mkworld "$out" running 12000
               i=0

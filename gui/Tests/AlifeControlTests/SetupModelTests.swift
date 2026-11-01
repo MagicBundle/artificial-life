@@ -33,6 +33,10 @@ struct SetupModelTests {
         #expect(m.goalsAllowed == [.research] && m.goal == .research)
         #expect(m.goalReason == "A flat world has no weather, so it is for research only.")
         #expect(m.name == "flat-1" && m.growSteps == "20000" && m.plan.stages.count == 1)
+        m.name = "mine"
+        m.choose(.recipe(Recipes.biggerPlanet.id))
+        #expect(m.name == "mine", "a typed name does not follow the starting point")
+        m.choose(.recipe(Recipes.flatWorld.id))
         #expect(m.reasons.isEmpty, "\(m.reasons)")
         m.choose(.recipe(Recipes.smallPlanet.id))
         #expect(m.goalsAllowed == [.play, .research] && m.goalReason == nil)
@@ -116,6 +120,23 @@ struct SetupModelTests {
         #expect(m.nameProblems == ["Give the world a name."])
         m.name = "a b"
         #expect(m.nameProblems.count == 1 && m.reasons.contains(m.nameProblems[0]))
+    }
+
+    @Test func aSuggestedNameThatTheLibraryTakesLaterIsSuggestedAgainButATypedOneIsNeverChanged() async throws {
+        let rig = try rig()
+        defer { rig.finish() }
+        let m = rig.setup
+        m.openCreate()   // a launch opens this page before the first scan has finished: nothing is known yet
+        #expect(m.name == "planet-1")
+        try LibraryTestFolders.research(rig.runs, "planet-1-grow")
+        await rig.scan()
+        m.libraryChanged()   // what the page does when the library's worlds change
+        #expect(m.name == "planet-2" && m.nameProblems.isEmpty, "\(m.name) \(m.nameProblems)")
+        m.name = "mine"
+        try LibraryTestFolders.research(rig.runs, "mine")
+        await rig.scan()
+        m.libraryChanged()
+        #expect(m.name == "mine" && !m.nameProblems.isEmpty, "a name the person typed is theirs, and the form says it is taken")
     }
 
     @Test func advancedChoicesAreInTheCommandAndInTheChanges() async throws {

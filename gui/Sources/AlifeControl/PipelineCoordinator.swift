@@ -260,12 +260,15 @@ final class PipelineCoordinator: ObservableObject {
         seenExit = exit.serial
         guard let p = plan, case .growing = p.state, NameFolding.same(exit.run, p.growName ?? "") else { return }
         var savePoint = true
+        var savedStep: Int?
         if let grow = p.growName, let runs = runsDirectory() {
-            savePoint = !PlayCatalogScanner.checkpointSteps(in: runs.appendingPathComponent(grow), fileManager: .default).isEmpty
+            let saved = PlayCatalogScanner.checkpointSteps(in: runs.appendingPathComponent(grow), fileManager: .default)
+            savePoint = !saved.isEmpty
+            savedStep = saved.max()
         }
         apply(.growExited(.init(
             status: exit.status, signalled: exit.signalled, stopRequested: exit.stopRequested && !exit.forced, problem: exit.problem,
-            savePoint: savePoint)))
+            savePoint: savePoint, savedStep: savedStep)))
     }
 
     private func metricsChanged(_ metrics: MetricsSnapshot?) {
@@ -284,8 +287,10 @@ final class PipelineCoordinator: ObservableObject {
         switch phase {
         case .live: apply(.makeLive, around: PipelinePlan.Surroundings())
         case .failed(let message):
-            hooks.dismissStartFailure()
-            apply(.makeFailed(message), around: PipelinePlan.Surroundings())
+            apply(.makeFailed(PipelineWords.planetFailure(message)), around: PipelinePlan.Surroundings())
+            // The Worlds page and the Watch row are told of a world that did not open by the shell's own observer of the same phase, which may
+            // run after this one: the pipeline says it once, in its bar, so the shell's note is taken back on the next turn.
+            Task { @MainActor [weak self] in self?.hooks.dismissStartFailure() }
         case .idle, .ended: apply(.makeEnded, around: PipelinePlan.Surroundings())
         case .starting: return
         }

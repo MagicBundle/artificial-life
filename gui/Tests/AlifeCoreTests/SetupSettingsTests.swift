@@ -91,6 +91,14 @@ import Testing
         #expect(ChangeList.levers(s).map(\.sentence) == ["Mutation rate floor 0.01 to 0.001"])
     }
 
+    @Test func twoTextsAreOneValueWhenTheyAreTheSameNumberAFlagOrAWord() {
+        #expect(LeverKeys.same("mutation.rate_min", "0.0010", "0.001") && LeverKeys.same("mutation.rate_min", "5e-3", "0.005"))
+        #expect(!LeverKeys.same("mutation.rate_min", "0.002", "0.001"))
+        #expect(LeverKeys.same("arms.enabled", "true", "true") && !LeverKeys.same("arms.enabled", "true", "false"))
+        #expect(LeverKeys.same("fields.season_mode", "global", "global") && !LeverKeys.same("fields.season_mode", "global", "per_patch"))
+        #expect(LeverKeys.same("physics.gravity", " 0.03 ", "0.03"))
+    }
+
     @Test func aResumeHasNoChanges() {
         var s = RunSettings()
         s.mode = .resume

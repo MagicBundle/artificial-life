@@ -96,6 +96,9 @@ package struct PipelinePlan: Equatable, Sendable {
         state = mode == .makePlanet ? .making(cancelling: false) : .growing(stopping: false)
     }
 
+    /// True when the stage that failed left no save point behind (the engine refused before it wrote anything).
+    package private(set) var wroteNothing = false
+
     /// The directory stage 2 reads (the world that was grown, or the source of a Make planet).
     package var planetSource: String? { mode == .makePlanet ? source : growName }
 
@@ -120,7 +123,11 @@ package struct PipelinePlan: Equatable, Sendable {
         package var problem: String?
         /// The run's directory holds a save point.
         package var savePoint: Bool
-        package init(status: Int32, signalled: Bool = false, stopRequested: Bool = false, problem: String? = nil, savePoint: Bool = true) {
+        /// The step of the newest save point in the run's directory (the numbers the bar read are up to two seconds old, this is the truth).
+        package var savedStep: Int?
+        package init(status: Int32, signalled: Bool = false, stopRequested: Bool = false, problem: String? = nil, savePoint: Bool = true,
+                     savedStep: Int? = nil) {
+            self.savedStep = savedStep
             self.status = status
             self.signalled = signalled
             self.stopRequested = stopRequested
@@ -260,6 +267,7 @@ package struct PipelinePlan: Equatable, Sendable {
         // without one nothing was made.
         var asked = exit.stopRequested
         if case .growing(true) = state { asked = true }
+        if let saved = exit.savedStep { step = max(step, saved) }
         if exit.signalled, asked, exit.status == 2 {
             state = exit.savePoint ? .parked(.stopped, step: step) : .failed(.nothingSaved)
             if exit.savePoint, mode != .growThenPlay { state = .finished(stopped: true) }
@@ -267,6 +275,7 @@ package struct PipelinePlan: Equatable, Sendable {
         }
         let failed = exit.signalled || !(exit.status == 0 || exit.status == 130)
         if failed {
+            wroteNothing = !exit.savePoint
             state = .failed(.growing(exit.problem ?? PipelineWords.exitSentence(status: exit.status, signalled: exit.signalled)))
             return []
         }
@@ -280,11 +289,12 @@ package struct PipelinePlan: Equatable, Sendable {
             }
             return []
         }
+        // (a run that ended by itself reached its target: the last numbers read were up to two seconds old)
+        step = max(step, targetSteps ?? step)
         guard mode == .growThenPlay else {
             state = .finished(stopped: false)
             return []
         }
-        step = max(step, targetSteps ?? step)
         if let why = around.obstacle(byHand: false) {
             state = .parked(why, step: step)
             return why == .notVisible ? [.bounce] : []
@@ -407,7 +417,8 @@ package struct PipelinePlan: Equatable, Sendable {
         case .failed(.growing(let message)):
             return Banner(
                 tone: .failure, title: "Growing failed", detail: message, fraction: nil,
-                next: "\(growName ?? planet) is kept as it was written.", buttons: [.showLog, .tryAgainNewName, .done])
+                next: wroteNothing ? "It stopped before it made a save point, so there is nothing to continue." : "\(growName ?? planet) is kept as it was written.",
+                buttons: [.showLog, .tryAgainNewName, .done])
         case .failed(.nothingSaved):
             return Banner(
                 tone: .attention, title: "Stopped before anything was saved",
@@ -448,16 +459,50 @@ package enum PipelineWords {
         }
     }
 
+    /// What a planet that did not open says, in the words of the page: the engine's exit in a sentence, then its own last line when it said
+    /// one. (The play controller's message names a checkpoint for exit 4 and quotes the engine; neither is for the person who pressed Create.)
+    package static func planetFailure(_ message: String) -> String {
+        if message.lowercased().contains("still saving") { return "That world is still being saved. Wait a moment, then make the planet again." }
+        if message.hasPrefix("Failed to launch") { return "The engine could not be started. " + message }
+        guard let range = message.range(of: #"\(exit code (\d+)\)"#, options: .regularExpression) else { return message }
+        let code = Int(message[range].filter(\.isNumber)) ?? 0
+        let head: String
+        switch code {
+        case 1: head = "The engine stopped while it was making the planet"
+        case 2: head = "The engine did not accept the planet's settings"
+        case 3: head = "The engine's own check found a problem in the planet"
+        case 4: head = "The engine could not open the world the planet was to start from"
+        case 130: head = "The planet was interrupted"
+        default: head = "The engine stopped (code \(code))"
+        }
+        let said = message[range.upperBound...].trimmingCharacters(in: CharacterSet(charactersIn: ": ").union(.whitespacesAndNewlines))
+        return said.isEmpty ? head + "." : head + ". It said: " + said
+    }
+
     /// The line of a run's output that says what went wrong: the last line that names an error (the end of a traceback), else the first
     /// line of stderr. Nil when the run printed nothing on stderr.
     package static func firstProblem(in errorLines: [String]) -> String? {
-        let lines = errorLines.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let lines = errorLines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         guard !lines.isEmpty else { return nil }
-        let named = lines.last { line in
-            line.range(of: #"^([A-Za-z_][A-Za-z0-9_.]*)?(Error|Exception|Warning)\b"#, options: .regularExpression) != nil
+        let named = lines.lastIndex { raw in
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            return line.range(of: #"^([A-Za-z_][A-Za-z0-9_.]*)?(Error|Exception|Warning)\b"#, options: .regularExpression) != nil
                 || line.hasPrefix("alife:") || line.hasPrefix("error:")
         }
-        let pick = (named ?? lines.first) ?? ""
+        let at = named ?? 0
+        var pick = lines[at].trimmingCharacters(in: .whitespaces)
+        // A line that ends in a colon introduces indented lines that say what is wrong (the engine's refusal of a fork's settings).
+        if pick.hasSuffix(":") {
+            let details = lines.dropFirst(at + 1).prefix(3).filter { $0.first == " " || $0.first == "\t" }
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            if !details.isEmpty { pick += " " + details.joined(separator: "; ") }
+        }
+        if let range = pick.range(of: #"^--init-from \S+: the state violates the new config:?"#, options: .regularExpression) {
+            let source = pick[range].split(separator: " ")[1].dropLast()
+            let rest = pick[range.upperBound...].trimmingCharacters(in: .whitespaces)
+            pick = "The newest save point of \(source.replacingOccurrences(of: "runs/", with: "")) does not fit the changed settings"
+                + (rest.isEmpty ? "." : ": " + rest)
+        }
         return pick.count > 240 ? String(pick.prefix(237)) + "…" : pick
     }
 }

@@ -46,6 +46,7 @@ struct SetupPage: View {
             }
         }
         .onAppear { model.pageAppeared() }
+        .onChange(of: library.state.catalog) { _, _ in model.libraryChanged() }
         .task(id: controller.repoURL) { model.guide = PresetGuideContent.load(repo: controller.repoURL) }
         .sheet(isPresented: $compare) {
             PresetCompareSheet(content: model.guide, selected: model.startingPoint.preset) { model.choose(.preset($0), applyMemory: true) }
@@ -211,7 +212,7 @@ struct SetupPage: View {
                 TextField(prompt, text: Binding(get: { model.growSteps }, set: { model.setGrowSteps($0) }))
                     .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.trailing)
-                    .frame(width: more || prompt.isEmpty ? 110 : 170)
+                    .frame(width: prompt.isEmpty ? 110 : (more ? 290 : 250))
                     .accessibilityLabel(label)
                 Text(more ? "more steps" : "steps")
                 Spacer(minLength: 0)

@@ -64,7 +64,8 @@ package enum WorldsGuide {
         if !facts.engineReady { return .setUpEngine }
         if let playable = facts.catalog.worlds.first(where: { reason(forPlaying: $0, in: facts) == nil }) { return .play(world: playable.name) }
         if !facts.catalog.worlds.isEmpty { return .waitForSave }
-        if let source = facts.catalog.sources.first { return .makePlanet(from: source.name) }
+        // (a flat world has no weather, so it is not what a planet is made from)
+        if let source = facts.catalog.sources.first(where: { $0.dims != 2 }) { return .makePlanet(from: source.name) }
         return .makeFirstRun
     }
 
@@ -160,8 +161,12 @@ package enum WorldsGuide {
         if !facts.engineReady { return "Set up the engine first." }
         if row.state == .saving || facts.saving.contains(row.name) { return "Saving..." }
         if !row.hasSavePoint { return "No save point to start from yet." }
+        if row.shape == .flat { return WorldsGuide.flatHasNoPlanet }
         return nil
     }
+
+    /// Said beside a grey *Make planet...* of a flat world: the weather runs only in 3D.
+    package static let flatHasNoPlanet = "A flat world has no weather, so it cannot become a planet."
 
     /// Why *Make again with a new name* is unavailable for an unfinished build; nil when it can be done. `source` is the world it was made
     /// from (from `meta.json`, or from this session's own request), `sourceStep` the save point it was made from when that is known, and

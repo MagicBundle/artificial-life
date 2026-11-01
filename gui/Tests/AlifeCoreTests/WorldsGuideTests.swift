@@ -70,6 +70,13 @@ import Testing
         }
     }
 
+    @Test func aFlatWorldIsNotWhatTheFirstPlanetIsMadeFrom() {
+        var flat = source("f")
+        flat.dims = 2
+        #expect(WorldsGuide.nextStep(facts(catalog(sources: [flat]))) == .makeFirstRun)
+        #expect(WorldsGuide.nextStep(facts(catalog(sources: [flat, source("p")]))) == .makePlanet(from: "p"))
+    }
+
     @Test func makingAPlanetSaysWhyItCannotBeDoneYet() {
         #expect(WorldsGuide.reasonToMakePlanet(facts(folder: false)) == "Folder not found: /x")
         #expect(WorldsGuide.reasonToMakePlanet(facts(engine: false)) == "Set up the engine first.")

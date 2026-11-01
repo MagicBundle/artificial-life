@@ -112,6 +112,17 @@ import Testing
         #expect(SetupRules.reason(.makePlanet, on: row(.saved), in: facts(runJob: true)) == nil)
     }
 
+    @Test func aFlatWorldCannotBecomeAPlanetAndSaysWhy() {
+        var flat = row(.saved)
+        flat.shape = .flat
+        #expect(SetupRules.reason(.makePlanet, on: flat, in: facts()) == "A flat world has no weather, so it cannot become a planet.")
+        #expect(SetupRules.reason(.branch, on: flat, in: facts()) == nil && SetupRules.reason(.keepGrowing, on: flat, in: facts()) == nil)
+        let f = WorldsGuide.Facts(folderExists: true, engineReady: true)
+        #expect(WorldsGuide.reasonToMakePlanet(from: flat, in: f) == WorldsGuide.flatHasNoPlanet)
+        flat.shape = .planet
+        #expect(WorldsGuide.reasonToMakePlanet(from: flat, in: f) == nil)
+    }
+
     @Test func theFolderAndTheEngineComeFirst() {
         for action in [SetupAction.keepGrowing, .branch, .makePlanet] {
             #expect(SetupRules.reason(action, on: row(.saved), in: facts(folder: false)) == "The alife folder was not found.")

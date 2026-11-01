@@ -57,7 +57,7 @@ final class SetupModel: ObservableObject {
         remembered = RememberedLevers(data: defaults.data(forKey: RememberedLevers.defaultsKey))
         // The page and the window read the pipeline through this model too.
         forwarding = coordinator.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
-        name = suggestedName()
+        applySuggestion()
     }
 
     // MARK: Opening
@@ -75,7 +75,7 @@ final class SetupModel: ObservableObject {
         let chosen = point ?? startingPoint
         setMode(.new)
         choose(chosen, applyMemory: true)
-        name = suggestedName()
+        applySuggestion()
     }
 
     /// The page appeared. A card's button has set the intent already (`requested`); the sidebar's row, or the page restored at launch, has
@@ -106,7 +106,7 @@ final class SetupModel: ObservableObject {
         controller.loadForkLevers()
         controller.loadDirector()
         applyMemory()
-        name = suggestedName()
+        applySuggestion()
         show()
     }
 
@@ -137,7 +137,12 @@ final class SetupModel: ObservableObject {
         launcher.prepareForm(from: world)
         if let step, launcher.selectedSource?.checkpoints.contains(step) == true { launcher.selectCheckpoint(step) }
         withoutPowers = !launcher.planet.directorEnabled
-        name = suggested.map { launcher.freeName(after: $0) } ?? suggestedName()
+        if let suggested {
+            name = launcher.freeName(after: suggested)
+            autoName = name
+        } else {
+            applySuggestion()
+        }
         rememberedKeys = []
         show()
     }
@@ -190,6 +195,8 @@ final class SetupModel: ObservableObject {
         c.settings.steps = growSteps
         if !goalsAllowed.contains(goal) { goal = goalsAllowed.first ?? .research }
         if memory { applyMemory() } else { rememberedKeys = [] }
+        // A name nobody typed follows the starting point (`flat-1` for a flat world, `planet-1` for a planet).
+        if intent == .create, autoName == nil || name == autoName { applySuggestion() }
     }
 
     /// The steps the starting point grows by default: the recipe's, else the preset file's own `run.steps`.
@@ -308,8 +315,24 @@ final class SetupModel: ObservableObject {
     private var seedMatters: Bool { intent == .create && goal == .play }
 
     func suggestNewName() {
-        name = suggestedName()
+        applySuggestion()
         refusal = nil
+    }
+
+    /// The name this model made up, while nobody has typed over it: a library that arrives or changes after the form was made (a launch
+    /// opens on this page before the first scan has finished) may take it, and then the suggestion is made again.
+    private var autoName: String?
+
+    private func applySuggestion() {
+        let made = suggestedName()
+        name = made
+        autoName = made
+    }
+
+    /// Called when the library's worlds change: an untouched suggestion that is no longer free is replaced; a typed name is never touched.
+    func libraryChanged() {
+        guard let auto = autoName, name == auto, !nameProblems.isEmpty else { return }
+        applySuggestion()
     }
 
     /// The first free name after the typed one, for the "Use ..." button beside a taken name.
@@ -488,7 +511,8 @@ final class SetupModel: ObservableObject {
         case .branch(let from):
             let source = library.state.row(named: from)
             timing.startStep = source?.step ?? 0
-            timing.targetSteps = Parse.integer(growSteps).map { $0 + timing.startStep }
+            // (blank: the engine grows as many steps as the source's own run was set to, beyond the save point it starts from)
+            timing.targetSteps = (Parse.integer(growSteps) ?? source?.targetSteps).map { $0 + timing.startStep }
             spec = nil
         case .keepGrowing(let world):
             let row = library.state.row(named: world)
@@ -504,6 +528,6 @@ final class SetupModel: ObservableObject {
 
     /// The same press with the name made free (the "Try again with a new name" of a failed build).
     func retryWithNewName() {
-        name = suggestedName()
+        applySuggestion()
     }
 }

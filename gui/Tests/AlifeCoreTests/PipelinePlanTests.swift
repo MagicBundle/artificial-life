@@ -55,6 +55,18 @@ import Testing
         #expect(b?.detail.contains("planet-1-grow is saved") == true)
     }
 
+    @Test func aPipelineThatWasToldToStopKnowsItWhateverTheExitSays() {
+        // (the exit that follows a Stop need not carry the flag: the pipeline asked, and it never goes on after asking)
+        var p = grow()
+        _ = p.apply(.stopPressed, in: Self.here)
+        #expect(p.apply(.growExited(.init(status: 0, stopRequested: false)), in: Self.here) == [])
+        #expect(p.state == .parked(.stopped, step: 0))
+        var q = Plan(mode: .keepGrowing, name: "r", growName: "r", targetSteps: 9)
+        _ = q.apply(.stopPressed, in: Self.here)
+        _ = q.apply(.growExited(.init(status: 0)), in: Self.here)
+        #expect(q.state == .finished(stopped: true))
+    }
+
     @Test func aSigintFromOutsideLeavesASavePointAndParksToo() {
         var p = grow()
         #expect(p.apply(exit(130), in: Self.here) == [])
@@ -282,9 +294,10 @@ import Testing
 
     @Test func aResearchRunEndsWhereItEndsAndOffersTheNextStep() {
         var p = Plan(mode: .growOnly, name: "run-1", growName: "run-1", targetSteps: 20_000)
-        _ = p.apply(.progress(step: 20_000, stepsPerSecond: 350), in: Self.here)
+        _ = p.apply(.progress(step: 19_500, stepsPerSecond: 350), in: Self.here)
         #expect(p.apply(exit(0), in: Self.here) == [], "a research world never makes a planet by itself")
         #expect(p.state == .finished(stopped: false))
+        #expect(p.step == 20_000 && p.banner(elapsed: 0)?.detail == "run-1 is saved at step 20,000.", "a run that ended by itself reached its target")
         #expect(p.banner(elapsed: 0)?.buttons == [.makePlanet, .keepGrowing, .done])
         p.offersPlanet = false
         #expect(p.banner(elapsed: 0)?.buttons == [.keepGrowing, .done], "a flat world has no planet to make")
@@ -393,6 +406,21 @@ import Testing
         }
     }
 
+    @Test func aPlanetThatDidNotOpenIsToldInPlainWordsWithTheEnginesLastLine() {
+        #expect(PipelineWords.planetFailure("alife play found no usable checkpoint (exit code 4): alife play: refused (exit code 4)")
+            == "The engine could not open the world the planet was to start from. It said: alife play: refused (exit code 4)")
+        #expect(PipelineWords.planetFailure("alife play failed (exit code 1)") == "The engine stopped while it was making the planet.")
+        #expect(PipelineWords.planetFailure("alife play refused the request (exit code 2): weather needs 3D") == "The engine did not accept the planet's settings. It said: weather needs 3D")
+        #expect(PipelineWords.planetFailure("alife play was interrupted (exit code 130)") == "The planet was interrupted.")
+        #expect(PipelineWords.planetFailure("alife play exited with code 9") == "alife play exited with code 9")
+        #expect(PipelineWords.planetFailure("'w' is still saving: wait until it has closed.").hasPrefix("That world is still being saved"))
+        #expect(PipelineWords.planetFailure("Failed to launch /x/alife: no such file").hasPrefix("The engine could not be started."))
+        for code in [1, 2, 3, 4, 130, 7] {
+            let text = PipelineWords.planetFailure("alife play x (exit code \(code))")
+            for word in ["checkpoint", "alife play", "Resume", "Fork"] { #expect(!text.contains(word), "\(text)") }
+        }
+    }
+
     @Test func theProblemLineIsTheEndOfTheTracebackNotItsStart() {
         let lines = ["Traceback (most recent call last):", "  File \"x.py\", line 3, in <module>", "    boom()", "ValueError: the steps must be positive"]
         #expect(PipelineWords.firstProblem(in: lines) == "ValueError: the steps must be positive")
@@ -400,5 +428,31 @@ import Testing
         #expect(PipelineWords.firstProblem(in: ["just some text", "more"]) == "just some text")
         #expect(PipelineWords.firstProblem(in: []) == nil && PipelineWords.firstProblem(in: ["", "  "]) == nil)
         #expect(PipelineWords.firstProblem(in: [String(repeating: "x", count: 500)])!.count == 238)
+    }
+
+    @Test func theEnginesRefusalOfAForksSettingsIsSaidInPlainWordsWithItsReason() {
+        let lines = ["--init-from runs/planet-1: the state violates the new config:", "  mutation rate 0.0011 is below the floor 0.004", "  second thing"]
+        let said = PipelineWords.firstProblem(in: lines)
+        #expect(said == "The newest save point of planet-1 does not fit the changed settings: mutation rate 0.0011 is below the floor 0.004; second thing", "\(said ?? "-")")
+        #expect(!said!.contains("--init-from"))
+    }
+
+    @Test func theStepAtTheEndIsTheNewestSavePointNotTheLastNumbersTheBarRead() {
+        var p = grow(target: nil)
+        _ = p.apply(.growExited(.init(status: 0, savedStep: 40_000)), in: Self.here)
+        #expect(p.step == 40_000, "\(p.step)")
+        var q = grow()
+        _ = q.apply(.stopPressed, in: Self.here)
+        _ = q.apply(.growExited(.init(status: 130, stopRequested: true, savedStep: 12_300)), in: Self.here)
+        #expect(q.step == 12_300)
+    }
+
+    @Test func aRunThatLeftNoSavePointDoesNotSayItIsKept() {
+        var p = grow()
+        _ = p.apply(.growExited(.init(status: 4, problem: "boom", savePoint: false)), in: Self.here)
+        #expect(p.wroteNothing && p.banner(elapsed: 0)?.next?.contains("kept") == false, "\(String(describing: p.banner(elapsed: 0)?.next))")
+        var q = grow()
+        _ = q.apply(.growExited(.init(status: 4, problem: "boom", savePoint: true)), in: Self.here)
+        #expect(!q.wroteNothing && q.banner(elapsed: 0)?.next?.contains("kept") == true)
     }
 }

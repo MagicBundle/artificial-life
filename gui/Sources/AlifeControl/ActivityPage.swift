@@ -45,7 +45,7 @@ struct ActivityPage: View {
             }
             if controller.hasRunJob {
                 RunNumbersView(controller: controller)
-                DirectorLiveView(controller: controller)
+                DirectorLiveView(controller: controller, title: "Autopilot")
             }
             LogView(controller: controller)
         }

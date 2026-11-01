@@ -190,10 +190,12 @@ private enum DirectorTab: String, CaseIterable, Identifiable {
 /// The last interventions and the journal of the tracked or selected run, tailed from its files.
 struct DirectorLiveView: View {
     @ObservedObject var controller: RunController
+    /// "Director" in the two old apps; the `alife` window says Autopilot (docs/APP.md §2.5).
+    var title = "Director"
     @State private var tab: DirectorTab = .interventions
 
     var body: some View {
-        GroupBox("Director") {
+        GroupBox(title) {
             VStack(alignment: .leading, spacing: 6) {
                 if let snapshot = controller.director, snapshot.hasLog {
                     Picker("", selection: $tab) {
@@ -211,7 +213,7 @@ struct DirectorLiveView: View {
                     .frame(height: 170)
                     .background(Color(nsColor: .textBackgroundColor))
                 } else {
-                    Text("Director off for this run (no director.jsonl).").foregroundStyle(.secondary)
+                    Text(title == "Director" ? "Director off for this run (no director.jsonl)." : "\(title) is off for this run.").foregroundStyle(.secondary)
                 }
             }
             .padding(6)
