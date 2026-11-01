@@ -780,6 +780,16 @@ unit (§37.4).
   6. In either app with the stored folder removed and nothing in `~/artificial-life` or `~/alife`: the Repository box says that no folder is
      chosen (no folder name of the owner's is shown) and a line beside the grey Start says why; with the engine in `~/alife` it is found by itself.
   7. Command-R starts the run in the Lab (and not while a run is going or the form is invalid).
+  8. **Cmd-Q with the launcher sheet open** (Storm Worlds at launch) and with the Lab's *Compare presets* sheet open: the app quits (the
+     sheet closes first); with a run going the question appears first and Cancel leaves the sheet. AppKit ignores `terminate` while a
+     sheet is attached; the app's own Quit command and Apple-event handler work around that (APP.md §5.4 as built (f)). Scripted runs
+     covered the launcher sheet only; none had a real key press.
+  9. **Dock Quit with another app in front**, a run going: the question appears in front (the app activates first), then the panel.
+  10. The panel's limit: "Elapsed N s of at most 120 s" for a run (40 s for a world, a setup, a check), what is lost at the limit, and
+     Option-Command-Q for "Quit now without saving". At a log out or restart with a run going nothing is asked.
+  11. A remembered folder on a drive that is not connected: the Repository box (and Storm Worlds' folder page) says it cannot be
+     found and offers "Use ~/alife instead" (or `~/artificial-life`) and "Choose..."; nothing is replaced until you click.
+  12. Known, left as is: after closing the last Lab window with a run going and answering Cancel the app has no window (click its Dock icon).
 - **3D viewer click-through checklist** (3D PR 5, to add to the checklist above; `gui/README.md`, DESIGN §27.12; not yet
   run by the owner; use the `tiny3d` preset, and `tiny` for the 2D items; run the GPU tests first with the GPU free:
   `cd gui && ALIFE_GPU_TESTS=1 swift test --filter GPURenderTests`, which prints where the PNGs went):

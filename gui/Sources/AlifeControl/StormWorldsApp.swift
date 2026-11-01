@@ -20,7 +20,10 @@ struct StormWorldsApp: App {
         // Every `Window` scene adds an item to the Window menu that opens it, by title and without a key equivalent. Those stay
         // (`WindowMenuCommands` adds its own before them), so the game and the Lab are each listed twice, once with its key
         // equivalent; the "3D Viewer" item opens the viewer window, which is empty until a run is shown (as in the Lab app).
-        .commands { WindowMenuCommands(items: plan.windowMenu) }
+        .commands {
+            WindowMenuCommands(items: plan.windowMenu)
+            QuitCommands(appName: plan.appName)
+        }
 
         Window("Alife Control", id: AppWindow.lab.rawValue) {
             ContentView(controller: controller)
@@ -109,11 +112,26 @@ struct RepoFolderForm: View {
                       systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                     .font(.caption)
+                DetectedFolderButton(controller: controller)
             }
         }
         // The folder can be fixed outside the app (a `uv sync`, a restored drive): look again when the app is brought back.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             controller.refreshRepo()
+        }
+    }
+}
+
+/// "Use <folder>": offered while the chosen folder is missing and a usual place (`RepoFolder.candidates`) holds the engine. The
+/// missing folder is never replaced without this click (it may be on a drive that is not connected); "Choose..." picks another.
+struct DetectedFolderButton: View {
+    @ObservedObject var controller: RunController
+
+    var body: some View {
+        if let detected = controller.detectedRepo {
+            Button("Use \(detected) instead") { controller.useDetectedFolder() }
+                .font(.caption)
+                .help("The folder above stays chosen until you click this; it is not replaced when it comes back.")
         }
     }
 }

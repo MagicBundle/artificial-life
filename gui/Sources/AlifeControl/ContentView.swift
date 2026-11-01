@@ -90,6 +90,7 @@ struct ContentView: View {
                           systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                         .font(.caption)
+                    DetectedFolderButton(controller: controller)
                     HStack {
                         Button("Set up environment") { controller.setupEnvironment() }
                             .disabled(busy)

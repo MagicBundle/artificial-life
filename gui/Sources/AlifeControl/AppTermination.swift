@@ -13,6 +13,10 @@ final class TerminationGate {
     /// The reply of the wait in progress: taken (and so made at most once) by `finishWait`.
     private var pendingReply: (@MainActor () -> Void)?
 
+    /// How long the next wait may last, asked when it begins; without it `timeout` of `init` is the limit. A research run gets
+    /// longer than a world (`QuitWording.waitSeconds`), and the panel says the same number.
+    var limit: (@MainActor () -> Duration)?
+
     /// Called while the app waits: at the start and then on every poll, with the time waited so far. The quit panel follows it
     /// (the delegate knows which worlds and runs are being saved). Not called when the app quits at once.
     var onWaiting: (@MainActor (_ elapsed: Duration) -> Void)?
@@ -33,7 +37,7 @@ final class TerminationGate {
         guard waiting == nil else { return .terminateLater }  // asked twice: the first wait answers
         stop()
         pendingReply = reply
-        let (timeout, poll) = (timeout, poll)
+        let (timeout, poll) = (limit?() ?? timeout, poll)
         waiting = Task { @MainActor [weak self] in
             let clock = ContinuousClock()
             let began = clock.now
@@ -43,7 +47,8 @@ final class TerminationGate {
                 try? await Task.sleep(for: poll)
                 self?.notifyWaiting(clock.now - began)
             }
-            self?.finishWait()
+            // A wait that was abandoned has replied already, and a newer wait may be in progress: it is not this task's to end.
+            if !Task.isCancelled { self?.finishWait() }
         }
         return .terminateLater
     }

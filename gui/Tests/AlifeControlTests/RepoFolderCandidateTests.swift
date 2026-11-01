@@ -25,7 +25,7 @@ import Testing
     @Test func theUsualPlacesAreTriedAndNoneIsThePathOfAPerson() {
         #expect(RepoFolder.candidates == ["~/artificial-life", "~/alife"])
         #expect(!RepoFolder.fieldPrompt.contains("artificial-life"))
-        #expect(RepoFolder.initialPath(stored: nil, candidates: []).path.isEmpty)
+        #expect(RepoFolder.initialPath(stored: nil, candidates: []).isEmpty)
     }
 
     @Test func withNothingStoredTheFirstCandidateWithTheEngineIsUsedWithoutANote() throws {
@@ -40,14 +40,30 @@ import Testing
         #expect(controller.repoReady && controller.logLines.isEmpty)
     }
 
-    @Test func aStoredFolderThatIsGoneGivesWayToTheFirstUsableCandidateAndSaysSo() throws {
+    @Test func aStoredFolderThatIsGoneStaysChosenEvenWhenACandidateHasTheEngine() throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
         let usable = try folder("alife", in: scratch, engine: true)
         let gone = scratch.url.appendingPathComponent("gone").path
         let controller = make(stored: gone, candidates: [scratch.url.appendingPathComponent("none").path, usable])
-        #expect(controller.repoPath == usable)
-        #expect(controller.logLines.map(\.text) == ["Stored repository folder not found: \(gone). Using \(usable)."])
+        #expect(controller.repoPath == gone, "detection only fills an empty choice")
+        #expect(controller.detectedRepo == usable && controller.repoProblem == RepoFolder.missingMessage(gone))
+        #expect(controller.startBlockedReason == RepoFolder.missingMessage(gone))
+        #expect(controller.logLines.isEmpty)
+    }
+
+    @Test func noButtonIsOfferedWhenNothingWasDetectedOrTheFolderExists() throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let none = scratch.url.appendingPathComponent("none").path
+        #expect(make(stored: scratch.url.appendingPathComponent("gone").path, candidates: [none]).detectedRepo == nil)
+        let bare = try folder("bare", in: scratch, engine: false)
+        let usable = try folder("alife", in: scratch, engine: true)
+        #expect(make(stored: bare, candidates: [usable]).detectedRepo == nil, "an existing folder is not second-guessed")
+        let empty = make(candidates: [none])
+        #expect(empty.detectedRepo == nil)
+        empty.useDetectedFolder()
+        #expect(empty.repoPath.isEmpty)
     }
 
     @Test func withNothingFoundThePathIsEmptyAndTheMessageIsPlain() throws {

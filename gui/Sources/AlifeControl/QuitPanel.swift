@@ -32,18 +32,32 @@ final class QuitPanel {
     func show(_ model: QuitPanelModel) {
         let panel = self.panel ?? makePanel()
         self.panel = panel
+        var needsKey = false
         if shown != model {
             shown = model
             set(titleLabel, model.title)
             set(detailLabel, model.detail)
-            set(warningLabel, model.warning ?? "")
-            warningLabel.isHidden = model.warning == nil
+            set(warningLabel, model.cost)
+            warningLabel.isHidden = model.cost.isEmpty
+            let hadButton = !quitNowButton.isHidden
             quitNowButton.isHidden = !model.offersQuitNow
+            // The button can be reached from the keyboard too: the panel becomes key when it appears (Space presses it) and
+            // Option-Command-Q is its key equivalent.
+            needsKey = model.offersQuitNow && !hadButton
+            // The cost lines wrap: the panel follows the height they need.
+            if let content = panel.contentView {
+                content.layoutSubtreeIfNeeded()
+                panel.setContentSize(NSSize(width: 420, height: content.fittingSize.height))
+            }
         }
         if !panel.isVisible {
             panel.center()
             panel.orderFrontRegardless()
             spinner.startAnimation(nil)
+        }
+        if needsKey {
+            panel.makeFirstResponder(quitNowButton)
+            panel.makeKey()
         }
         panel.displayIfNeeded()
     }
@@ -70,6 +84,7 @@ final class QuitPanel {
         panel.level = .floating
         panel.worksWhenModal = true
         panel.becomesKeyOnlyIfNeeded = true
+        panel.initialFirstResponder = quitNowButton
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
 
         titleLabel.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
@@ -78,9 +93,15 @@ final class QuitPanel {
         warningLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         warningLabel.isHidden = true
         warningLabel.preferredMaxLayoutWidth = 380
+        warningLabel.translatesAutoresizingMaskIntoConstraints = false
+        warningLabel.widthAnchor.constraint(equalToConstant: 380).isActive = true
         quitNowButton.target = self
         quitNowButton.action = #selector(quitNowPressed)
         quitNowButton.isHidden = true
+        quitNowButton.keyEquivalent = "q"
+        quitNowButton.keyEquivalentModifierMask = [.command, .option]
+        quitNowButton.toolTip = "Quit now without saving (Option-Command-Q)"
+        quitNowButton.setAccessibilityHelp("Ends what is still saving and quits. Shortcut: Option-Command-Q.")
         spinner.style = .spinning
         spinner.controlSize = .small
         spinner.isIndeterminate = true
@@ -115,6 +136,8 @@ final class QuitPanel {
     /// The question before a run is stopped by a quit: true to go on. Modal, and shown before the gate, so that the app has not
     /// begun to stop anything when the user cancels.
     static func askToStopRun(_ run: String) -> Bool {
+        // A quit from the Dock with another app in front, or with no window left, must not leave the question behind them.
+        NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = QuitWording.confirmTitle(run: run)
         alert.informativeText = QuitWording.confirmDetail

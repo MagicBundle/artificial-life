@@ -40,10 +40,10 @@ struct LineSplitter {
     }
 }
 
-/// Where the repository is when the app starts. The stored folder (UserDefaults) can be gone, typically a git worktree
-/// that was deleted; then the first of the usual places that holds the engine is used, and otherwise the stored path is kept
-/// so that the status line can name it. With nothing stored the same places are tried, and if none holds the engine the path
-/// is empty: no folder is named that belongs to a particular person.
+/// Where the repository is when the app starts. The stored folder (UserDefaults) is kept even when it is gone (a deleted git
+/// worktree, a drive that is not connected): the status line names it and offers a detected folder as a button. With nothing
+/// stored the usual places are tried, and if none holds the engine the path is empty: no folder is named that belongs to a
+/// particular person.
 enum RepoFolder {
     /// The places tried, in order, for a repository that holds the engine (`.venv/bin/alife`). Only these are looked at, so that
     /// finding the folder asks the system for access to no others.
@@ -68,13 +68,12 @@ enum RepoFolder {
         candidates.first { isDirectory($0) && hasEngine($0) }
     }
 
-    /// The path to start with, and a log line when it replaces a stored path that does not exist. A stored path that
-    /// exists is never replaced, whether or not it holds the engine. With nothing stored and no usable candidate: "".
-    static func initialPath(stored: String?, candidates: [String]) -> (path: String, note: String?) {
-        guard let stored else { return (firstUsable(candidates) ?? "", nil) }
-        if isDirectory(stored) { return (stored, nil) }
-        guard let usable = firstUsable(candidates) else { return (stored, nil) }
-        return (usable, "Stored repository folder not found: \(stored). Using \(usable).")
+    /// The path to start with. A stored path is always kept, whether or not it exists and whether or not it holds the engine: a
+    /// folder on a drive that is not connected, say, must not be replaced by another checkout behind the user's back, in memory or
+    /// on disk (the status line says it cannot be found, and offers the detected folder as a button, `RunController.detectedRepo`).
+    /// Detection fills an empty choice only: with nothing stored, the first of `candidates` that holds the engine, else "".
+    static func initialPath(stored: String?, candidates: [String]) -> String {
+        stored ?? firstUsable(candidates) ?? ""
     }
 
     static func missingMessage(_ path: String) -> String {
@@ -105,6 +104,7 @@ final class RunController: ObservableObject {
     /// `--group dev --extra viewer --extra video`, this cannot remove the `analysis` extra.
     static let setupArguments = ["sync", "--inexact", "--extra", "viewer", "--extra", "video"]
     private let saveRepoPath: (String) -> Void
+    private let candidates: [String]
 
     // Repository
     @Published var repoPath: String {
@@ -116,6 +116,9 @@ final class RunController: ObservableObject {
     @Published private(set) var repoReady = false
     /// False when `repoPath` is not an existing folder (the status line then says so instead of blaming the venv).
     @Published private(set) var repoFolderExists = true
+    /// While the folder is missing: the first usual place (`RepoFolder.candidates`) that holds the engine, which a button offers.
+    /// Never used by itself; nil when the folder exists or none was found.
+    @Published private(set) var detectedRepo: String?
     @Published private(set) var runs: [String] = []
     /// The runs whose `play.lock` is held by a process (a world being played or saving).
     @Published private(set) var playLocked: Set<String> = []
@@ -167,10 +170,9 @@ final class RunController: ObservableObject {
          savePath: @escaping (String) -> Void = { RepoPathStore.app.save($0) },
          candidates: [String] = RepoFolder.candidates, isApp: Bool = true) {
         saveRepoPath = savePath
-        let start = RepoFolder.initialPath(stored: storedPath, candidates: candidates)
-        repoPath = start.path
+        self.candidates = candidates
+        repoPath = RepoFolder.initialPath(stored: storedPath, candidates: candidates)
         settings.name = Self.defaultRunName()
-        if let note = start.note { appendLines([note], isError: false) }
         refreshRepo()
         loadDirector()
         guard isApp else { return }
@@ -239,6 +241,16 @@ final class RunController: ObservableObject {
 
     /// Whether a research run (not a setup or a check) is going, and its directory name.
     var hasRunJob: Bool { job == .run }
+    /// Whether any job (a run, an environment setup, a check) is going: the quit waits for all of them.
+    var hasJob: Bool { job != nil }
+    /// What a job that is not a run is called in the quit panel; nil for a run or no job.
+    var otherJobName: String? {
+        switch job {
+        case .setup: "the environment setup"
+        case .inspect: "the check"
+        default: nil
+        }
+    }
     var runningRunName: String? { job == .run && !trackedRun.isEmpty ? trackedRun : nil }
 
     var targetRunExists: Bool {
@@ -267,9 +279,16 @@ final class RunController: ObservableObject {
     func refreshRepo() {
         repoFolderExists = RepoFolder.isDirectory(repoPath)
         repoReady = repoFolderExists && RepoFolder.hasEngine(repoPath)
+        let detected = repoFolderExists ? nil : RepoFolder.firstUsable(candidates)
+        if detectedRepo != detected { detectedRepo = detected }
         refreshRuns()
         refreshDirectorCadence()
         refreshPresetWorld3D()
+    }
+
+    /// The user chose the detected folder (the button next to "Folder not found"): it becomes the choice, and is remembered.
+    func useDetectedFolder() {
+        if let detected = detectedRepo { repoPath = detected }
     }
 
     func chooseRepo() {
@@ -483,6 +502,19 @@ final class RunController: ObservableObject {
         stopRequested = true
         appendLines(["Stop requested (one SIGINT); waiting for the engine to checkpoint and exit..."], isError: false)
         p.interrupt()
+    }
+
+    /// The app is quitting: a run gets its one SIGINT (`stop`, it writes a save point); a setup or a check gets a SIGINT too, which
+    /// `uv` and `alife inspect` handle by finishing cleanly. Once; the quit waits for the job and ends it with SIGTERM at its limit.
+    func stopForQuit() {
+        guard job != nil, !stopRequested, let p = process, p.isRunning else { return }
+        if job == .run {
+            stop()
+        } else {
+            stopRequested = true
+            appendLines(["Quit requested (one SIGINT); waiting for the job to end..."], isError: false)
+            p.interrupt()
+        }
     }
 
     /// SIGTERM: ends the process immediately, without a final checkpoint.
