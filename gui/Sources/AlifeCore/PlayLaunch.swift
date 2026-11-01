@@ -11,7 +11,10 @@ package enum PlayHouses: String, CaseIterable, Sendable {
     case clade
     /// Try `exact` and fall back to the clades with a note (the default).
     case auto
+}
 
+// The words of the page for the engine's three choices (kept outside the enum: `tests/test_gui_sync.py` reads the enum's cases).
+extension PlayHouses {
     /// The word on the page ("exact", "clade" and "auto" are the engine's).
     package var plainTitle: String {
         switch self {
