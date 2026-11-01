@@ -19,11 +19,10 @@ struct WorldsPage: View {
             saving: model.saving)
     }
 
-    /// The sentence for a folder that is not there, in the words of the page.
+    /// What the page says about a folder that is not there: what the folder is for. (The form below says what is wrong with the one
+    /// chosen, in the words of the Lab's Repository box.)
     static func folderSentence(_ controller: RunController) -> String {
-        controller.repoPath.trimmingCharacters(in: .whitespaces).isEmpty
-            ? "Choose the alife folder: the one that holds .venv/bin/alife."
-            : "The alife folder was not found: \(controller.repoPath)"
+        "alife needs the folder that holds its engine (.venv/bin/alife) and your worlds (runs/)."
     }
 
     var body: some View {
@@ -33,11 +32,12 @@ struct WorldsPage: View {
                     if let note = shell.launchNote { launchNote(note) }
                     nextStepCard
                     if play.phase == .starting { startingBox }
-                    if controller.repoReady {
+                    // With nothing to start from the card above says what to do, and that is all the page needs to say.
+                    if controller.repoReady, !(model.catalog.worlds.isEmpty && model.catalog.sources.isEmpty) {
                         playSection
                         planetSection.id("planet-form")
-                        if !model.catalog.unfinished.isEmpty { unfinishedSection }
                     }
+                    if controller.repoReady, !model.catalog.unfinished.isEmpty { unfinishedSection }
                 }
                 .padding(24)
                 .frame(maxWidth: 860, alignment: .leading)
@@ -79,8 +79,7 @@ struct WorldsPage: View {
                 header("folder.badge.questionmark", "Where is alife?")
                 Text(problem).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 RepoFolderForm(controller: controller)
-                Text("This is the folder that holds the engine (.venv/bin/alife) and your worlds (runs/). It is also in Settings.")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text("You can change it later in Settings (Command-comma).").font(.caption).foregroundStyle(.secondary)
             case .setUpEngine:
                 header("wrench.and.screwdriver", "Set up the engine")
                 Text("The folder \(controller.repoPath) has no engine yet (.venv/bin/alife is missing). Setting it up installs the packages with uv; it takes a minute or two and removes nothing.")
@@ -175,9 +174,7 @@ struct WorldsPage: View {
         GroupBox {
             VStack(alignment: .leading, spacing: 0) {
                 if model.catalog.worlds.isEmpty {
-                    Text(controller.runs.isEmpty
-                         ? "No world to play yet. Start a research run in the Lab, then make a planet from it."
-                         : "No world to play yet. Make a planet from one of your runs below.")
+                    Text("No world to play yet. Make a planet from one of your runs below.")
                         .foregroundStyle(.secondary).padding(8)
                 } else {
                     ForEach(model.catalog.worlds) { world in

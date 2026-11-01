@@ -15,6 +15,7 @@ private struct ShellRig {
     let session: WorldSession
     let shell: ShellModel
     let defaults: UserDefaults
+    let suite: String
     let commands: URL
     let script: URL
     var sent: [String] { ((try? String(contentsOf: commands, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init) }
@@ -23,7 +24,7 @@ private struct ShellRig {
         scratch = try Scratch()
         commands = scratch.url.appendingPathComponent("commands.txt")
         script = try scratch.script("alife", "cat \"\(Repo.playFixtureURL("3d_g3b").path)\"\nwhile IFS= read -r line; do echo \"$line\" >> \"\(commands.path)\"; done")
-        let suite = "alife-shell-\(UUID().uuidString)"
+        suite = "alife-shell-\(UUID().uuidString)"
         defaults = try #require(UserDefaults(suiteName: suite))
         if let page { defaults.set(page.rawValue, forKey: AppShell.pageKey) }
         session = WorldSession(play: play, defaults: defaults)
@@ -36,7 +37,7 @@ private struct ShellRig {
 
     func finish() {
         play.shutdown()
-        defaults.removePersistentDomain(forName: "unused")
+        defaults.removePersistentDomain(forName: suite)
         scratch.cleanup()
     }
 
@@ -65,6 +66,7 @@ private struct ShellRig {
         let play = PlayController()
         let suite = "alife-shell-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
         let session = WorldSession(play: play, defaults: defaults)  // (made first, as the app does: no view has been made)
         var asked = 0
         session.model.windowIsKey = { false }
