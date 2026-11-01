@@ -833,6 +833,39 @@ unit (§37.4).
   13. Dark mode, a small window (1,100 x 700 is the minimum), the sidebar hidden (Ctrl-Cmd-S), the icon (a world with stars, no bolt: your eye).
   14. Known, left as is: the on-map hint still says "H home"; Watch's keys are the World window's; a planet can be made only from an
      existing research run (PR-D's pipeline); the Lab page is narrow at the minimum window (about 885 pt) and says "Repository".
+- **Click-through list for PR-C of the one-app program** (the owner's hands; `docs/APP.md` §5.3, §7.2; DESIGN §33.4.12, row I83; the same
+  `alife Preview.app`; what the scripted and real-bundle runs showed is in I83; a real mouse and a long folder are yours):
+  1. Open the app on a folder with many worlds (yours, `~/artificial-life`). The Worlds page shows the card for the world you most likely want
+     ("Play <latest played world>") first, then *Your worlds*. For a moment it says "Looking at your worlds..." (never "empty"); the scan runs
+     off the main thread, so the window stays responsive.
+  2. **Sidebar:** under the four pages, *Your worlds*: the open world, what grows, what is in use, then the newest eight; the state is under
+     each name; a research world nests under the played world made from it (click the arrow). *All N worlds...* and *Unfinished (n)* open the
+     page's list. Click a world: the page scrolls to its card and marks it, clearing a search or filter that would hide it.
+  3. **Search** (several words must all match: "research box", "in use", a source name) and the filters **All, Played, Research, Unfinished**
+     with counts. A search with no match says so and offers to clear it.
+  4. **Cards:** state chip (Saved, Live, Paused, Growing, Saving, In use elsewhere, Starting), kind, shape, step, when saved, "made from X" or
+     "the seed of X". **Play** a played world (the window moves to Watch); with a world open, the other cards' Play and Make planet... are grey
+     with the reason under the card ("Close X first"). The open world's card says **Watch**.
+  5. **A world in use by another app** (open the same world in `Storm Worlds.app` or `alife play` in a terminal): within about 4 s its card
+     and row say "In use elsewhere" and Play is grey with that reason. Close it there: back to Saved.
+  6. **Make planet...** on a card opens the form in a sheet on that world's newest save point with a free name; Cancel (Esc) closes it. File >
+     Make Planet... opens it on the chosen world. Make planet starts it as before.
+  7. **Unfinished:** cancel a planet while it starts (or look at old ones): the card says why and where it stopped, which world it was made
+     from, **Reveal in Finder** and **Make again with a new name** (fills the form, starts nothing; grey with a reason when the source is gone).
+     Nothing is deleted.
+  8. **A drive that is not connected:** with `runs/` links to the archive volume and the volume unmounted, the page says "N worlds are on the
+     drive "X", which is not connected" and nothing breaks; connect it and switch to the app (or wait): they appear.
+  9. **A world that vanishes:** remove a world's folder in Finder while the app runs: its row goes within a second; if it was chosen the page
+     says "X is no longer in this folder".
+  10. **Long list:** with 60 or more worlds the sidebar stays eight rows, the page scrolls, the Lab's pickers still list every run (the Lab
+     polls the run list only while it is shown). Dark mode and 1,100 x 700 look as in `docs/` shots (`SP/app_c_shots`).
+  11. What the scripted run of the final bundle showed (private suite, private alife folder, the real engine, the driver injected as in
+     PR-B; display awake): the list of 46 directories, search, the Unfinished filter and reasons, a world in use by another process, links to
+     a drive that is not connected, the planet sheet (a real click on a card, closed with Escape), a chosen world removed while the app ran,
+     Play of a real planet and quit with it live. **Not exercised:** a click on a sidebar row (the posted events did not select a row of the
+     sidebar; the choice logic is unit-tested), a trackpad, Make planet from the sheet to the end, Keep growing (PR-D), a real removable drive.
+  12. Known, left as is: a card has no picture; selecting a world does not open a Details page (PR-F); Keep growing and Branch are PR-D; a
+     research world cannot be watched yet (PR-F); a run written by another app is "in use" only while its `metrics.jsonl` moves (20 s).
 - **3D viewer click-through checklist** (3D PR 5, to add to the checklist above; `gui/README.md`, DESIGN §27.12; not yet
   run by the owner; use the `tiny3d` preset, and `tiny` for the 2D items; run the GPU tests first with the GPU free:
   `cd gui && ALIFE_GPU_TESTS=1 swift test --filter GPURenderTests`, which prints where the PNGs went):
