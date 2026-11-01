@@ -25,11 +25,24 @@ swift build -c release   # optional; binary in .build/release/AlifeControl
 
 Or open it in Xcode: `cd gui && open Package.swift`, select the `AlifeControl` scheme and run.
 
-On first launch pick the repository folder (default `~/artificial-life`); the choice is remembered. If the remembered
-folder no longer exists (a deleted git worktree, say), the app starts with `~/artificial-life` when that holds
-`.venv/bin/alife` and logs one line saying so; otherwise the Repository box says "Folder not found: <path>. Choose the
-repository folder.", and Start and **Set up environment** log that message instead of launching anything. A remembered
-folder that exists is never replaced.
+On first launch the app looks for the repository in `~/artificial-life` and then `~/alife` (the first that holds
+`.venv/bin/alife`); with none of them it names no folder and says so: "No repository folder is chosen yet. Choose the folder
+that holds .venv/bin/alife". The choice is remembered. A remembered folder is never replaced behind your back, whether or not
+it exists (a deleted git worktree, a drive that is not connected): the Repository box (and Storm Worlds' folder page) says
+"Folder not found: <path>. Choose the repository folder.", offers a button "Use <detected folder> instead" when one of the two
+usual places holds the engine, and "Choose..." for any other; Start and **Set up environment** log that message instead of
+launching anything. A remembered folder that exists is kept. While Start is grey a line beside it says why (the folder, the
+missing engine, or the first thing wrong with the settings); **Command-R** starts the run.
+
+**Quitting.** With a research run going, Quit (Command-Q, the Dock, closing the last window) first asks "Stop 'X' and quit?";
+Cancel changes nothing. Stop and Quit sends the run its one SIGINT and waits for it to write its save point, as it does for a
+played world, with a small panel ("Saving ...", the elapsed time, what is waited for and for how long at most, and what is lost
+at the limit); after 10 s it offers **Quit now without saving** (also Option-Command-Q). The wait is at most 120 s for a run
+and 40 s for a played world, an environment setup or a check (these get the SIGINT too, and no question); then what is left is
+ended with SIGTERM before the app quits, so no run is left behind, and a run loses the steps since its last save point. At the
+end of a session (log out, restart, shut down) nothing is asked: the same stop and wait, within the limit. Both apps do this.
+With a sheet open (Storm Worlds' launcher, the Lab's preset comparison) AppKit ignores `terminate`, so the app's own Quit command
+and quit Apple-event handler end the sheets first (after the question, so that Cancel leaves them).
 
 ## Install as an app
 
@@ -66,7 +79,7 @@ API key kept in a keychain profile) and `xcrun stapler staple`; the commands are
 in-app updater and a notarized standalone Storm Worlds (with the engine bundled, so that it needs no repository) are later steps.
 The App Store would also need the engine embedded and sandboxed.
 
-Both apps are only front ends: they use the repository's `.venv` at the configured repo path (default `~/artificial-life`).
+Both apps are only front ends: they use the repository's `.venv` at the configured repo path (found in `~/artificial-life` or `~/alife` when none is set).
 **The two share that setting**, so it is chosen once, in either: the bundles keep it in the shared preferences domain
 `io.github.magicbundle.alife` (`RepoPathStore`). The first time an app starts it takes the folder it already had, from its own
 preferences and then from the Lab's (`io.github.magicbundle.alifecontrol`), and copies it into the shared domain, leaving the

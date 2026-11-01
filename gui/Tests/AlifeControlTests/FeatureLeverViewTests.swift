@@ -10,7 +10,7 @@ import Testing
 @MainActor
 @Suite struct FeatureLeverViewTests {
     private func controller() -> RunController {
-        RunController(storedPath: Repo.root.path, savePath: { _ in }, defaultPath: Repo.root.path, isApp: false)
+        RunController(storedPath: Repo.root.path, savePath: { _ in }, candidates: [Repo.root.path], isApp: false)
     }
 
     @Test func anOverlayToggleReadsTheOverlayFileAndPassesTheOverlay() {

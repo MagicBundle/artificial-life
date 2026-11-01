@@ -14,7 +14,7 @@ struct PresetGuideViewTests {
     private var out: URL? { ProcessInfo.processInfo.environment["ALIFE_PRESET_SHOTS_OUT"].map { URL(fileURLWithPath: $0) } }
 
     private func controller() -> RunController {
-        RunController(storedPath: Repo.root.path, savePath: { _ in }, defaultPath: Repo.root.path, isApp: false)
+        RunController(storedPath: Repo.root.path, savePath: { _ in }, candidates: [Repo.root.path], isApp: false)
     }
 
     /// The view drawn at `width` x `height` in the given appearance; written as `name-light.png` or `name-dark.png` when asked for.

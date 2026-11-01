@@ -28,21 +28,27 @@ import Testing
     }
 
     private func make(stored: String?, default path: String, saved: Saved = Saved()) -> RunController {
-        RunController(storedPath: stored, savePath: { saved.paths.append($0) }, defaultPath: path, isApp: false)
+        RunController(storedPath: stored, savePath: { saved.paths.append($0) }, candidates: [path], isApp: false)
     }
 
-    @Test func aMissingStoredFolderFallsBackToTheDefaultAndLogsIt() throws {
+    @Test func aMissingStoredFolderIsNeverReplacedAndTheDetectedOneIsOfferedByAButton() throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
         let fallback = try folder("default", in: scratch, engine: true)
-        let gone = scratch.url.appendingPathComponent("gone-worktree").path
+        let gone = scratch.url.appendingPathComponent("gone-worktree").path  // a drive that is not connected, say
         let saved = Saved()
         let controller = make(stored: gone, default: fallback, saved: saved)
-        #expect(controller.repoPath == fallback)
-        #expect(controller.repoReady)
-        #expect(controller.repoProblem == nil)
-        #expect(controller.logLines.map(\.text) == ["Stored repository folder not found: \(gone). Using \(fallback)."])
-        #expect(saved.paths.isEmpty)  // the replacement is not written until the user chooses a folder
+        #expect(controller.repoPath == gone, "the user's choice stays, in memory")
+        #expect(!controller.repoReady && !controller.repoFolderExists)
+        #expect(controller.repoProblem == RepoFolder.missingMessage(gone))
+        #expect(controller.detectedRepo == fallback)
+        #expect(controller.logLines.isEmpty && saved.paths.isEmpty, "and on disk: nothing is written")
+        controller.refreshRepo()
+        #expect(controller.repoPath == gone && saved.paths.isEmpty)
+        // Only the button replaces it, and then it is remembered.
+        controller.useDetectedFolder()
+        #expect(controller.repoPath == fallback && controller.repoReady && controller.detectedRepo == nil)
+        #expect(saved.paths == [fallback])
     }
 
     @Test func aMissingStoredFolderWithoutAUsableDefaultSaysSoAndLaunchesNothing() async throws {
