@@ -13,7 +13,20 @@ from typing import Any, Final
 import mlx.core as mx
 import numpy as np
 
-from alife import arms, ext, fields, layout, niche, ops, rng, spatial, structures, weather, weather_obs
+from alife import (
+    arms,
+    ext,
+    fields,
+    layout,
+    niche,
+    ops,
+    rng,
+    spatial,
+    sphere,
+    structures,
+    weather,
+    weather_obs,
+)
 from alife.config import Config, config_hash, dims, is_3d
 from alife.ext.bonds import bonds_ext
 from alife.state import (
@@ -315,7 +328,8 @@ def snapshot_metrics(s: State | State3, cfg: Config, *, heavy: bool) -> dict[str
     ):  # static: the director's live levers (a few scalars; one more entry in the transfer)
         dev.update({name: getattr(s, name) for name in ENV_FIELDS})
     if d3:  # static: the per-agent arrays of the 3D keys (§27.9)
-        dev.update(pos_z=s.pos[:, 2], vel=s.vel, pitch=s.pitch, buoy_cap=s.buoy_cap, clade=s.clade)
+        height = sphere.geometry(cfg).height(s.pos)  # |pos| − Rp on a sphere, pos[:, 2] in a box
+        dev.update(pos_z=height, vel=s.vel, pitch=s.pitch, buoy_cap=s.buoy_cap, clade=s.clade)
     if cfg.weather.enabled:  # static: the weather block's inputs join the one transfer (§30)
         ws = weather.unpack(s.wx)
         buoy = s.buoy_cap if d3 else None
@@ -674,7 +688,7 @@ def layer_occupancy_weights(s: State3, cfg: Config) -> np.ndarray:
     n = int(alive.sum())
     if n == 0:
         return (np.arange(d.fz) == 0).astype(np.float64)
-    layer = to_numpy(fields.cell_index(s.pos, cfg)) // (d.fg * d.fg)
+    layer = to_numpy(fields.cell_index(s.pos, cfg)) // (d.npix if d.sph else d.fg * d.fg)
     p = np.bincount(layer[alive], minlength=d.fz) / n
     return np.minimum(1.0, d.fz * p)
 

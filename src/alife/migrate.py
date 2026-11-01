@@ -180,6 +180,11 @@ def migrate_checkpoint(
     src, out = Path(src), Path(out)
     _check_output(src, out, overwrite)
     cfg_old = embedded_config(src)
+    if cfg_old.world.geometry == "sphere":
+        raise MigrationError(
+            "a sphere world has no migration: its feature layers are not available on a sphere yet "
+            "(config.SPHERE_READY), and no state crosses geometries (docs/SPHERE.md 7.4)"
+        )
     cfg = cfg_new if cfg_new is not None else target_config(cfg_old, enable, sets)
     change = layout_change(cfg_old, cfg, allow_removal=force_removal)
     if not change.added and not change.removed:

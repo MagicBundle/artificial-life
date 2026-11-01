@@ -48,6 +48,12 @@ def test_defaults_are_64k_and_valid() -> None:
 @pytest.mark.parametrize("preset", PRESETS)
 @pytest.mark.parametrize("overlays", [(), ("fast",)])
 def test_presets_and_overlays_validate(preset: str, overlays: tuple[str, ...]) -> None:
+    if (
+        preset == "tiny3s" and overlays
+    ):  # the fast overlay's cell_capacity 12 cannot cover a sphere's lid cell
+        with pytest.raises(ConfigError, match=r"cell_capacity 12 must be ≥ ceil\(0.167"):
+            load_config(preset=preset, overlays=overlays)
+        return
     cfg = load_config(preset=preset, overlays=overlays)
     validate(cfg)
     assert OVERLAYS == ("fast",)

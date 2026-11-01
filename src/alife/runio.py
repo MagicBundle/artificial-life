@@ -409,6 +409,7 @@ def _state_arrays_and_meta(s: State, cfg: Config) -> tuple[dict[str, Any], dict[
             {"layout_features": ext.layout_features(cfg)} if ext.layout_features(cfg) else {}
         ),  # absent = none
         **({"dims": str(cfg.world.dims)} if is_3d(cfg) else {}),
+        **({"geometry": cfg.world.geometry} if cfg.world.geometry != "box" else {}),  # absent = box (§46.9)
         "step": str(int(to_numpy(s.step))),
         "config_hash": config_hash(cfg),
         "alife_version": _alife_version(),
@@ -422,7 +423,8 @@ def _state_arrays_and_meta(s: State, cfg: Config) -> tuple[dict[str, Any], dict[
 def write_state_file(path: Path, s: State, cfg: Config) -> None:
     """Atomic safetensors write (``*.tmp`` + ``os.replace``) with checkpoint metadata (§18).
 
-    A 3D state also records ``dims`` (§27.1); a file without the key is 2D.
+    A 3D state also records ``dims`` (§27.1); a file without the key is 2D. A sphere state records
+    ``geometry`` (§46.9); a file without the key is a box.
     """
     arrays, meta = _state_arrays_and_meta(s, cfg)
     _atomic_write(Path(path), lambda f: mx.save_safetensors(f, arrays, meta))
@@ -661,7 +663,8 @@ def load_checkpoint(path: Path, cfg: Config, *, check_hash: bool = True) -> Stat
     """Load a state file; ``CheckpointError`` on a version/shape mismatch, or a config-hash one if checked.
 
     Keys are matched by name (their order in the file is arbitrary, F15). The file's ``dims`` (absent = 2)
-    must equal ``world.dims``: a state never crosses dimensions (§27.1). The RNG layout version must be in
+    must equal ``world.dims`` and its ``geometry`` (absent = box) ``world.geometry``: a state never crosses
+    dimensions (§27.1) or geometries (§46.9). The RNG layout version must be in
     ``rng.RNG_COMPATIBLE_VERSIONS``. A pre-director file (no ``env_*`` arrays) loads with inert env values.
     A file whose own config had the weather off loads into a weather-on ``cfg`` with ``wx`` replaced by the
     rest array of ``cfg`` (its shape follows ``weather.cells``, which the file's constant array does not;
@@ -674,6 +677,11 @@ def load_checkpoint(path: Path, cfg: Config, *, check_hash: bool = True) -> Stat
     if meta.get("dims", "2") != nd:
         bad.append(
             f"dims={meta.get('dims', '2')!r} (expected {nd!r}): cross-dimension resume/fork is not supported"
+        )
+    if meta.get("geometry", "box") != cfg.world.geometry:
+        bad.append(
+            f"geometry={meta.get('geometry', 'box')!r} (expected {cfg.world.geometry!r}): "
+            "cross-geometry resume/fork is not supported"
         )
     want = {
         "format_version": str(FORMAT_VERSION),
@@ -912,6 +920,7 @@ class RunDir:
                 {"layout_features": ext.layout_features(cfg)} if ext.layout_features(cfg) else {}
             ),  # absent = none
             **({"dims": cfg.world.dims} if is_3d(cfg) else {}),  # absent = 2D (§27.1)
+            **({"geometry": cfg.world.geometry} if cfg.world.geometry != "box" else {}),  # absent = box
             "parent": parent,
             "status": "running",
         }

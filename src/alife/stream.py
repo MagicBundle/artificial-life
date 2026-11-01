@@ -34,7 +34,7 @@ import mlx.core as mx
 import numpy as np
 
 from alife import layout
-from alife.config import Config, ConfigError, config_hash, dims
+from alife.config import Config, ConfigError, config_hash, dims, require_box
 from alife.render import COLOR_MODES, agent_colors, field_colors
 from alife.runio import CheckpointError, RunDir, load_checkpoint
 from alife.state import ERROR_MASK, State, State3, is_3d_state, to_numpy
@@ -161,6 +161,7 @@ class View:
     field_z: int = 0
 
     def check(self, cfg: Config) -> None:
+        require_box(cfg, "alife stream")  # the stream protocol v2 of the sphere world is PR S5
         if self.color not in COLOR_MODES:
             raise ConfigError(f"unknown colour mode {self.color!r}; expected one of {COLOR_MODES}")
         fz = dims(cfg).fz

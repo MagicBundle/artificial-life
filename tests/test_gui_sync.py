@@ -303,10 +303,16 @@ def test_the_feature_key_tables_are_consistent() -> None:
         assert set(config.CLI_ONLY_FEATURE_KEYS.get(feature, ())) <= set(keys), feature
 
 
+# The sphere presets exist in the engine (S2 adds `tiny3s`) but not yet in the Swift `Preset` enum: the GUI
+# is PR S6 of the true-sphere series (docs/SPHERE.md 7.4), which removes this exemption.
+SPHERE_PRESETS_PENDING_GUI = frozenset({"tiny3s"})
+
+
 def test_the_preset_picker_lists_the_engine_presets() -> None:
     values = swift_enum_values(sources()["Levers.swift"], "Preset")
-    assert values == set(config.PRESETS)
-    for name in values:
+    assert values == set(config.PRESETS) - SPHERE_PRESETS_PENDING_GUI
+    assert set(config.PRESETS) >= SPHERE_PRESETS_PENDING_GUI
+    for name in values | SPHERE_PRESETS_PENDING_GUI:
         assert (ROOT / "src" / "alife" / "presets" / f"{name}.toml").is_file(), name
 
 

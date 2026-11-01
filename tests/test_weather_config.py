@@ -399,6 +399,10 @@ def test_cli_lists_and_accepts_the_storm_overlay(capsys: pytest.CaptureFixture[s
 @pytest.mark.parametrize("preset", PRESETS)
 @pytest.mark.parametrize("overlays", [(), OVERLAYS])
 def test_presets_with_weather_off_validate(preset: str, overlays: tuple[str, ...]) -> None:
+    if (
+        preset == "tiny3s" and overlays
+    ):  # the fast overlay's cell_capacity 12 cannot cover a sphere's lid cell
+        pytest.skip("a sphere refuses the fast overlay (tests/test_config.py)")
     cfg = load_config(preset=preset, overlays=overlays)
     assert not cfg.weather.enabled and WeatherConfig() == cfg.weather
     validate(cfg)

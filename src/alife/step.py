@@ -49,6 +49,7 @@ from alife.state import (
     LedgerIdx,
     State,
     State3,
+    StateS,
     age,
     total_energy,
 )
@@ -194,12 +195,14 @@ class _Flows(NamedTuple):
 
 
 def step(
-    s: State | State3, cfg: Config, *, observe: bool = False
-) -> tuple[State | State3, StepOut | StepOutG]:
+    s: State | State3 | StateS, cfg: Config, *, observe: bool = False
+) -> tuple[State | State3 | StateS, StepOut | StepOutG]:
     """Advance the world by one step (S0–S18). Pure; no host syncs. A 3D world (``State3``) takes the static
-    ``d3`` branches of §27.8; every 2D line is unchanged. With the static ``observe`` the step also returns
-    the observer channel (``StepOutG``, §28.2); it changes no state value and no ``StepOut`` field."""
-    d3 = dims(cfg).d3
+    ``d3`` branches of §27.8; every 2D line is unchanged. A sphere world (``StateS``, DESIGN §46) takes the
+    ``d3`` branches too and, inside them, the static ``sph`` ones: radial gravity, the table-driven search,
+    the body frame of the heading vector, the tangent motion. With the static ``observe`` the step also
+    returns the observer channel (``StepOutG``, §28.2); it changes no state value and no ``StepOut`` field."""
+    d3, sph = dims(cfg).d3, dims(cfg).sph
     t = s.step
     W1, W2 = lifecycle.flush_pending(s.W1, s.W2, s.pend_slot, s.pend_W1, s.pend_W2)  # S0
     s = s._replace(W1=W1, W2=W2)
@@ -219,7 +222,12 @@ def step(
         kw = mx.random.split(ks[Stream.WEATHER], 2)  # kw[0]: the disturbance key (S17); kw[1]: the hazard
     if d3:  # static: the yaw-and-pitch frame and the start-of-step grounding (§27.6)
         gr = physics.grounded(s.pos, cfg)
-        fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg, pitch=s.pitch)
+        if sph:  # static: the frame comes from the heading vector and the position (§46.5)
+            fobs = fields.sample_fields(
+                s.resource, s.chem, fcell, s.heading, cfg, pitch=s.pitch, pos=s.pos, hdg=s.hdg
+            )
+        else:
+            fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg, pitch=s.pitch)
     else:
         fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg)
     desc = sensing.neighbor_descriptors(s, nbr, cfg)  # S5
@@ -324,7 +332,16 @@ def step(
     sv = dt.survivor  # S15
     wind_f = wind.force if wthr else None
     act_p = arms.physics_act(act, s, cfg)  # the armour slows the thrust (§42.3); ``act`` itself when off
-    if d3:  # static: gravity, buoyancy, the floor and the surface (§27.3)
+    if sph:  # static: radial gravity, the floor and the hard lid, tangent motion (§46.2, §46.3)
+        F = physics.forces_s(
+            s.pos, s.hdg, s.pitch, act_p, mo, s.buoy_cap, nbr, sv, dt.partner, cfg, wind=wind_f
+        )
+        dm = structures.drag_mult(F, sn, cfg) if st_on else None  # static: the barrier (§38.4.2)
+        it = physics.integrate_s(
+            s.pos, s.hdg, s.heading, s.pitch, F, act.grip, act.turn, mo.pitch, gr, sv, cfg, drag_mult=dm
+        )
+        pos, vel, heading, v_clips = it.pos, it.vel, it.heading, it.v_clips
+    elif d3:  # static: gravity, buoyancy, the floor and the surface (§27.3)
         F = physics.forces3(
             s.pos, s.heading, s.pitch, act_p, mo, s.buoy_cap, nbr, sv, dt.partner, cfg, wind=wind_f
         )
@@ -357,6 +374,8 @@ def step(
     )
     if d3:  # static
         s1 = s1._replace(pitch=it.pitch)
+    if sph:  # static: the transported heading vector (the scalar heading above is derived from it)
+        s1 = s1._replace(hdg=it.hdg)
     if bx:  # static: role, dwell and the slot memory of the survivors; dead rows cleared (E15)
         upd, bflows = bonds.state_after(
             s,
@@ -689,7 +708,9 @@ def _finish(s_new: State, s: State, cfg: Config, f: _Flows) -> tuple[State, Step
     s_new = s_new._replace(total=total, ledger_cum=s.ledger_cum + ledger)
     counters = _counters(s_new, s.alive, f, cfg)
     if cfg.run.runtime_checks != "off":  # static
-        if d.d3:  # static: per x/y column; fcell mod FG² is the floor cell below (§27.5)
+        if d.sph:  # static: per angular column; fcell mod Npix is the floor cell below (§46.4)
+            max_cell_occ = ops.scatter_add_i32(d.npix, f.fcell % d.npix, 1, s.alive).max()
+        elif d.d3:  # static: per x/y column; fcell mod FG² is the floor cell below (§27.5)
             max_cell_occ = ops.scatter_add_i32(d.fg * d.fg, f.fcell % (d.fg * d.fg), 1, s.alive).max()
         else:
             max_cell_occ = ops.scatter_add_i32(d.fg * d.fg, f.fcell, 1, s.alive).max()
@@ -720,8 +741,14 @@ def make_step(
     cfg: Config, *, compile: bool | None = None, observe: bool = False
 ) -> Callable[[State], tuple[State, StepOut | StepOutG]]:
     """The step closed over ``cfg``, compiled once when ``compile`` (default ``cfg.run.compile``). With the
-    static ``observe`` it returns ``StepOutG`` (§28.2)."""
+    static ``observe`` it returns ``StepOutG`` (§28.2). A compiled sphere step first runs the
+    compile-collision self-check of its position-to-cell lookups (``sphere_check.require_compile_safe``) and
+    refuses to be built on a mismatch."""
     use_compile = cfg.run.compile if compile is None else compile
+    if use_compile and cfg.world.geometry == "sphere":  # the compile-collision self-check (spec 10.1, F21)
+        from alife import sphere_check  # host side: reads arrays, runs once per constant set
+
+        sphere_check.require_compile_safe(cfg)
 
     def fn(s: State) -> tuple[State, StepOut | StepOutG]:
         return step(s, cfg, observe=observe)

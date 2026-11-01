@@ -718,8 +718,13 @@ def derive_nh(radius: float, r: float, sense: float, reach: int = 2) -> int:
 
 
 def hash_layers(height: float, sense: float) -> tuple[int, float]:
-    """``(G_z, T_h)``: ``G_z = floor(2H/R)`` equal-thickness hash layers, ``T_h = H/G_z >= R/2``."""
-    gz = math.floor(2.0 * height / sense)
+    """``(G_z, T_h)``: ``G_z = floor(2H/R·(1 − 1e-5))`` equal-thickness hash layers, ``T_h = H/G_z > R/2``.
+
+    The thickness is strictly above ``R/2`` (S2 review M1): when ``2H/R`` is an integer (``mini3s``: 24 and 6)
+    a plain floor gives ``T_h = R/2`` exactly, two agents a few ulp under ``R`` apart radially can then differ
+    by three computed layers (``|pos| − Rp`` and ``floor(z/T_h)`` round in float32) and fall out of the
+    five-layer stencil. The factor costs a layer only when ``2H/R`` is within 1e-5 below an integer."""
+    gz = math.floor(2.0 * height / sense * (1.0 - 1e-5))
     return gz, (height / gz if gz > 0 else math.inf)
 
 

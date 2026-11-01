@@ -48,6 +48,7 @@ from alife.director import llm as director_llm
 from alife.director import log as director_log
 from alife.director import make_director, yoked
 from alife.game import housefile
+from alife.geom import geometry as host_geometry
 from alife.invariants import full_check
 from alife.render import (
     COLOR_MODES,
@@ -322,9 +323,21 @@ def _summary(cfg: Config) -> dict[str, Any]:
         "n_init": cfg.population.n_init,
         "max_births_per_step": d.m,
         "n_cap": d.n_cap,
-        "world_size": cfg.world.size,
-        "field_grid": d.fg,
-        **({"dims": d.nd, "world_height": cfg.world.height, "field_grid_z": d.fz} if d.d3 else {}),
+        # a sphere: the planet (radius, shell, Nside, layers) in place of the image length and lattice side
+        **(
+            {
+                "geometry": "sphere",
+                "planet_radius": d.radius,
+                "world_height": cfg.world.height,
+                "field_nside": d.nside,
+                "field_grid_z": d.fz,
+                "hash_nside": d.nside_h,
+            }
+            if d.sph
+            else {"world_size": cfg.world.size, "field_grid": d.fg}
+        ),
+        **({"dims": d.nd} if d.d3 else {}),
+        **({"world_height": cfg.world.height, "field_grid_z": d.fz} if d.d3 and not d.sph else {}),
         "hidden": d.h,
         # the feature extensions (DESIGN §43): absent, as before, while none is enabled
         **(
@@ -358,7 +371,11 @@ def _announce(rd: RunDir, cfg: Config, step: int, steps: int, quiet: bool) -> No
             mode += f" + llm every {cfg.director.llm_every} ({cfg.run.llm_model})"
         if cfg.run.director == "live" and cfg.director.persona == RANDOM_PERSONA:
             mode += f" + random, yoked to {cfg.director.yoke_log}"
-        world = f"L={s['world_size']:g}" + (f" height={s['world_height']:g}" if "world_height" in s else "")
+        if s.get("geometry") == "sphere":  # a planet has no world size (DESIGN §46.9)
+            world = f"R={s['planet_radius']:g} Nside={s['field_nside']} height={s['world_height']:g}"
+        else:
+            height = f" height={s['world_height']:g}" if "world_height" in s else ""
+            world = f"L={s['world_size']:g}{height}"
         print(
             f"run {rd.path}: N={s['n_max']} n_init={s['n_init']} {world} "
             f"weights={s['weight_dtype']} seed={s['seed']} | steps {step} → {step + steps}{mode}",
@@ -779,8 +796,9 @@ def _agent_info(uid: int, s: State | State3, cfg: Config, rd: RunDir | None) -> 
         info["age"] = step - 1 - int(a["birth_step"])
         info["fields"] = {k: v.tolist() for k, v in a.items()}
         if dims(cfg).d3:
-            info["height"] = float(a["pos"][2])
-            info["grounded"] = float(a["pos"][2]) <= dims(cfg).z_ground
+            height = float(host_geometry(cfg).height(a["pos"]))  # |pos| − Rp on a sphere, pos[2] in a box
+            info["height"] = height
+            info["grounded"] = height <= dims(cfg).z_ground
         info["bonds"] = [
             {"slot": b, "row": p, "uid": int(host["uid"][p])}
             for b, p in enumerate(a["partner"].tolist())
@@ -1475,6 +1493,7 @@ def _cmd_activity(a: argparse.Namespace) -> int:
     from alife.analysis import report  # local: host-only numpy analysis, kept off the simulation import path
 
     rd = RunDir.open(Path(a.run))
+    config_mod.require_box(rd.config(), "alife activity")  # the analysis reads torus positions (PR S5)
     out = Path(a.out) if a.out else rd.path / "activity"
     st = report.Settings(
         grid_every=a.grid,
@@ -1578,7 +1597,7 @@ def _bench_play(a: argparse.Namespace) -> dict[str, Any]:
 
 
 def _cmd_bench(a: argparse.Namespace) -> int:
-    from alife.bench import run_bench
+    from alife.bench import run_bench, steady_overrides, steady_summary
 
     if a.play:
         report = _bench_play(a)
@@ -1592,7 +1611,8 @@ def _cmd_bench(a: argparse.Namespace) -> int:
             print("play bench: a played world's final state differs from the plain run's", file=sys.stderr)
             return int(ExitCode.ERROR)
         return int(ExitCode.OK)
-    cfg = load_config(preset=a.preset, overlays=a.overlay, overrides=a.set)
+    steady = steady_overrides(a.alive) if a.alive else []
+    cfg = load_config(preset=a.preset, overlays=a.overlay, overrides=[*(a.set or ()), *steady])
     _knn_guard(cfg)
     report = run_bench(
         cfg,
@@ -1611,6 +1631,8 @@ def _cmd_bench(a: argparse.Namespace) -> int:
         comm_arm=a.comm,
         niche_arm=a.niche,
     )
+    if a.alive:
+        report["steady"] = steady_summary(report, a.alive)
     text = _dumps(report)
     if a.json is not None:
         out = Path(a.json)
@@ -1978,6 +2000,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--steps", type=_positive, default=None, help="timed steps (default 200; 2000 with --play)"
     )
     p.add_argument("--warmup", type=_non_negative, default=20)
+    p.add_argument(
+        "--alive",
+        type=_positive,
+        default=None,
+        metavar="N",
+        help="a steady scene of N alive agents (n_init = N, n_max = 1.5625 N, births off): the instrument of "
+        "the per-alive-agent comparison of a sphere and a box world (DESIGN 46.10)",
+    )
     p.add_argument("--stages", action="store_true")
     p.add_argument("--determinism", action="store_true")
     p.add_argument("--brain-variants", action="store_true")

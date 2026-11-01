@@ -125,11 +125,15 @@ def layer_index(pos: mx.array, rp3: Any, dv: Any, layers: Any) -> mx.array:
     return mx.clip(mx.floor((p3 - rp3) / dv).astype(_I32), 0, layers - 1)
 
 
+def hash_layer(pos: mx.array, rp: Any, th: Any, gz: Any) -> mx.array:
+    """Equal-thickness hash layer ``clip(floor(z/T_h), 0, G_z−1)``, ``z = |pos| − Rp``, (...,) int32."""
+    return mx.clip(mx.floor((radius_of(pos) - rp) / th).astype(_I32), 0, gz - 1)
+
+
 def hash_cell(pos: mx.array, alive: mx.array, rp: Any, th: Any, gz: Any, nside_h: Any) -> mx.array:
     """Hash cell id ``clip(floor(z/T_h), 0, G_z−1)·Npix_h + pixel`` (equal-thickness radial layers); dead
     rows get the sentinel ``Npix_h·G_z`` (one past the last cell)."""
-    z = radius_of(pos) - rp
-    lay = mx.clip(mx.floor(z / th).astype(_I32), 0, gz - 1)
+    lay = hash_layer(pos, rp, th, gz)
     npix_h = 12 * nside_h * nside_h
     return mx.where(alive, lay * npix_h + ang2pix(pos, nside_h), npix_h * gz).astype(_I32)
 

@@ -130,16 +130,20 @@ DESIGN §33.1.15 (and the GUI contract of the PR); the registry rows carry `dump
 stamps of farming (a state field and a hashed key, so not observer-only), the colour modes `arms`, `lock`, `voice`, `soil`, the inspector
 rows, the GUI, the `FARS` record. Next: the GUI PRs (S3, B3 overlay, C2 panel, A6, F3), then the analysis modules and the runs.
 
-## The true sphere: S0, geometry and guards (DESIGN §46, row I77)
+## The true sphere: S0 geometry and guards, S1 fields, S2 agents (DESIGN §46, row I77)
 
 The owner asked for a true sphere (`world.geometry = "sphere"`: HEALPix cells on a planet, radial gravity, Cartesian agents), built in PRs S0 to S7. S0 is merged-ready and runs nothing:
 `src/alife/geom.py` (host: the HEALPix scheme, the exact neighbour tables, the exact coverage of the hash stencils and the `Nh`/`C` derivations, the equal-volume layers, the host accessors),
 `src/alife/sphere.py` (device: the float32 lookup, `move`, the device accessors), the five config keys (`config.SPHERE_KEYS`, omitted from `config.json` at their defaults), the geometry lint with
 `tests/geometry_allowlist.py` (the audit of the box-geometry consumers, a ratchet; each PR of the series bumps `CURRENT_PR` and deletes the entries it converts), and the oracle `tests/hp_oracle.py`
-(the review's independent HEALPix), plus `docs/SPHERE.md` (the series specification, revision 1). `validate` refuses a sphere (`config.GEOMETRY_SUPPORTED = ("box",)`) until S2. S1 (sphere fields, DESIGN §46.5, `src/alife/fieldtab.py` + `fields_sph.py`, `ops.int_diffuse_sph` / `check_diffusion_tables`, `StateS`) is built on top and
+(the review's independent HEALPix), plus `docs/SPHERE.md` (the series specification, revision 1). S1 (sphere fields, DESIGN §46.5, `src/alife/fieldtab.py` + `fields_sph.py`, `ops.int_diffuse_sph` / `check_diffusion_tables`, `StateS`) is built on top and
 also runs nothing: the resource step is an int64 flux with symmetric geometric weights (`resource_diffusion_q8 <= 11 / 11 / 14` on tiny3s / mini3s / 64k3s, verified exhaustively by `validate`), the chemicals are sub-stepped, the patches
-rotate about a stored angular velocity, and `fields.py` dispatches to the sphere on `dims(cfg).sph`. Next: S2 (agents, search,
-`tiny3s`; needs the compile-collision guard `fix/mlx-compile-collision` merged, or the subprocess fallback of DESIGN §46.11).
+rotate about a stored angular velocity, and `fields.py` dispatches to the sphere on `dims(cfg).sph`.
+**S2 (agents on the sphere, DESIGN §46.3, §46.4) makes the dry sphere run**: `alife run --preset tiny3s` (and `resume`, `bench`, `inspect`) work; the reach-2 neighbour search (`spatial._find_neighbors_sph`, its Metal kernel
+`knn_metal.scan_select_sph`), `physics.forces_s`/`integrate_s` (radial gravity, floor, hard lid, optional soft band), sensing in the body frame of `hdg` and the local up, births a chord `D` behind the parent, the
+catastrophe cap, `invariants` (norm, tangent, radius), `tiny3s`, the readiness gates (`config.SPHERE_READY`: weather S4, the five features S3, director/observers S5 are refused with their PR), the rotation-equivariance
+harness (`tests/sphere_rotation.py`) and `sphere_check` (the compile-collision self-check of a compiled sphere step; the guard branch `fix/mlx-compile-collision` is still unmerged). The S2 stop rule
+(search per alive agent over 2x `mini3d`'s) is exceeded by the literal metric at the volume-matched `mini3s` (2.09x, §46.10) and not elsewhere; it is the owner's call. Next: S3 (the five features on the sphere), S4 (weather).
 
 ## How to run
 

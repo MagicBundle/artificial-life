@@ -198,11 +198,17 @@ def test_require_2d_message(micro_cfg: Config) -> None:
 @pytest.mark.parametrize("preset", PRESETS)
 @pytest.mark.parametrize("overlays", [(), ("fast",)])
 def test_one_schema(preset: str, overlays: tuple[str, ...]) -> None:
+    if (
+        preset == "tiny3s" and overlays
+    ):  # the fast overlay's cell_capacity 12 cannot cover a sphere's lid cell
+        pytest.skip("a sphere refuses the fast overlay (tests/test_config.py)")
     cfg = load_config(preset=preset, overlays=overlays)
     assert runio._expected_layout is state.expected_layout
     spec = state.expected_layout(cfg)
     assert runio._expected_layout(cfg) == spec
     want = state.State3 if is_3d(cfg) else state.State  # State3 for tiny3d (PR 3)
+    if cfg.world.geometry == "sphere":  # StateS for tiny3s (sphere series S2)
+        want = state.StateS
     assert state.state_cls(cfg) is want and tuple(spec) == want._fields
 
 
