@@ -481,8 +481,26 @@ timer while a world page is visible. Dangling entries on an unmounted drive are 
 4. **Orphans.** `RunController.shutdown()` today only calls `stop()` (RunController.swift:570-574), which is guarded by `!stopRequested` and `job == .run` (:446), so after the gate's 40 s a run
    (and an unfinished `uv sync`/`inspect`) is **left running**. New rule: after the user chose Stop and Quit, `shutdown()` escalates: SIGTERM to the run job and to any setup/check job (the same SIGTERM
    `forceStop` uses), losing at most the steps since the last save point, which the confirmation text states. `StreamController.shutdown()` already terminates its processes (StreamController.swift:133-140).
-5. **Spike S2 [U]:** whether an `NSPanel` displays and updates while `applicationShouldTerminate` has returned `.terminateLater` (the run loop is in a modal-style mode). Fallback: show the panel and keep
-   it running during the *confirmation* phase (before returning `.terminateLater`), drive the quit from a `terminate(nil)` re-entry once the processes are gone, and update the Dock tile badge as progress.
+5. **Spike S2, done 2026-11-01 (PR-A): it passes; the fallback is not needed.** In the running app (the debug binary a `swift run` starts, a private
+   preferences suite, a real run going, Cmd-Q then Stop and Quit, the engine made slow to save): `applicationShouldTerminate` returned `.terminateLater`
+   and the run loop then ran in `NSModalPanelRunLoopMode` (49 of 50 samples; the one other was taken before the quit); main-queue blocks, `Task.sleep` and
+   so the gate's polling kept running in it (50 of 50); the `NSPanel` (`QuitPanel`, `worksWhenModal`, level `.floating`) was on screen for 40 s (window-server
+   list: on screen, layer 3; `occlusionState` visible); its text changed every second ("Elapsed 0 s" to "Elapsed 39 s", 40 distinct values); 47 captures of the
+   panel as the window server composes it were all different (the elapsed text and the spinner), and one read by eye shows the title, the spinner, the
+   elapsed time and, after 10 s, the warning line and the **Quit now without saving** button; a mouse-down and mouse-up pair posted to the application's
+   event queue at the button's centre ran its action (`abandonWait()`: the app replied at once, `applicationWillTerminate` sent SIGTERM, and no process of the build was left).
+   **Limits of the evidence.** The actions were injected in the process (a dylib loaded into the debug binary, kept outside the repository): the click was a
+   posted event, not a hardware one, and Cmd-Q was `NSApp.terminate(nil)`, which is what the menu item calls. The Dock's Quit and a system logout were not exercised;
+   the display session was awake for those runs but twice went to sleep during the day (windows then report themselves occluded and draw nothing), which is
+   why the evidence comes from the runs where it was awake. The fallback (panel during the confirmation phase, a `terminate(nil)` re-entry, the Dock badge) is
+   not built; it stays written here in case a later macOS changes this.
+
+**As built in PR-A** (differences from the steps above, each small): (a) the question says "continue it later from the Lab with Mode: Resume" because *Keep growing* does not
+exist before PR-D (the wording changes with the rename); (b) it is not asked when the run is already stopping (the user pressed Stop) or while a wait is in progress,
+and Cancel is the default button, Stop and Quit the destructive one; (c) `onWaiting` carries the elapsed time only: the delegate knows which worlds and run are
+being saved (`PlayController.retiredWorlds`, `RunController.runningRunName`); (d) the panel appears 0.4 s into the wait, so a save that is instant shows nothing;
+(e) `shutdown` has a parameter, `escalating`, which the delegate sets from `LaunchPlan.quitWaitsForRun`; without it the old behaviour (one SIGINT) is unchanged;
+(f) a setup (`uv sync`) or a check job is not asked about and not waited for; it is ended with SIGTERM at the last step, as the text above says.
 
 ---
 
@@ -599,7 +617,7 @@ gives a better list than guesses, and renderer work has its own tests and branch
 | Risk | Mitigation |
 |---|---|
 | The Metal view cannot be kept across pages, or the key monitor leaks | spike S1 with pass criteria and two fallbacks (§2.4); the key gate and its test are needed in all variants |
-| `.terminateLater` shows no panel | spike S2, fallback in §5.4 |
+| `.terminateLater` shows no panel | spike S2 passed (§5.4 item 5); fallback kept written |
 | `Window` + `@SceneStorage` + Dock reopen unproven | spike S3; `applicationShouldHandleReopen`; D3 falls back to B |
 | Pause-on-leave surprises | D4; Settings toggle; chip "Paused (you left)" |
 | Quit now waits and may escalate to SIGTERM | confirmation states the loss; saves are atomic (runio.py:253-265) |
@@ -650,7 +668,7 @@ gives a better list than guesses, and renderer work has its own tests and branch
 ## 11. Verified and not verified
 Verified by reading: everything with a `file:line`, including the review's claims I rechecked (key monitors, delivery closures, `tiny3s` steps, lock behaviour, `shutdown()` guard, attention predicate, test pins, counts).
 Not verified: any running behaviour of the app (windows, menus, Dock, restoration, quit panel); `NavigationSplitView` with a Metal view (S1); `.terminateLater` drawing (S2); `@SceneStorage` and Dock reopen in a lone `Window` (S3);
-the engine end to end (`alife play --preset`, warm-up times, a played flat world); TCC behaviour; `alife --help` as a health check; the 10 s write-activity heuristic; that the hidden canvas's draw loop can be paused.
+the engine end to end (`alife play --preset`, warm-up times, a played flat world); TCC behaviour; `alife --help` as a health check; the 10 s write-activity heuristic; that the hidden canvas's draw loop can be paused. Since PR-A: `.terminateLater` drawing is verified in the running app (S2, §5.4 item 5), with the limits stated there.
 
 ---
 

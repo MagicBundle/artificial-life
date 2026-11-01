@@ -762,7 +762,24 @@ unit (§37.4).
   4. fork pre-fill from a run with seasons on, including setting a lever back to its default;
   5. the stop-after timer at 1 minute;
   6. Inspect, the viewer and Reveal in Finder;
-  7. ⌘Q during a run: the engine still writes its checkpoint.
+  7. ⌘Q during a run: since PR-A of the one-app program (`docs/APP.md`) it first asks "Stop 'X' and quit?"; Stop and Quit makes
+     the engine write its checkpoint (the run's `meta.json` says `interrupted`, `checkpoints/LATEST` is the last step), see the PR-A list below.
+- **Click-through list for PR-A of the one-app program** (the owner's hands; `docs/APP.md` §5.4 and §7; both apps, Lab and Storm Worlds;
+  tiny preset; the headless checks, the unit tests and the scenarios driven inside the process are in DESIGN row I81, what no one has done
+  is a real mouse, the Dock and a logout):
+  1. Start a `tiny` run in the Lab, press Command-Q: the question "Stop 'run-...' and quit?" appears with Cancel as the default.
+     Cancel: the app and the run go on, nothing else changed.
+  2. Quit again and choose Stop and Quit: a short wait, the app quits, `runs/NAME/meta.json` says `interrupted`, `alife` is no longer
+     in Activity Monitor.
+  3. With a long `256k` run (so that the save takes seconds): Stop and Quit shows the small panel "Saving run '...'", the elapsed time, the spinner;
+     after 10 s the button **Quit now without saving** and a line saying what it costs. Click it: the app quits at once and the run is gone from
+     Activity Monitor (it keeps its last periodic save point).
+  4. Close the Lab window while a run goes (the last window): the same question appears with no window behind it; the panel appears too.
+  5. Play a world (Storm Worlds, or `--world NAME` in the Lab) and quit: no question (nothing is lost), the panel only if the save takes
+     more than a moment, and after 10 s the button with "up to about 7 minutes of play at 1x"; the world resumes from its save.
+  6. In either app with the stored folder removed and nothing in `~/artificial-life` or `~/alife`: the Repository box says that no folder is
+     chosen (no folder name of the owner's is shown) and a line beside the grey Start says why; with the engine in `~/alife` it is found by itself.
+  7. Command-R starts the run in the Lab (and not while a run is going or the form is invalid).
 - **3D viewer click-through checklist** (3D PR 5, to add to the checklist above; `gui/README.md`, DESIGN §27.12; not yet
   run by the owner; use the `tiny3d` preset, and `tiny` for the 2D items; run the GPU tests first with the GPU free:
   `cd gui && ALIFE_GPU_TESTS=1 swift test --filter GPURenderTests`, which prints where the PNGs went):

@@ -25,11 +25,20 @@ swift build -c release   # optional; binary in .build/release/AlifeControl
 
 Or open it in Xcode: `cd gui && open Package.swift`, select the `AlifeControl` scheme and run.
 
-On first launch pick the repository folder (default `~/artificial-life`); the choice is remembered. If the remembered
-folder no longer exists (a deleted git worktree, say), the app starts with `~/artificial-life` when that holds
+On first launch the app looks for the repository in the remembered folder and then in `~/artificial-life` and `~/alife`
+(the first that holds `.venv/bin/alife`); with none of them it names no folder and says so: "No repository folder is chosen
+yet. Choose the folder that holds .venv/bin/alife". The choice is remembered. If the remembered
+folder no longer exists (a deleted git worktree, say), the app starts with the first of those that holds
 `.venv/bin/alife` and logs one line saying so; otherwise the Repository box says "Folder not found: <path>. Choose the
 repository folder.", and Start and **Set up environment** log that message instead of launching anything. A remembered
-folder that exists is never replaced.
+folder that exists is never replaced. While Start is grey a line beside it says why (the folder, the missing engine, or the
+first thing wrong with the settings); **Command-R** starts the run.
+
+**Quitting.** With a research run going, Quit (and closing the last window) first asks "Stop 'X' and quit?"; Cancel changes
+nothing. Stop and Quit sends the run its one SIGINT and waits for it to write its save point, as it does for a played world,
+with a small panel ("Saving ...", the elapsed time, and after 10 s **Quit now without saving**, which says what it costs).
+If the engine has not gone after 40 s, or you chose Quit now, it is ended with SIGTERM before the app quits, so no run is left
+behind; it then loses the steps since its last save point. Both apps (the Lab and Storm Worlds) do this.
 
 ## Install as an app
 
@@ -66,7 +75,7 @@ API key kept in a keychain profile) and `xcrun stapler staple`; the commands are
 in-app updater and a notarized standalone Storm Worlds (with the engine bundled, so that it needs no repository) are later steps.
 The App Store would also need the engine embedded and sandboxed.
 
-Both apps are only front ends: they use the repository's `.venv` at the configured repo path (default `~/artificial-life`).
+Both apps are only front ends: they use the repository's `.venv` at the configured repo path (found in `~/artificial-life` or `~/alife` when none is set).
 **The two share that setting**, so it is chosen once, in either: the bundles keep it in the shared preferences domain
 `io.github.magicbundle.alife` (`RepoPathStore`). The first time an app starts it takes the folder it already had, from its own
 preferences and then from the Lab's (`io.github.magicbundle.alifecontrol`), and copies it into the shared domain, leaving the
