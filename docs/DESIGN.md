@@ -1787,6 +1787,8 @@ artificial-life/
     streamrec.py                 the play stream's record encoders (§33.1): numpy only, in the subscript-assignment lint scan
     play.py                      host: `alife play`'s scheduler, control grammar and presenter, the `runner.Pacer` (§33.2);
                                  in the subscript-assignment lint scan, real time only through its `Clock` (rule 7)
+    geom.py                      host numpy: the sphere world's HEALPix scheme, exact tables, coverage, layers and the host geometry accessors (§46.1, §46.12)
+    sphere.py                    pure MLX: the sphere's device lookup (ang2pix, layers, hash and field cells), `move` and the device accessors (§46.2); §22.6 rule 5
     storms.py                    host: the storm detector and tracker (moved from analysis/w0.py) and `StormLayer`, the
                                  play loop's storm component (§33.3); in the subscript-assignment lint scan
     game/                        the games vertical, build steps G1 (§28) and G2 (§29): observe (pure-MLX observer state and update),
@@ -2453,6 +2455,10 @@ class WorldConfig:
     field_cell: float = 4.0           # FG = size / field_cell (must be an integer ≤ 1024)
     dims: int = 2                     # 2 | 3, static (§27.1); added after v0.1
     height: float = 0.0               # 3D world height (floor z = 0, surface z = height); 0 in 2D
+    geometry: str = "box"             # "box" | "sphere", static (§46.9, SPHERE_KEYS); added after v0.1; refused until S2
+    radius: float = 0.0               # sphere: planet radius Rp (inert in a box)
+    nside: int = 0                    # sphere: HEALPix Nside Nf of the field grid
+    layers: int = 0                   # sphere: FZ equal-volume shell layers
 
 @dataclass(frozen=True)
 class PopulationConfig:
@@ -2496,6 +2502,7 @@ class PhysicsConfig:
     gravity: float = 0.0              # 3D only (§27.3): downward body force; added after v0.1
     floor_eps: float = 0.0            # 3D only: grounded iff z ≤ radius + floor_eps
     buoyancy_max: float = 0.0         # 3D only: upward force at buoy_cap = 1 and full OUT_BUOYANCY; 0 = none
+    ceiling_band: float = 0.0         # sphere only (§46.9): width of the soft band under the lid; 0 = off
 
 @dataclass(frozen=True)
 class BondConfig:
@@ -2686,7 +2693,7 @@ except `run`. **Keys added after v0.1 are omitted from the hash at their default
 `fields.season_amplitude`, `fields.season_mode`, `director.enabled`, `world.dims`, `world.height` (§27.1),
 `physics.gravity`, `physics.floor_eps`, `physics.buoyancy_max`, `mutation.buoy_init`, `mutation.buoy_sigma`,
 `fields.benthic_lambda`, `fields.photic_amp`, `fields.photic_lambda`, `energy.buoyancy_cost`,
-`energy.buoyancy_cap_cost` (§27.1, §27.3–§27.5, §27.7), `game.observe` (§28), `game.house_rate` (§29) and every key of
+`energy.buoyancy_cap_cost` (§27.1, §27.3–§27.5, §27.7), the five sphere keys `world.geometry`, `world.radius`, `world.nside`, `world.layers`, `physics.ceiling_band` (§46.9; also omitted from `config.json` at their defaults), `game.observe` (§28), `game.house_rate` (§29) and every key of
 `weather` (§30.2, §32.2; each changes the compiled step, so none is unhashed); the
 director's policy keys `persona`, `goal`, `rule_every`, `budget_per_100k`, (step 3) `llm_every`, `llm_temperature`, `llm_timeout_s`, `llm_max_tokens` and (§26.11) `yoke_log` are also in the list but are **omitted at every value**, `config.UNHASHED_KEYS`,
 because only `enabled` changes the compiled step). `game.observe`, `game.house_rate` (and since W2 `game.tracers` and `game.tracer_period`, §32.2) are omitted at every value too,
@@ -4653,6 +4660,8 @@ long as R has budget, an unlocked lever and a free cooldown at each yoked step (
 ---
 
 ## 27. 3D world (`world.dims = 3`)
+
+*The 3D box of this section (a torus in x and y, a floor and a lid in z) is unchanged by the sphere world (§46, `world.geometry = "sphere"`): the sphere is a 3D shell on a planet that reuses this section's genome layout, gravity and buoyancy rules, and every sphere key is inert in a box.*
 
 `docs/3D.md` is the design rationale and the six-PR plan (its §10); this section is normative for what is built and
 grows with each PR. PR 1 (§27.1) adds the dims constant and its plumbing only: `validate` still rejects
@@ -13894,6 +13903,147 @@ legend, metrics), `PresetFileTests` (booleans), `StreamReaderTests` (latest-wins
 levers and metrics only), the material on the globe and the minimap, metric charts over time, persisting the three new toggles, a `voice` colour mode, and a launcher
 entry for the overlays in the World launcher (only the Lab's run form has them).
 
+## 46. The sphere world (`world.geometry = "sphere"`; the true-sphere series, PR S0 built)
+
+The owner asked for a true sphere and not a wrapped sheet (2026-10-29). The box is a torus in x and y (`ops.wrap`, `ops.min_image`, `% G` hash seams, `roll` stencils) with a
+floor and a lid in z; its weather "equator" is a sine in y and its GUI globe is a Mercator picture of the torus. This section is the decision record and the normative
+spec of a world whose metric, gravity direction and cell tables are those of a sphere. It is built in eight PRs, S0 to S7; **S0 (this change) builds the geometry and the guards and
+changes no behaviour of a box world** (`config.validate` and `config.dims` gain branches guarded by `world.geometry`): a sphere config is refused by `config.validate` (`GEOMETRY_SUPPORTED = ("box",)`) until S2, and every box world is bit-identical
+(`tests/identity_matrix.py`, the golden digests). The series specification (revision 1, with the independent review that shaped it) is `docs/SPHERE.md`; this section is normative for what is
+built and carries the decisions the later PRs build on (where the two differ, this section wins).
+
+### 46.0 Decisions (owner delegation, recorded as choice C27; D1 to D14 of the spec, accepted as recommended except D10)
+
+| # | decision |
+|---|---|
+| 1 | **Grid: HEALPix, RING ordering, any integer Nside** (`12·N²` equal-area cells). Equal area is what the engine's per-cell integers (regeneration, `R_HARD`, the diffusion equilibrium) assume. Cubed sphere is the later hash optimisation; lat-lon is rejected (cell side shrinks as `cos(lat)`). No tilt of the grid against the planet axis (the polar-cap seams stay in the storm belt for every tilt). |
+| 2 | **Agent state is Cartesian** `pos (N,3)` in the planet frame, height `z = |pos| − Rp`, up `û = pos/|pos|`; the heading is a tangent unit vector `hdg (N,3)`; the scalar `heading` is derived and output only. |
+| 3 | **Motion**: exponential-map step by series (no trig), minimal-rotation transport of `hdg`, mandatory renormalisation (§46.2). |
+| 4 | Radial gravity of constant magnitude; floor = sphere of radius `Rp + r`; hard lid at `Rp + H − r`; optional soft band `physics.ceiling_band` (default 0). |
+| 5 | **Pairs are chords in R³**: `world.size` is the image length of `min_image` and must exceed `4(Rp + H)`, so `min_image` is the identity on pair offsets and no pair expression (bonds, energy, featobs, spatial) changes. |
+| 6 | **Equal-volume radial layers** (`FZ` of them), so every (angular cell, layer) has the same volume. |
+| 7 | **Reach-2 hash only**: 25 angular cells × 5 radial layers, from tables; `Nh` and `C` are derived from the exact tables (§46.1), not constants. |
+| 8 | Weather: collocated finite volume with gradient-corrected faces, Rhie-Chow and a biharmonic filter (S4); it may trail the dry sphere. |
+| 9 | The shell is mapped onto the model atmosphere (`H1 + H2 = 80`) in the weather (S4). |
+| 10 | **3D shell only** (`world.dims = 3`); a surface world is a thin shell. |
+| 11 | Compatibility: `world.geometry = "box"` by default; every new key is POST_V01 and omitted at its default; **no torus-to-sphere checkpoint migration** (owner instruction). |
+| D10 | **Amended**: no `astropy-healpix` dev dependency. The oracle is the reviewer's independent HEALPix implementation (`tests/hp_oracle.py`, credited, with one defensive change) plus combinatorial checks. healpy (GPL-2.0) is not used anywhere. |
+
+Presets (`tiny3s` 36/16, `mini3s` 48/24, `64k3s` 90/40 for `Rp/H`; field Nside 8, 11, 21; `FZ` 8, 12, 18) and the overlay `stormsph` arrive in S2 and S7.
+
+### 46.1 The grid (`src/alife/geom.py`, host, numpy float64; built in S0)
+
+* **Scheme.** `pix2xyf`/`xyf2pix` (RING index ↔ column, row and base facet), `xyf2vec` (continuous facet coordinates to a unit vector), `ang2pix(vec, nside)` (float64 closed form,
+  equatorial belt `|z| <= 2/3` and polar caps), `pix2vec`, from the published formulas (Gorski et al. 2005). `xyf2vec` wraps the longitude **after** dividing by the ring width
+  (a defensive form: in a polar cap, wrapping the numerator by 8 is wrong whenever it is negative at rounding level; the review could not trigger it, and both orders agree on every point tested).
+* **Exact tables** (`tables(nside)`, `Nside >= 2`): corners are identified by integer ring arithmetic, never by rounded coordinates (`vertex_keys`: `(ring, longitude index mod
+  8·width)`; `V = 12N² + 2` vertices, 8 of valence 3 at `z = ±2/3`, `φ = k·90°`, the rest valence 4). `edge[p, 4]` (the pixel across edge k, edges ordered `−y, +x, +y, −x`),
+  `touch[p, 8]` (shared corner; 7 for the 24 pixels around the trivalent vertices; ascending, `−1` padded), `stencil2[p, 25]` (self first, then the pixels within two touching
+  steps; at most 24 more), `fan[p, 8]` (the touching ring counter-clockwise from local east) and `fan_triangles`, `lsq_weights(nside, "edge" | "touch")` (tangent least-squares gradient,
+  float64, per radian) and `lsq_condition` (8-neighbour conditioning: max 2.2, mean 1.3 at Nside 24), `parent_table`/`children_table` (the grid of Nside `r·N` refines the grid of
+  Nside `N` exactly for **any** integer `r`: the parent is `(ix // r, iy // r, face)`), `greedy_colouring` (the graph of pixels within two touching steps; two greedy orders;
+  15, 16, 15 colours at Nside 8, 11, 21 against a lower bound of 9; S3 may minimise).
+* **Exact coverage** (`coverage(nside, reach)`, reach 1 or 2, cached, about 3 s at Nside 21): per cell, the geodesic distance between the boundary of the cell and the boundary of
+  its stencil union, minimised over pairs of pixel edges (curves, not great arcs): 16-sample bracketing of every cell edge against every boundary edge of the union, then nested
+  golden-section refinement of the pairs within 0.005 cell sides of the pixel's coarse minimum (end points included, so a minimum at a vertex is exact). It returns the angle, in
+  units of `sqrt(4π/Npix)` as `min_rel`, and the witness pair of boundary points. Reproduces the review's numbers (in geodesic angle, 0.1 to 0.2 % above its chords): reach 2 at Nside
+  21, 11, 8 = 1.385, 1.407, 1.423; reach 1 at Nside 21, 4 = 0.685, 0.712. The sampled implementation of the review agrees cell by cell (the exact value never exceeds it and is
+  within 5e-4 sides).
+* **`Nh`** (`derive_nh(radius, r, sense)`): the largest Nside whose exact reach-2 coverage angle `cov·sqrt(4π/Npix)` is at least the **rigorous angle**
+  `2·asin(R / (2·r_lo))`, `r_lo = Rp + r` (two bodies closer than `R`, both at least `r_lo` from the centre, subtend at most that angle; equal radii at the floor are the worst case).
+  `derive_nh` reads `min_coverage_angle(Nside)`: the in-process memo, then the **shipped table** `src/alife/data/healpix_coverage_reach2.json` (the exact reach-2 angle for
+  Nside 2..72, regenerated by `tests/test_geom_coverage.py`'s sample check when `COVERAGE_ALGORITHM` changes), then a persistent disk cache (`$ALIFE_CACHE_DIR` or `~/.cache/alife/geom`), then the exact
+  computation (about 3.5 s at Nside 21, 40 s at 64). With the table every preset derivation is instant (it was 6 s for `64k3s` and 77 s for Rp 255). `validate` refuses `Nh > NH_MAX = 64` and `Nh < 2`. The presets give `Nh = Nf` (8, 11, 21) with margins 12.0 %,
+  6.8 %, 2.3 % over the rigorous angle (`hash_margin`).
+* **Hash layers and `C`**: `G_z = floor(2H/R)` layers of thickness `T_h = H/G_z >= R/2` (5, 8, 13 in the presets); the lid cell has volume `Ω_cell·r_top²·T_h` and
+  `min_cell_capacity = ceil(0.167·V_lid) + 4` (28, 27, 25), the validated lower bound of `sensing.cell_capacity` (the presets use 32).
+* **Equal-volume layers**: `r_k³ = Rp³ + k·(r_top³ − Rp³)/FZ` (`layer_radii`, `layer_edges`), `layer_of(ρ) = clip(floor((ρ³ − Rp³)/ΔV), 0, FZ−1)` (an interface belongs to the layer above),
+  cell volume `(4π/3)(r_top³ − Rp³)/(Npix·FZ)` (63 to 65 in the presets against the box's 64).
+
+### 46.2 The device lookup and the motion (`src/alife/sphere.py`, pure MLX; built in S0, used from S2)
+
+* `ang2pix(pos, nside)` in float32: both branches evaluated and selected, `1 − |z| = s2/(1 + |z|)` with `s2 = (x² + y²)/r²` (stable at the poles), integer ring arithmetic, indices clipped to
+  `[0, Npix)`. **Contract**: it equals the float64 host value except where a point is within float32 rounding of a pixel boundary, and then it returns an **adjacent (touching)** pixel
+  (measured 2e-6 to 1.6e-5 of random points at Nside 5 to 64, CPU and Metal alike; never out of range; every pixel centre round-trips). The hash stencil covers a tie by the coverage margin
+  and a field cell is a bin. `pix2vec` (closed form), `layer_index`, `hash_cell` (dead rows get the sentinel `Npix_h·G_z`), `field_cell` (`layer·Npix + pixel`, z-major).
+  Every scalar parameter may be a Python number or a 0-d `mx.array`.
+* `move(pos, hdg, v, turn, r_lo, r_hi)`: with `w = vt/|pos|`, `σ² = w·w`, `c = 1 − σ²/2 + σ⁴/24`, `s = 1 − σ²/6 + σ⁴/120` (`|σ| <= 0.011`; no trig, no division by `|vt|`, so `vt = 0` is
+  exact), `û' = normalise(c·û + s·w)`; the distance changes by the radial part and is clamped to `[r_lo, r_hi]` (`at_floor`, `at_lid`; the clamped row's radial velocity is zeroed);
+  the heading is transported by the minimal rotation `û → û'` with axis `k = s·(û × w)` and cosine `c` (`hdg + k×hdg + k×(k×hdg)/(1 + c)`: no cancellation of two nearly equal unit
+  vectors), turned about the new up and **renormalised** (`hdg − (hdg·û')û'`, then to unit length). Without the renormalisation `||hdg| − 1|` drifts (0.11 after 3·10^5 steps in the
+  probe; the test shows > 5e-6 after 3 000 against < 4e-7 with it). `bearing(hdg, pos)` is the compass angle from local north in `[−π, π)` (a different convention from the box's
+  heading angle; x̂ replaces east at the poles).
+
+### 46.9 Configuration, validation, compatibility
+
+* **Keys** (`config.SPHERE_KEYS`, all `POST_V01_KEYS` and `SERIAL_OMIT_KEYS`, so a box run's `config.json`, checkpoint metadata and `config_hash` are byte-identical to before): `world.geometry`
+  (`"box"`), `world.radius` (0), `world.nside` (0), `world.layers` (0), `physics.ceiling_band` (0). In a box world the last four must keep their default ("inert while
+  world.geometry is box"). `world.height` and `weather.cells` are existing keys. There is no `hash_reach` key and no tilt key. `tests/test_gui_sync.py::test_the_sphere_levers_cover_the_sphere_keys`
+  compares the Swift levers with `SPHERE_KEYS` and a command-line-only set (all five until the sphere GUI, S6).
+* **`config.GEOMETRY_SUPPORTED = ("box",)`**, read at call time: a sphere config is refused with "world.geometry = 'sphere' is not enabled yet" until S2 widens it.
+* **Sphere rules** (`config._validate_sphere`, applied when `geometry = "sphere"`), **ordered by cost and total**: the refusal comes first and alone; the arithmetic rules next, every derived quantity
+  bounded before use (a typo such as `layers = 10^11` or `radius = 1e200` is a `ConfigError`, never an allocation or an overflow); the exact hash derivation only for a config that passed them all.
+  `world.dims = 3`; `radius` finite and in `[20, 1e6]`; `height > 2r`, `height <= radius` (a thin shell bounds the
+  area ratio by 4 and the lid occupancy), `height − 2r >= 2·repro.offspring_distance`; `size > 4(radius + height)`; `sensing.radius < 2(radius + physics.radius)` (a hash cannot cover a planet smaller than the sensing ball); `nside >= 2` (a pixel of Nside 1 has 6 touching neighbours), `layers >= 2`;
+  `physics.floor_eps >= 0.01` and `r + floor_eps < z_1`; cell volume in `[0.4, 2.5]·field_cell³`; `layers·12·nside² <= 2^20` (`exact_sum`); `Nh` derived and in `[2, 64]`; `G_z >= 1`;
+  `cell_capacity >= min_cell_capacity`; `k_neighbors <= 125·C` (`Q = 125·C` candidates); `0 <= ceiling_band < height − 2r`. The box lattice rules (`G_h >= 3`, `FG`, `FZ = height/field_cell`,
+  `2·height <= size`, the 3D diffusion limits `resource_diffusion_q8 <= 42` and `chem_diffusion <= 1/6`) are skipped. **Not yet** (later PRs): the diffusion tables and bounds (S1), the feature set a
+  sphere run may enable, `SPHERE_READY` (S2), the weather rules (S4).
+* **`Dims`** gains `sph, radius, nside, npix, nside_h, npix_h, r_lo, r_hi` with box-neutral defaults (False, 0, ...). On a sphere `fg = g_hash = 0`, `cell_hash = inf` (so a raw lattice read fails
+  loudly), `fz = layers`, `n_cells = FZ·Npix`, `field_shape = (FZ, Npix)`, `q = 125·C`, `g_hash_z`/`cell_hash_z` the radial hash layers, `r_lo = f32(Rp + z_lo)`, `r_hi = f32(Rp + z_hi)`; `d3` stays true.
+* **Checkpoints and the missing migration** (S2 onward): a sphere checkpoint records `geometry`; cross-geometry resume is refused, and the fork guard (`cli`, S0) already compares `geometry`, `radius`, `nside` and `layers` with the source's, besides `dims` and `height`; no state of a box world carries over (different
+  volume, curvature and density at the lid), so results do not transfer numerically.
+
+### 46.11 Tests (S0)
+
+`test_geom_healpix` (round trips over Nside 2 to 64; equal area by quadrature and by lattice counts; Euler vertex count, valences, 4 edge and 8 / 7 touching neighbours, symmetry, the 24 pixels;
+vertex keys against the float geometry; every table against the oracle's rounded-coordinate neighbours; the fan; LSQ weights; the exact refinement for ratios 2, 3, 4, 6, 8; the colouring),
+`test_geom_coverage` (the numbers above; exact versus the sampled oracle cell by cell; the witnesses; balls of the coverage radius by brute force; the rigorous angle by a grid search; `Nh`
+of the three presets and its margins; **F13 at the margin**: an agent at the extreme point of the worst cell, on the floor, finds a partner at `R − 10⁻³` in 720 directions, and with the
+sensing radius whose angle equals the coverage the partner at +1 % leaves the stencil; layers; the `C` rule), `test_sphere_device` (float32 against float64 on CPU and Metal: ties are
+adjacent, poles, the 8 trivalent and 4 equatorial vertices, ring boundaries, pixel edges, `pix2vec`, layers, hash and field cells; a **compiled** lookup with Nside, `Rp³`, `ΔV` and `FZ` as runtime
+`mx.array` inputs in a permuted order, equal to eager), `test_sphere_motion` (one step against the exact float64 map, the pole, the clamps, 1 500 steps against float64 with the invariants of
+§46.2, the necessity of the renormalisation, the **holonomy** of the octant triangle = π/2, the flat limit, the bearing), `test_geometry_accessors` (the device `Box` is today's expressions bit for bit;
+host and device agree; `min_image` is the identity by value on the pair offsets of a sphere scene), `test_config_sphere` (defaults, base hashes pinned as literals, the omitted keys, every rule's message, the
+refusal, inert keys), `test_lint` (below). **Compile-collision fallback** (spec 10.1; the guard branch `fix/mlx-compile-collision` is not merged): S0 tests are eager and the one compiled test passes
+its constants as runtime arrays; S2 needs the guard or the subprocess-per-configuration fallback.
+
+### 46.12 The consumer guard (S0)
+
+The Cartesian state keeps `pos[:, 2]`, `vel[:, 2]`, `pos[:, :2]`, `ops.wrap*`, `ops.min_image`, `world.size`, `world.height` and the box lattice type-checking in every consumer outside the pair code.
+Four mechanisms: (1) **accessors**, `geom.geometry(cfg)` (host) and `sphere.geometry(cfg)` (device) returning `Box` or `Sphere`: `height`, `up`, `radial`, `tangent`, `displacement` (the box's
+`min_image`, a plain difference on a sphere), `distance` (chord), `arc`, `cell_of`, `bearing`, and on the host `centroid`; the `Box` methods are today's expressions written once, so converting a consumer is
+bit-identical; (2) the **geometry lint**, `tests/test_lint.py` with the AST scanner `tests/geometry_scan.py` against `tests/geometry_allowlist.py`, a ratchet over seven patterns. The scanner flags every
+subscript whose last index is the constant `2`, `2:` or `:2` on any array (and `-1`, a bare `[2]`, `take`/`split` and `x, y, z = p.T` on position-like values: identifiers with a `pos`/`vel`/`position`/`velocity`
+token, string keys such as `a["pos"]`, and names assigned from them, to a fixpoint); `ops.wrap`, `wrap_xy_clamp_z`, `min_image` through any alias of the `ops` module or by imported name, the host torus helpers
+`min_image_np`, `circular_mean`, `_wrap`, and the hand-written forms `d - L*round(d/L)` and `x % size`; `world.size/height/field_cell` on `world`, on any name bound to a `....world` section or on a parameter annotated
+`WorldConfig`; and the lattice attributes. It cannot find an arbitrary re-implementation under other names, which is what the rotation test is for. The files that define the geometry (`config.py`, `ops.py`,
+`geom.py`, `sphere.py`) are not counted. The allowlist has 148 entries (file, pattern, count, reason, and for `converted` the PR that must delete it; `CURRENT_PR` is bumped by every PR and a test checks it against the
+"built" row of §46.13); an unlisted or larger count fails, and so does a stale smaller one. `AUDIT` in the same file is the audit table of `docs/SPHERE.md` 2.9 file by file with the reason and PR it assigns:
+`test_the_allowlist_agrees_with_the_spec_audit` requires each audited file to be listed so, or to be named in `NO_RAW_USE_TODAY` (`energy.py`, `featobs.py`, `weather_obs.py`, `weather_spinup.py`, `groups.py`,
+`streamrec.py`, `game/kinthreads.py`, `game/housefile.py`, `migrate.py`: the spec counts uses there that none of the seven patterns matches), and every other listed file to be named in `NOT_IN_SPEC_AUDIT` (`step.py`,
+`analysis/activity.py`, four more `analysis/emergence` files: found by the lint, absent from the spec's table). (3) A **rotation-equivariance test** of every consumer that does not depend on the planet axis (S2, extended
+by each converting PR). (4) **Readiness gates** `SPHERE_READY` (S2): `validate` refuses what is not yet converted, naming the PR. Converting PRs: S1 `fields`, `state`; S2 `physics`, `sensing`, `lifecycle`,
+`invariants`, `step`, `bench`, `migrate`; S3 `structures`, `niche`, `ext/*`; S4 `weather`, `analysis/w0`, `w2`; S5 observers, stream, play, cli, runio, game, director, labels, metrics, `storms`, `tracking`.
+
+### 46.13 Build plan and what S0 left open
+
+| PR | content | state |
+|---|---|---|
+| S0 | geometry and guards (this section) | built |
+| S1 | `StateS`, sphere fields: fertility, int64-flux resource diffusion with geometric weights and `check_diffusion_tables`, chemical sub-stepping, deposit/harvest, conductance tables | next |
+| S2 | agents: forces, integration, search (`_find_neighbors_sph`, Metal variant), sensing, lifecycle, invariants, step wiring, `tiny3s`, `GEOMETRY_SUPPORTED` widened, `SPHERE_READY`; prerequisite: the compile-collision guard (or its fallback) | |
+| S3 | structures, niche, comm, bonds that pay, arms on the sphere | |
+| S4 | weather: prototype and gates S4a, MLX port S4b, calibration S4c | |
+| S5 | observers, stream v2, dumps, game layer, director | |
+| S6 | GUI: a sphere renderer | |
+| S7 | presets, calibration, `docs/RESULTS_SPHERE.md` (`docs/SPHERE.md` is the specification, committed with S0) | |
+
+Open after S0 (a checklist for S1 and S2): the real cost of the 125-run stencil in the Metal kernel (the S2 stop rule is 2x `mini3d` per alive agent); which `lsq_weights` the gradient inputs use (the spec's table
+`W (Npix, 4, 3)` is the `"edge"` kind; the quoted conditioning belongs to the `"touch"` kind, 8 neighbours; S1 chooses and states which); S1 bumps `CURRENT_PR` and deletes the `fields.py`, `state.py` entries; S2's
+`full_check` of the derived `heading` compares circularly (the host maps a bearing `>= π` to `−π`, the device `>= π − 1e-6`) and its CPU-versus-Metal gate expects `hdg` to differ by about 2e-7 per step while `pos` is
+bit-identical; `sphere.move` expects dead rows nonzero; the compile-collision guard (or its fallback) before the first compiled sphere step; whether `knn` needs vertex tables beyond `stencil2`.
+
 ## Review log
 
 Each critic issue was verified against the text and, where it made a numeric claim, re-run in
@@ -14008,6 +14158,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I74 | feat: the observer PR of the five-feature series (S2 built structures, A2 arms races, B3 bonds, C2 communication, F2 farming; owner request 2026-10-29; new text in §38.9, §39.8, §40.6, §41.14, §42.6, §33.1.15 and §43.5): the observer channel, the stream records, the dumps and the metrics of the five engine PRs (#54 to #57), **no trajectory change** (the identity matrix against `e64be03` is bit-identical; observing a feature world changes no state value, CPU and Metal). (1) **Structures (S2).** `Acts.ext.structures = (build, cover)` and `ActFlag.BUILDING`; the **label/tracer drift audit**: `game.observe`, `analysis.labels`, `game.tracers` (both uses) and `analysis.emergence.record` called `weather.agent_drift` without the shelter, so a labelled run with weather and structures read a wind drift 1/(1 - shelter_gain) too large inside material; they now call `structures.drift_at` (the engine's shelter factor and barrier factor; `ObsIn.mat`), and the metrics' storm-exposure speed is sheltered (`sheltered_speed_at`), pinned by the ratio of the engine's velocity in empty, partial and full cells (default barrier, R3 on and off, 2D and 3D) to `(1 - shelter_gain·here)/(1 + barrier_gain·here)`; the record `STRC` (sparse z-major cells, `1 + 254·m//cap` levels, at most 65 536 cells), `play.structures`, the `mat` dump (`run.mat_every`) and the `build_here_mean`, `build_in_frac`, `build_cover_mean`, `build_mat_max` snapshot keys. (2) **Arms (A2).** The counter block `ARMS_ATK_SUM`, `ARMS_VIC_ARM_SUM`, `ARMS_YIELD_SUM`, `ARMS_MATCH_SUM`, `ARMS_VIC_TOX_SUM` (sums of round(256x) over the realised attackers, from the START-of-step traits), `Acts.ext.arms.contest` (N, 4), `ActFlag.CONTESTED`, the `arms_` interval and snapshot keys (circular key and lock statistics, quantiles), the `arms_<step>.npz` sample (`run.arms_every`, `arms.dump_n` an observer key); the numpy mirror `contest_np` reproduces the realised product. (3) **Bonds (B3).** The `bond_` snapshot statistics in `featobs.py` (role shares, assortativity, forager-guard edges, flow by role, Gini of the net flow, within-role cheating index, non-kin flow share, shield cover, body role entropy and its permutation null), `FLAG_BONDFLOW` and the int8 flow per drawn bond in `FRMA`, `play.bonds`, the `role` colour mode (header only with the feature). (4) **Comm (C2).** `Acts.ext.comm = (voice, heard, audible)` with the heard half taken from the same `ext.step_inputs` call that feeds the brain; `Observer.comm_last`; the record `FSIG` after each `FOCS`; `play.comm`. (5) **Farming (F2).** `Acts.ext.niche.farm_put`, the record `FSOL`, the `niche` dump (`run.niche_every`), `farm_cells`, `farm_soil_mean`, `farm_soil_max`; the provenance stamps are **not built** (a state field and a hashed key, so not observer-only). (6) **Shared.** `ExtSpec` gained `observer_keys`, `snap_dev` and `snap_row`; `streamrec.EXT_TAGS` (`STRC`, `FSIG`, `FSOL`; `TAGS` and every old header unchanged), the encoders and the independent decoder cases of `tests/play_decode.py`; `run.mat_every`, `run.arms_every`, `run.niche_every` are in `SERIAL_OMIT_KEYS` (a run that does not use them has the `config.json` it always had); `Voice` gained two optional trailing fields. (7) **Checks.** 85 new tests in seven files (`test_observers_structures.py` 18, `test_observer_stream.py` 20, `test_observer_play.py` 6, `test_observers_arms.py` 13, `test_observers_bonds.py` 8, `test_observers_comm.py` 7, `test_observers_niche.py` 7) plus six feature-world arms in `test_game_purity.py` (observing changes no state value, 40 compiled steps each; run on the CPU and on Metal), one slow test (the labels study of a storm + structures world passes the grid to its drift); edits to the pins that name the new keys (`ObsIn`, `OBSERVER_KEYS`, `SERIAL_OMIT_KEYS`, `EXT_TAGS`). The fast suite (`-m "not slow"`, CPU plugin, `-n 4`, final tree after the review fixes): 5302 passed, 92 skipped, 1 xfailed and 1 failed, the known base failure `test_lifecycle_compiles_and_matches_eager` (I26). Feature-ON trajectories are unchanged too: the state digest, ledger and base counters of 60 steps of five feature worlds are identical under a `git archive` of d4139ed and the tree, on the CPU and on Metal. An independent review (1 high, 3 medium, 8 low) is applied: the `FSIG` heard half was quantised twice, the drift lacked the barrier, the metrics' air speed was unsheltered. `uv run python tests/identity_matrix.py --base e64be03`: `OK: bit-identical, 0 DIFF, 0 INFO`. `tests/test_game_purity.py` on Metal (M5 Pro): 61 passed (re-run after the review fixes). `ruff check` and `ruff format --check` clean. No Swift, no GUI, no app run, no LM Studio. The structural channel probe (`_channel_taps`) now flattens `Acts.ext`; the feature channels read more trajectory arrays than the base channel by design (all quantised to integers), and the value comparison of the feature worlds is the gate. (8) **Deviations from the specs.** The structures spec's optional `build_units` channel name became `build`; the arms `arms_sig_tox_corr` and `arms_arm_defend_corr` are not built (the traits are held at 0 / `defend` is an action); the bonds Gini is of the absolute net flow; `FARS`, the colour modes `arms`, `lock`, `voice`, `soil`, `analysis/{arms,bonds,comm,niche}.py`, the inspector rows and the GUI are not in this PR. |
 | I75 | feat: the five feature layers in the GUI (new §45; GUI only, nothing under `src/alife/` changes; built on `engine/observers` for the wire contract, in `gui/features`). (1) **What.** Levers for arms, structures, bonds and roles, comm and farming (`FeatureLevers`, five `<Feature>Levers.swift` tables, 48 keys, gates, layout lock in a fork, overlay start for a new run, fork pre-fill, `test_feature_levers_cover_feature_keys` with all five in `GUI_LANDED`); decoders for `STRC`, `FSOL`, `FSIG`, the `FRMA` bond-flow section by its flag and the optional `play.structures/comm/niche/bonds` keys; the world pass draws the material and soil (tiles in 2D, cubes in 3D) and colours bond halves by flow; inspector rows and the voice panel; legend, View items and keys 5 and 6; the `build_/arms_/bond_/comm_/farm_` metrics in the status readout. (2) **Wire check.** The Swift fixtures are built from the contract byte by byte and equal the hex of the Python encoders (`encode_strc`, `encode_fsig`, `encode_frma` with and without a flow). One contract inconsistency, harmless to the decoder: the contract says the `role` mode is "offered in the header list always", the writer (`play.py`) lists it only while the bonds feature is on; the decoder finds it by name. (3) **Tests.** Swift: 4 new suites, `PresetFileTests` extended and its list of preset files brought up to date (`build`, `bonds`, `comm`, `niche`, `niche3d` were missing: a failure that was already on main), `WorldKeysTests`, `StreamReaderTests`, `WorldInteractionTests`; the GPU tests render the layers offscreen. Python: `tests/test_gui_sync.py` (row forms, defaults, header and tag sync, the new keys). (4) **Choices to revisit.** The levers are table rows read generically (the pre-fill still names every key, so the sync test keeps its meaning); the cell layers are not drawn on the globe path or the minimap; no persistence of the new toggles; the roles are read from the colour the world paints because `FOCS` carries no role. |
 | I76 | fix: the planet launcher no longer offers the weather for a 2D source (§37.2; GUI only). Owner report 2026-10-29: a planet forked from a 2D run with the default "Turn the weather on" and the five features failed with the engine's weather rules 7, W-1 and R4 (2D); the features were not involved (the same refusal without them). `PlanetSpec.sourceDims` (from `PlaySource.dims`), `PlanetSpec.weatherObstacle(dims:)`; a 2D source starts with the weather off, the toggle is disabled with the reason, and `validate` refuses it before launch. Tests: `PlayLaunchTests.aPlanetThatCannotBeLaunchedIsExplained` (extended), `WorldLauncherTests.aTwoDimensionalSourceIsForkedWithoutTheWeatherAndSaysWhy`. |
+| I77 | feat: the sphere world (§46), series row; PR S0 "geometry and guards" (a box world changes in no bit; `config.validate` and `config.dims` gain branches guarded by `world.geometry`). (1) **What.** `src/alife/geom.py` (host): HEALPix RING `ang2pix`/`pix2vec` for any Nside, the **exact** neighbour tables from integer-keyed shared corners (touching, edge, reach-2, fan and triangles, LSQ weights, parent-child for any integer ratio, greedy colouring), the **exact coverage** of the reach-1/2 stencils (boundary to boundary, golden-section refinement, witnesses), `derive_nh` fed by a shipped table of the exact angles for Nside 2..72 (`src/alife/data/healpix_coverage_reach2.json`) with a disk-cache fallback, the `C` rule, the equal-volume layers, the host accessors; `src/alife/sphere.py` (device, pure MLX): float32 `ang2pix`/`pix2vec`, layers, hash and field cells, `move` (series exponential map, minimal-rotation transport, renormalisation), device accessors; config keys `world.geometry/radius/nside/layers` and `physics.ceiling_band` (`SPHERE_KEYS`, POST_V01 and SERIAL_OMIT, so box configs, hashes and `config.json` do not change), `GEOMETRY_SUPPORTED = ("box",)`, `_validate_sphere` (ordered by cost, total: no allocation or overflow from absurd inputs), box-neutral `Dims` fields, the fork guard over the geometry keys; the AST geometry lint (`tests/geometry_scan.py`) and `tests/geometry_allowlist.py` (148 entries, the consumer audit as data, checked against the spec's table); `test_gui_sync` lever-coverage test with a CLI-only set; `docs/SPHERE.md` (the series specification). (2) **Decisions** D1 to D14 of the series spec taken as recommended (coordinator choice C27) except D10: no `astropy-healpix` dependency, `tests/hp_oracle.py` (the reviewer's independent implementation, credited, with one defensive change to its longitude wrap) plus combinatorial checks. (3) **Checks.** Identity matrix against 5984583 bit-identical; the float32 lookup equals float64 except adjacent-pixel ties (2e-6 to 1.6e-5 of random points; CPU and Metal); exact coverage 1.385 / 1.407 / 1.423 (reach 2, Nside 21 / 11 / 8) and 0.685 / 0.712 (reach 1, Nside 21 / 4), cell by cell against the sampled review implementation; F13 at the margin; holonomy π/2. An independent review (0 high, 5 medium, 10 low) confirmed the geometry and found the guard rails weak; its fixes are in this row's PR. (4) **Deviations from the spec.** Coverage and the rigorous angle are geodesic angles (the review used chords, 0.1 to 0.2 % lower); `validate` caps the derived `Nh` at 64 and refuses a sensing ball wider than the planet; `lsq_weights` offers both the 4-edge and the 8-touching kinds; `sphere.move` and `bearing` are in S0 (the spec's S0 tests need them); the lint flags every `[..., 2]` index, not only `pos`/`vel` names. |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

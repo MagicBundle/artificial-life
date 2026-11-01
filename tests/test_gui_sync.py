@@ -36,6 +36,18 @@ READ_KEY = re.compile(
 # (World3DLevers documents the choice).
 CLI_ONLY_3D = {("physics", "floor_eps")}
 
+# The sphere keys (DESIGN §46.9, config.SPHERE_KEYS) are command-line only until the sphere GUI (PR S6 of the
+# true-sphere series) gives them levers: a key leaves this set in the PR that makes it a lever, and the test
+# below fails in either direction, so a lever added without leaving the set is noticed, and a key added to
+# SPHERE_KEYS without a lever must be listed here on purpose.
+CLI_ONLY_SPHERE = {
+    ("world", "geometry"),
+    ("world", "radius"),
+    ("world", "nside"),
+    ("world", "layers"),
+    ("physics", "ceiling_band"),
+}
+
 
 def sources() -> dict[str, str]:
     return {p.name: p.read_text(encoding="utf-8") for p in sorted(CORE.glob("*.swift"))}
@@ -109,6 +121,17 @@ def test_the_3d_levers_cover_the_3d_keys() -> None:
     levers = sources()["Levers.swift"]
     read = {(m.group(1), m.group(2)) for m in READ_KEY.finditer(levers)}
     assert set(config.THREE_D_KEYS) - CLI_ONLY_3D <= read
+
+
+def test_the_sphere_levers_cover_the_sphere_keys() -> None:
+    """A new sphere key must be made a lever (S6) or listed command-line only in CLI_ONLY_SPHERE."""
+    assert set(config.SPHERE_KEYS) >= CLI_ONLY_SPHERE
+    found = set().union(*(swift_keys(t) for t in sources().values())) & set(config.SPHERE_KEYS)
+    assert found == set(config.SPHERE_KEYS) - CLI_ONLY_SPHERE, (
+        "the Swift levers and config.SPHERE_KEYS disagree: "
+        f"lever without being un-listed {sorted(found & CLI_ONLY_SPHERE)}, "
+        f"neither lever nor command-line only {sorted(set(config.SPHERE_KEYS) - CLI_ONLY_SPHERE - found)}"
+    )
 
 
 # The features whose GUI lever file (`<Feature>Levers.swift`) has landed; a feature's GUI PR adds itself here
