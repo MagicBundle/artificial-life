@@ -12,8 +12,8 @@ struct AppShellView: View {
     @ObservedObject var stream: StreamController
     @ObservedObject var model: WorldModel
     @StateObject private var launcher: WorldLauncherModel
-    @State private var launchHandled = false
     @Environment(\.dismissWindow) private var dismissWindow
+    @Environment(\.openWindow) private var openWindow
     private let arguments: [String]
 
     init(shell: ShellModel, controller: RunController, stream: StreamController = .shared, arguments: [String] = CommandLine.arguments) {
@@ -39,11 +39,18 @@ struct AppShellView: View {
         }
         .frame(minWidth: AppShell.minWidth, minHeight: AppShell.minHeight)
         // The 3D viewer window (until PR-F) goes with the main window, so that closing the main window ends the app as it always did.
-        .background(WindowCloseObserver(group: "main") { dismissWindow(id: AppWindow.viewer3d.rawValue) })
+        // The window is the app's: closing it is closing the last window (the Settings window and the 3D Viewer go with it, so that the app
+        // ends through the question and the wait of the quit, as the old apps do).
+        .background(WindowCloseObserver(group: "main") {
+            dismissWindow(id: AppWindow.viewer3d.rawValue)
+            AppDelegate.current?.mainWindowClosed()
+        })
+        .onAppear {
+            // A click on the Dock icon brings a closed window back (`AppDelegate.applicationShouldHandleReopen`).
+            AppDelegate.current?.reopenMainWindow = { openWindow(id: AppShell.mainWindowID) }
+        }
         .task {
             // `--world RUN` (a fresh launch): started once, through the same path as Play.
-            guard !launchHandled else { return }
-            launchHandled = true
             shell.handleLaunch(arguments: arguments, controller: controller)
         }
     }
@@ -69,7 +76,8 @@ struct AppShellView: View {
     private var sidebar: some View {
         List(selection: Binding(get: { shell.page }, set: { if let page = $0 { shell.select(page) } })) {
             ForEach(ShellPage.allCases) { page in
-                SidebarRow(page: page, detail: detail(of: page))
+                let row = rowText(of: page)
+                SidebarRow(page: page, detail: row.text, marked: row.marked)
                     .tag(page)
                     .help(page.purpose)
             }
@@ -77,21 +85,18 @@ struct AppShellView: View {
         .safeAreaInset(edge: .bottom) { engineStatus }
     }
 
-    private func detail(of page: ShellPage) -> String? {
+    /// The second line of a sidebar row, and whether the row is marked (something there waits for the player).
+    private func rowText(of page: ShellPage) -> (text: String?, marked: Bool) {
         switch page {
-        case .worlds: return nil
-        case .lab: return nil
+        case .lab: return (nil, false)
+        case .worlds:
+            if shell.startFailure != nil { return ("A world did not open", true) }
+            return (nil, false)
         case .watch:
-            guard let world = play.world, play.phase != .idle else { return "No world open" }
-            switch play.phase {
-            case .starting: return "\(world) · starting"
-            case .live: return "\(world) · live"
-            case .ended: return "\(world) · ended"
-            case .failed: return "\(world) · failed"
-            case .idle: return "No world open"
-            }
+            let cue = model.watchCue(startFailed: shell.startFailure != nil)
+            return (cue.text, cue.needsPlayer)
         case .activity:
-            return ActivityGuide.sidebarDetail(ActivityPage.facts(controller: controller, play: play, stream: stream))
+            return (ActivityGuide.sidebarDetail(ActivityPage.facts(controller: controller, play: play, stream: stream)), false)
         }
     }
 
@@ -111,36 +116,21 @@ struct AppShellView: View {
 private struct SidebarRow: View {
     let page: ShellPage
     let detail: String?
+    var marked = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            Label(page.title, systemImage: page.symbol)
+            HStack(spacing: 6) {
+                Label(page.title, systemImage: page.symbol)
+                if marked {
+                    Circle().fill(Color.orange).frame(width: 8, height: 8)
+                        .accessibilityLabel("Waiting for you")
+                }
+            }
             if let detail {
                 Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).padding(.leading, 26)
             }
         }
         .padding(.vertical, 2)
-    }
-}
-
-/// The Lab as a page: today's form, kept until the set-up page replaces it (PR-D). It keeps its own labels (Resume, Fork, Open viewer)
-/// until then, and says so.
-struct LabPage: View {
-    @ObservedObject var controller: RunController
-    var openPage: (ShellPage) -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "info.circle").foregroundStyle(.secondary)
-                Text("The research Lab as it was. Its words (Resume, Fork) change when the set-up page replaces it.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 6)
-            .background(.quaternary.opacity(0.4))
-            ContentView(controller: controller, embedded: true, openPage: openPage)
-        }
     }
 }

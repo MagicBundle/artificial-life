@@ -58,7 +58,8 @@ struct ShellViewTests {
         return root.path
     }
 
-    private func draw(_ page: ShellPage, state: Folder, dark: Bool, name: String, minimumColours: Int = 25) throws -> NSBitmapImageRep {
+    private func draw(_ page: ShellPage, state: Folder, dark: Bool, name: String, minimumColours: Int = 25,
+                      failure: StartFailure? = nil) throws -> NSBitmapImageRep {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
         let path = try folder(state, scratch)
@@ -70,6 +71,7 @@ struct ShellViewTests {
         let session = WorldSession(play: play, defaults: defaults)
         let shell = ShellModel(session: session, defaults: defaults)
         shell.select(page)
+        shell.startFailure = failure
         let size = CGSize(width: AppShell.minWidth, height: AppShell.minHeight)
         let host = NSHostingView(rootView: AppShellView(shell: shell, controller: controller, arguments: []))
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: true)
@@ -122,6 +124,14 @@ struct ShellViewTests {
             let rep = try draw(.worlds, state: state, dark: dark, name: "worlds-\(state.rawValue)")
             #expect(colours(rep) > 25, "worlds / \(state.rawValue): the page is blank")
         }
+    }
+
+    @Test(arguments: [false, true])
+    func aWorldThatDidNotOpenIsToldOnTheWorldsPage(dark: Bool) throws {
+        guard everything || !dark else { return }
+        let failure = StartFailure(world: "mini3s_a", message: "alife play found no usable checkpoint (exit code 4)")
+        let rep = try draw(.worlds, state: .worlds, dark: dark, name: "worlds-failed", failure: failure)
+        #expect(colours(rep) > 25)
     }
 
     @Test(arguments: [false, true])

@@ -36,16 +36,25 @@ package struct RepoPathStore: Sendable {
     private let shared: any PreferenceDomain
     private let own: any PreferenceDomain
     private let legacy: [any PreferenceDomain]
+    private let readsOnly: Bool
 
-    /// `legacy` are the other places a value may already be, in order.
-    package init(shared: any PreferenceDomain, own: any PreferenceDomain, legacy: [any PreferenceDomain] = []) {
+    /// `legacy` are the other places a value may already be, in order. With `sharedIsReadOnly` (the alife preview) the shared suite is only
+    /// a source: the app's own choice comes first, a folder it chooses is stored in its own preferences alone, and nothing is ever written to
+    /// the suite, so a preview tried beside the old apps changes none of them.
+    package init(shared: any PreferenceDomain, own: any PreferenceDomain, legacy: [any PreferenceDomain] = [],
+                 sharedIsReadOnly: Bool = false) {
         self.shared = shared
         self.own = own
         self.legacy = legacy
+        readsOnly = sharedIsReadOnly
     }
 
     /// The stored folder, migrating it into the suite when the suite has none. Nil when nothing was ever stored.
     package func load() -> String? {
+        if readsOnly {
+            for defaults in [own, shared] + legacy { if let value = Self.value(in: defaults) { return value } }
+            return nil
+        }
         if let value = Self.value(in: shared) { return value }
         for defaults in [own] + legacy {
             if let value = Self.value(in: defaults) {
@@ -57,7 +66,7 @@ package struct RepoPathStore: Sendable {
     }
 
     package func save(_ path: String) {
-        shared.store(path, forKey: Self.key)
+        if !readsOnly { shared.store(path, forKey: Self.key) }
         own.store(path, forKey: Self.key)
     }
 
@@ -80,6 +89,11 @@ package struct RepoPathStore: Sendable {
         }
         guard info != nil, let shared = suite(sharedSuite) else {
             return RepoPathStore(shared: standard, own: standard)
+        }
+        // The alife preview (`AlifeLaunchMode` alife) reads the shared suite and the Lab's domain and writes only its own preferences.
+        if let text = info as? String, text.trimmingCharacters(in: .whitespaces).lowercased() == "alife" {
+            let lab = suite(labDomain)
+            return RepoPathStore(shared: shared, own: standard, legacy: lab.map { [$0] } ?? [], sharedIsReadOnly: true)
         }
         // The Lab's domain cannot be opened as a suite from the Lab itself (that is `standard`, already in the list).
         let lab = suite(labDomain)

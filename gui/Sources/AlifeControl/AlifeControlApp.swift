@@ -74,6 +74,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         plan.quitsAfterLastWindow
     }
 
+    // MARK: Reopening (the alife window)
+
+    /// Brings the main window of the `alife` window back (set by the shell when its content appears: it is the `openWindow` action of the
+    /// scene, which still works after the window has closed). Docs/APP.md spike S3: SwiftUI does not reopen a closed lone `Window` on a
+    /// Dock click by itself.
+    var reopenMainWindow: (() -> Void)?
+
+    /// A click on the Dock icon (or `open` on the running app) with no window showing: the shell's window comes back, whatever kept the
+    /// app alive (a Cancel at the quit question, a window that was left open). The old apps keep AppKit's own handling.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard plan.isShell, !flag, let reopenMainWindow else { return true }
+        reopenMainWindow()
+        return false
+    }
+
+    /// The main window of the `alife` window closed: it is the app's window, so closing it is closing the last one. The other windows
+    /// it leaves (Settings, the 3D Viewer) go with it, which lets AppKit end the app as it does after any last window
+    /// (`applicationShouldTerminateAfterLastWindowClosed`), through the question and the wait of the quit. `windows` is injectable.
+    func mainWindowClosed(windows: () -> [NSWindow] = { NSApp.windows }) {
+        guard plan.isShell else { return }
+        for window in windows() where window.isVisible && !(window is NSPanel) && window.identifier?.rawValue != AppShell.mainWindowID {
+            window.close()
+        }
+    }
+
     // MARK: Quit
 
     /// Whether the user is to be asked "Stop 'X' and quit?": a run is going and not already stopping, and no wait is in progress.
@@ -210,7 +235,7 @@ enum AlifeEntry {
         case .alife:
             // The preferences of the two old apps are brought in once, before anything reads the folder setting. Only a bundle made by
             // make-app.sh has its own preferences domain: an unbundled run (`swift run`) keeps whatever it had, as it always did.
-            if Bundle.main.object(forInfoDictionaryKey: LaunchMode.infoKey) != nil { PreferenceMigration.forApp().run() }
+            if Bundle.main.object(forInfoDictionaryKey: LaunchMode.infoKey) != nil { PreferenceMigration.forApp()?.run() }
             AlifeApp.main()
         case .world: StormWorldsApp.main()
         case .lab: AlifeControlApp.main()

@@ -43,7 +43,7 @@ final class SphereMTKView: MTKView {
     func canvasVisibilityChanged() {
         isHidden = !canvasVisible  // (no hit test, no composition of a view the player cannot see)
         if canvasVisible {
-            if window != nil { window?.makeFirstResponder(self) }
+            // (no makeFirstResponder here: showing Watch must not take the keyboard from the sidebar; a click on the map does)
             if drawDeferred {
                 drawDeferred = false
                 needsDisplay = true

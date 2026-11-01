@@ -350,6 +350,18 @@ final class RunController: ObservableObject {
 
     func suggestNewName() { settings.name = Self.defaultRunName() }
 
+    /// The Lab's form set to the first research run of someone who has none: a new run of the small planet preset, 30,000 steps (the
+    /// "Small planet" recipe of docs/APP.md §3.2, about two minutes), so that it only has to be started. Does not start it.
+    func prepareSmallPlanetRun() {
+        settings.mode = .new
+        settings.preset = .tiny3s
+        settings.steps = "30000"
+        if settings.seed.isEmpty { settings.seed = "1" }
+        if settings.name.trimmingCharacters(in: .whitespaces).isEmpty { suggestNewName() }
+        refreshDirectorCadence()
+        refreshPresetWorld3D()
+    }
+
     // MARK: Fork levers
 
     /// Fork mode: pre-fills the levers with the source run's values, which are also the baseline that only

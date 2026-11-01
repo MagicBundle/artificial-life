@@ -110,22 +110,20 @@ import Testing
         #expect(own.all.keys.sorted() == ["migrated.v1"])
     }
 
-    @Test func theSuiteOverrideIsTheOnlySourceAndNothingOfTheOwnersIsRead() {
+    @Test func underTheSuiteOverrideThereIsNoMigrationAndNothingIsWrittenOrRead() {
         let own = MemoryDomain()
-        let override = MemoryDomain()
-        override.set("/trial", forKey: "repoPath")
         var asked: [String] = []
         let m = PreferenceMigration.forApp(
             environment: [RepoPathStore.suiteOverrideEnvironment: "trial-suite"], standard: own,
-            suite: { name in asked.append(name); return override })
-        #expect(asked == ["trial-suite"])
-        m.run()
-        #expect(own.string(forKey: "repoPath") == "/trial")
+            suite: { name in asked.append(name); return MemoryDomain() })
+        #expect(m == nil, "a trial launch must not mark the real domain as migrated")
+        #expect(asked.isEmpty && own.all.isEmpty, "no domain is opened, and the app's own is untouched")
     }
 
     @Test func withoutAnOverrideTheThreeNamedDomainsAreOpened() {
         var asked: [String] = []
-        _ = PreferenceMigration.forApp(environment: [:], standard: MemoryDomain(), suite: { asked.append($0); return nil })
+        let m = PreferenceMigration.forApp(environment: [:], standard: MemoryDomain(), suite: { asked.append($0); return nil })
+        #expect(m != nil)
         #expect(asked == ["io.github.magicbundle.alife", "io.github.magicbundle.stormworlds", "io.github.magicbundle.alifecontrol"])
     }
 }

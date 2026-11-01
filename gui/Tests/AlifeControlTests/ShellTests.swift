@@ -82,6 +82,20 @@ private struct ShellRig {
         #expect(await eventually { shell.page == .watch }, "a world that goes live is shown")
     }
 
+    @Test func theLaunchArgumentIsHandledOnceWhateverBecomesOfTheWindow() throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let rig = try ShellRig()
+        defer { rig.finish() }
+        let controller = RunController(storedPath: scratch.url.path, savePath: { _ in }, candidates: [], isApp: false)
+        rig.shell.handleLaunch(arguments: ["alife", "--world", "nosuch"], controller: controller)
+        let first = rig.shell.launchNote
+        #expect(first != nil)
+        rig.shell.launchNote = nil
+        rig.shell.handleLaunch(arguments: ["alife", "--world", "nosuch"], controller: controller)  // a rebuilt window asking again
+        #expect(rig.shell.launchNote == nil)
+    }
+
     @Test func aLaunchArgumentThatCannotBeStartedSaysWhy() throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
@@ -90,12 +104,14 @@ private struct ShellRig {
         let controller = RunController(storedPath: scratch.url.path, savePath: { _ in }, candidates: [], isApp: false)
         rig.shell.handleLaunch(arguments: ["alife", "--world", "nosuch"], controller: controller)
         #expect(rig.shell.launchNote?.contains("alife folder is not set up") == true)
-        rig.shell.launchNote = nil
-        rig.shell.handleLaunch(arguments: ["alife", "--world", "../x"], controller: controller)
-        #expect(rig.shell.launchNote?.contains("needs the name of a world") == true)
-        rig.shell.launchNote = nil
-        rig.shell.handleLaunch(arguments: ["alife"], controller: controller)
-        #expect(rig.shell.launchNote == nil)
+        let other = try ShellRig()
+        defer { other.finish() }
+        other.shell.handleLaunch(arguments: ["alife", "--world", "../x"], controller: controller)
+        #expect(other.shell.launchNote?.contains("needs the name of a world") == true)
+        let none = try ShellRig()
+        defer { none.finish() }
+        none.shell.handleLaunch(arguments: ["alife"], controller: controller)
+        #expect(none.shell.launchNote == nil)
     }
 
     // MARK: Pages and the world's keys
@@ -173,7 +189,7 @@ private struct ShellRig {
         rig.session.model.windowIsKey = { true }  // the window is in front and the app is active
         rig.session.model.setBadge = { badge = $0 }
         rig.start()
-        #expect(await eventually { rig.play.store.header != nil && rig.shell.page == .watch })
+        #expect(await eventually { rig.play.store.header != nil && rig.play.phase == .live })
         rig.shell.select(.worlds)  // the player goes to look at something else
         #expect(!rig.session.model.viewerIsLooking)
         let alerts = try [12_000_600, 12_000_601, 12_000_602, 11_500_603, 11_750_605].map {
@@ -202,16 +218,77 @@ private struct ShellRig {
 
     // MARK: The page follows the world
 
-    @Test func aWorldThatGoesLiveBringsWatchForwardAndCloseWorldGoesBackToWorlds() async throws {
-        let rig = try ShellRig(page: .lab)
+    @Test func aWorldThePlayerStartedOnTheWorldsPageIsShownWhenLiveAndCloseWorldGoesBack() async throws {
+        let rig = try ShellRig(page: .worlds)
         defer { rig.finish() }
         #expect(!rig.shell.worldIsOpen)
+        rig.shell.playerStartsWorld()  // Play or Make planet on the Worlds page
         rig.start()
         #expect(await eventually { rig.shell.page == .watch })
         #expect(rig.shell.worldIsOpen)
         rig.shell.closeWorld()
         #expect(rig.shell.page == .worlds)
         #expect(await eventually { !rig.shell.worldIsOpen })
+    }
+
+    @Test func aWorldIsNotPulledInFrontOfSomeoneWhoWentElsewhere() async throws {
+        let lab = try ShellRig(page: .lab)
+        defer { lab.finish() }
+        lab.start()  // nobody pressed Play
+        #expect(await eventually { lab.play.phase == .live })
+        #expect(lab.shell.page == .lab)
+
+        let away = try ShellRig(page: .worlds)
+        defer { away.finish() }
+        away.shell.playerStartsWorld()
+        away.shell.select(.activity)  // pressed Play, then went to look at Activity during the long start
+        away.start()
+        #expect(await eventually { away.play.phase == .live })
+        #expect(away.shell.page == .activity)
+    }
+
+    // MARK: A world that does not open is said where the player is (review H1)
+
+    @Test func aWorldThatFailsAtOnceIsToldOnTheWorldsPage() throws {
+        let rig = try ShellRig(page: .worlds)
+        defer { rig.finish() }
+        rig.shell.playerStartsWorld()
+        rig.play.start(.resume(PlayResume(run: "w1")), executable: URL(fileURLWithPath: "/nonexistent/alife"), directory: rig.scratch.url)
+        guard case .failed = rig.play.phase else { Issue.record("expected a failed start"); return }
+        let failure = try #require(rig.shell.startFailure)
+        #expect(failure.world == "w1" && failure.message.contains("Failed to launch"))
+        #expect(failure.explanation.contains("w1 did not open") && failure.explanation.contains("Settings"))
+        #expect(rig.shell.page == .worlds, "the player stays where the message is")
+        rig.shell.startFailure = nil
+        #expect(rig.shell.startFailure == nil)
+    }
+
+    @Test func aWorldWhoseEngineStopsWhileItStartsIsToldToo() async throws {
+        let rig = try ShellRig(page: .worlds)
+        defer { rig.finish() }
+        let dies = try rig.scratch.script("dies", "echo 'engine: something went wrong' >&2\nexit 2")
+        rig.shell.playerStartsWorld()
+        rig.play.start(.resume(PlayResume(run: "w2")), executable: dies, directory: rig.scratch.url, arguments: [])
+        #expect(await eventually { rig.shell.startFailure != nil })
+        let failure = try #require(rig.shell.startFailure)
+        #expect(failure.world == "w2" && failure.message.contains("refused the request"))
+        #expect(failure.explanation.contains("w2 did not open"))
+        #expect(rig.shell.page == .worlds)
+        // the next world to start clears it
+        rig.shell.playerStartsWorld()
+        #expect(rig.shell.startFailure == nil)
+    }
+
+    @Test func aWorldThatWasLiveAndThenDiedIsNotAFailureToStart() async throws {
+        let rig = try ShellRig(page: .worlds)
+        defer { rig.finish() }
+        // plays the fixture, then exits with an error: live first, then failed
+        let script = try rig.scratch.script("late", "cat \"\(Repo.playFixtureURL("3d_g3b").path)\"\nsleep 2\nexit 1")
+        rig.shell.playerStartsWorld()
+        rig.play.start(.resume(PlayResume(run: "w3")), executable: script, directory: rig.scratch.url, arguments: [])
+        #expect(await eventually { rig.play.phase == .live })
+        #expect(await eventually { if case .failed = rig.play.phase { return true } else { return false } })
+        #expect(rig.shell.startFailure == nil, "its Watch page tells it; the Worlds page does not claim it never opened")
     }
 
     @Test func aWorldThatIsStillStartingDoesNotMoveThePage() throws {

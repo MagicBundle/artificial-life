@@ -33,7 +33,8 @@ Options:
   --app WHICH         lab (default: what this script always built), storm, both (recommended
                       with --install: the game and the Lab share the repository folder setting), or alife.
   --preview           With --app alife: build the preview, id io.github.magicbundle.alife.preview, with its own preferences. It
-                      installs beside the old apps and touches neither. (alife.app, the final one, comes when they are retired.)
+                      installs beside the old apps and changes neither: it reads the shared alife folder setting and never writes it. (alife.app,
+                      the final one, comes when they are retired.)
   --sign IDENTITY     Signing identity (name or hash). Default: the first
                       "Developer ID Application" identity, else the first
                       "Apple Development" identity, else ad-hoc ("-"). "--sign -" is ad-hoc and

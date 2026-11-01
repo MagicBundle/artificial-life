@@ -44,8 +44,9 @@ import Testing
 }
 
 @Suite struct ShellPageTests {
-    @Test func theCommandKeysAreDistinctAndWorldsAndActivityAreTheSpecs() {
-        #expect(ShellPage.worlds.key == "1" && ShellPage.activity.key == "2")
+    @Test func theCommandKeysFollowTheSidebarOrder() {
+        #expect(ShellPage.allCases.map(\.key) == ["1", "2", "3", "4"])
+        #expect(ShellPage.allCases == [.worlds, .watch, .activity, .lab])
         #expect(Set(ShellPage.allCases.map(\.key)).count == ShellPage.allCases.count)
         #expect(Set(ShellPage.allCases.map(\.title)).count == ShellPage.allCases.count)
     }

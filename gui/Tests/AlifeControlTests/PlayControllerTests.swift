@@ -272,7 +272,7 @@ import Testing
         let deaf = try scratch.script("alife-deaf", """
             trap 'echo INT >> "$2"; exit 0' INT
             cat "$1"
-            while true; do sleep 0.05; done
+            while kill -0 $PPID 2>/dev/null && [ $SECONDS -lt 120 ]; do sleep 0.05; done
             """)
         let (controller, _) = make()
         defer { controller.shutdown() }
@@ -290,7 +290,7 @@ import Testing
     @Test func aWorldThatIgnoresSIGINTToGetsSIGTERMAtTheEnd() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
-        let stubborn = try scratch.script("alife-stubborn", "trap '' INT\ncat \"$1\"\nexec sleep 60")
+        let stubborn = try scratch.script("alife-stubborn", "trap '' INT\ncat \"$1\"\nexec sleep 30")
         let (controller, _) = make()
         defer { controller.shutdown() }
         controller.start(request, executable: stubborn, directory: scratch.url, arguments: [Repo.playFixtureURL("3d").path])
@@ -326,7 +326,7 @@ import Testing
             trap 'echo INT >> "$1"; exit 130' INT
             echo "weather spin-up: 1000 of 20000 steps" >&2
             echo "weather spin-up: 2000 of 20000 steps" >&2
-            while true; do sleep 0.05; done
+            while kill -0 $PPID 2>/dev/null && [ $SECONDS -lt 120 ]; do sleep 0.05; done
             """)
         let (controller, recorder) = make(ladder: .init(beforeInterrupt: .seconds(60), beforeTerminate: .seconds(60)))
         defer { controller.shutdown() }
@@ -346,7 +346,7 @@ import Testing
     @Test func aBuildThatIgnoresSIGINTIsTerminatedAfterTheGrace() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
-        let stubborn = try scratch.script("alife-stubborn-build", "trap '' INT\necho ready >&2\nexec sleep 60")
+        let stubborn = try scratch.script("alife-stubborn-build", "trap '' INT\necho ready >&2\nexec sleep 30")
         let (controller, _) = make()
         defer { controller.shutdown() }
         controller.start(.planet(PlanetSpec(source: "s", name: "p")), executable: stubborn, directory: scratch.url, arguments: [])
@@ -363,7 +363,7 @@ import Testing
     @Test func aWorldThatIsStillSavingCannotBeStartedAgain() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
-        let deaf = try scratch.script("alife-saving", "trap '' INT\ncat \"$1\"\nwhile true; do sleep 0.05; done")
+        let deaf = try scratch.script("alife-saving", "trap '' INT\ncat \"$1\"\nwhile kill -0 $PPID 2>/dev/null && [ $SECONDS -lt 120 ]; do sleep 0.05; done")
         let (controller, recorder) = make(ladder: .init(beforeInterrupt: .seconds(30), beforeTerminate: .seconds(30)))
         defer { controller.shutdown() }
         controller.start(request, executable: deaf, directory: scratch.url, arguments: [Repo.playFixtureURL("3d").path])
@@ -388,7 +388,7 @@ import Testing
     @Test func quittingEndsEveryProcessAtOnce() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
-        let deaf = try scratch.script("alife-deaf-long", "cat \"$1\"\nexec sleep 60")
+        let deaf = try scratch.script("alife-deaf-long", "cat \"$1\"\nexec sleep 30")
         let (controller, _) = make(ladder: .init(beforeInterrupt: .seconds(120), beforeTerminate: .seconds(120)))
         defer { controller.shutdown() }
         controller.start(request, executable: deaf, directory: scratch.url, arguments: [Repo.playFixtureURL("3d").path])

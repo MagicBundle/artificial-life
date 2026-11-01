@@ -317,7 +317,7 @@ fileprivate func makeRig(_ scratch: Scratch, kind: String = "3d") async throws -
         rig.model.now = { Date().timeIntervalSince1970 }
         rig.model.handle(events: [toastEvent(1000)], backlog: false)
         #expect(rig.model.toasts.count == 1)
-        #expect(await eventually(timeout: .seconds(6)) { rig.model.toasts.isEmpty }, "the model schedules its own expiry")
+        #expect(await eventually { rig.model.toasts.isEmpty }, "the model schedules its own expiry")
     }
 
     // MARK: Keys

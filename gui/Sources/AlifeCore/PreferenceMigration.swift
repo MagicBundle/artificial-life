@@ -73,16 +73,15 @@ package struct PreferenceMigration {
     }
 
     /// The migration for this process: into `standard` (the app's own domain), from the shared suite and the two old apps' domains.
-    /// Nothing is written to the shared suite or to the old domains. With `ALIFE_PREFS_SUITE` set (a trial that must not touch the
-    /// owner's preferences) the sources are that suite alone.
+    /// Nothing is written to the shared suite or to the old domains. **With `ALIFE_PREFS_SUITE` set (a trial that must not touch the
+    /// owner's preferences) there is no migration at all** (nil): it would mark the real domain as migrated with the trial's values, and
+    /// the first real launch would never import the old apps' settings.
     package static func forApp(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         standard: any TypedPreferenceDomain = UserDefaults.standard,
         suite: (String) -> (any TypedPreferenceDomain)? = { UserDefaults(suiteName: $0) }
-    ) -> PreferenceMigration {
-        if let name = environment[RepoPathStore.suiteOverrideEnvironment], !name.isEmpty, let override = suite(name) {
-            return PreferenceMigration(own: standard, shared: override, storm: nil, lab: nil)
-        }
+    ) -> PreferenceMigration? {
+        if let name = environment[RepoPathStore.suiteOverrideEnvironment], !name.isEmpty { return nil }
         return PreferenceMigration(own: standard, shared: suite(RepoPathStore.sharedSuite), storm: suite(stormDomain),
                                    lab: suite(RepoPathStore.labDomain))
     }

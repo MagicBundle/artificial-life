@@ -30,12 +30,13 @@ package enum ShellPage: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// The Command key of the Window-menu item that opens the page. Worlds and Activity are the spec's (§2.4); the Lab and Watch follow.
+    /// The Command key of the Window-menu item that opens the page: in the order of the sidebar (Worlds 1, Watch 2, Activity 3, Lab 4;
+    /// the spec's §2.4 had Activity on 2, before Watch and the Lab were pages).
     package var key: Character {
         switch self {
         case .worlds: return "1"
-        case .activity: return "2"
-        case .watch: return "3"
+        case .watch: return "2"
+        case .activity: return "3"
         case .lab: return "4"
         }
     }

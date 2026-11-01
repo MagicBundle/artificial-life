@@ -11,7 +11,7 @@ struct GeneralSettingsView: View {
             Form {
                 Section("alife folder") {
                     RepoFolderForm(controller: controller)
-                    Text("The folder with .venv/bin/alife and runs/. The other alife apps use the same one.")
+                    Text("The folder with .venv/bin/alife and runs/. This preview keeps its own choice: the other alife apps are not changed by it.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Engine") {

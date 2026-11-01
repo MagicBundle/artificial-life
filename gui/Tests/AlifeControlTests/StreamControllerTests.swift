@@ -350,7 +350,7 @@ import Testing
         let scratch = try Scratch()
         defer { scratch.cleanup() }
         // A process that ignores its quit and its stdin closing, and a long grace: only shutdown() can end it in time.
-        let deaf = try scratch.script("alife-deaf-long", "cat \"$1\"\nexec sleep 60")
+        let deaf = try scratch.script("alife-deaf-long", "cat \"$1\"\nexec sleep 30")
         let (controller, _) = make(grace: .seconds(120))
         controller.start(source, executable: deaf, directory: scratch.url, arguments: [Repo.streamFixtureURL("3d").path])
         #expect(await eventually { controller.phase == .live })

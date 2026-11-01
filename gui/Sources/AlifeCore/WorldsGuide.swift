@@ -3,6 +3,12 @@ import Foundation
 /// What the Worlds page says and offers next, from facts (docs/APP.md §2.4: every page has one obvious next step, and none is empty
 /// without saying what to do). Pure: the page draws the answer.
 package enum WorldsGuide {
+    /// The run that is still growing, which a planet can already be made from.
+    package static func growingNote(source: String, growing: String?) -> String? {
+        guard growing == source else { return nil }
+        return "\(source) is still growing. A planet starts from its latest save point."
+    }
+
     /// The facts the page reads.
     package struct Facts: Equatable, Sendable {
         package var folderExists: Bool
@@ -63,9 +69,32 @@ package enum WorldsGuide {
     package static func reason(forPlaying world: PlayWorld, in facts: Facts) -> String? {
         if let open = facts.openWorld { return open == world.name ? "Open now" : "Close \(open) first" }
         if facts.saving.contains(world.name) { return "Saving..." }
-        if world.locked { return "Being played in another window" }
+        if world.locked { return "In use by another app" }
         if world.newestStep == nil { return "No save point" }
         return nil
+    }
+
+    /// What the Worlds page says when a world did not open: one sentence in plain words, from the controller's message (the message
+    /// itself is shown under it, for whoever needs it). Never says "failed" without saying what to do next.
+    package static func explainFailure(world: String, message: String) -> String {
+        let name = world.isEmpty ? "The world" : "\(world)"
+        let lower = message.lowercased()
+        if lower.contains("still saving") {
+            return "\(name) did not open: it is still being saved. Wait a moment, then press Play again."
+        }
+        if lower.contains("failed to launch") {
+            return "\(name) did not open: the engine could not be started. Check the engine in Settings, then try again."
+        }
+        if lower.contains("no usable checkpoint") {
+            return "\(name) did not open: it has no usable save point. Choose another world, or make a planet from a run."
+        }
+        if lower.contains("refused the request") {
+            return "\(name) did not open: the engine refused the request. Activity has its message."
+        }
+        if lower.contains("interrupted") || lower.contains("terminated") {
+            return "\(name) was stopped before it was ready. Press Play to try again."
+        }
+        return "\(name) did not open: the engine stopped. Activity has what it said."
     }
 
     /// Why *Make planet* is unavailable beyond the form's own errors; nil when the form decides.

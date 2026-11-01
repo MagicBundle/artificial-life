@@ -1,7 +1,7 @@
 // Generates an app icon as an .iconset directory: the AlifeControl icon (cells and bonds) or, with `storm`, the Storm
 // Worlds icon (a storm cloud and a lightning bolt over a small world with a few cells).
 //
-//   swift gui/scripts/make-icon.swift <out.iconset dir> [lab|storm]
+//   swift gui/scripts/make-icon.swift <out.iconset dir> [lab|storm|alife]
 //   iconutil -c icns <out.iconset dir> -o AppIcon.icns
 //
 // Self-contained (CoreGraphics + ImageIO only), deterministic (hard-coded geometry), no text.
@@ -290,7 +290,7 @@ func writePNG(_ image: CGImage, to url: URL) {
 
 let variant = CommandLine.arguments.count == 3 ? CommandLine.arguments[2] : "lab"
 guard CommandLine.arguments.count == 2 || CommandLine.arguments.count == 3, ["lab", "storm"].contains(variant) || variant == "alife" else {
-    FileHandle.standardError.write(Data("usage: swift make-icon.swift <out.iconset dir> [lab|storm]\n".utf8))
+    FileHandle.standardError.write(Data("usage: swift make-icon.swift <out.iconset dir> [lab|storm|alife]\n".utf8))
     exit(2)
 }
 let outDir = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
