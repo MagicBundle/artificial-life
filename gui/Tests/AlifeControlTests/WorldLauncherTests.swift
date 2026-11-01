@@ -231,17 +231,18 @@ import Testing
         try planet("tiny_s0", radius: 36, height: 16, nside: 8, layers: 8)
         try planet("64k_s0", radius: 90, height: 40, nside: 21, layers: 18)
         try planet("mini_s0", radius: 48, height: 24, nside: 11, layers: 12)
+        try planet("odd_s0", radius: 60, height: 30, nside: 14, layers: 14)
         try planet("mini_wet", radius: 48, height: 24, nside: 11, layers: 12, weather: true)
         let model = make(runs, launches: Launches())
         model.refresh()
         model.planet.name = "planet_t"
-        for (source, overlay) in [("tiny_s0", "stormsph16"), ("64k_s0", "stormsph")] {
+        for (source, overlay) in [("tiny_s0", "stormsph16"), ("64k_s0", "stormsph"), ("mini_s0", "stormsph22")] {
             model.selectSource(source)
             #expect(model.planet.storm && model.weatherObstacle == nil && model.planetErrors.isEmpty, "\(source)")
             #expect(PlayLaunch.arguments(planet: model.planet).starts(with: ["play", "--init-from", "runs/\(source):200", "--overlay", overlay,
                                                                            "--set", "director.enabled=true", "--weather-spinup", "20000"]))
         }
-        model.selectSource("mini_s0")
+        model.selectSource("odd_s0")
         let obstacle = try #require(model.weatherObstacle)
         #expect(obstacle.hasPrefix("No weather is calibrated yet for this planet size"))
         #expect(!model.planet.storm && model.planet.weatherSpinup == 0 && model.planetErrors.isEmpty, "the planet is forked without weather")
@@ -256,7 +257,9 @@ import Testing
         let tiny = try #require(model.catalog.sources.first { $0.name == "tiny_s0" })
         #expect(LauncherPlanetBox.sphereNote(tiny).hasSuffix("the weather overlay is stormsph16."))
         let mini = try #require(model.catalog.sources.first { $0.name == "mini_s0" })
-        #expect(!LauncherPlanetBox.sphereNote(mini).contains("stormsph"))
+        #expect(LauncherPlanetBox.sphereNote(mini).hasSuffix("the weather overlay is stormsph22."))
+        let odd = try #require(model.catalog.sources.first { $0.name == "odd_s0" })
+        #expect(!LauncherPlanetBox.sphereNote(odd).contains("stormsph"))
         // a refresh follows a changed shape of the selected source
         model.selectSource("tiny_s0")
         try planet("tiny_s0", radius: 36, height: 20, nside: 8, layers: 8)

@@ -24,11 +24,10 @@ CADENCE = {"metrics_every": 10, "heavy_metrics_every": 10, "checkpoint_every": 1
 SPINUP = 16
 
 
-@pytest.fixture(scope="module")
-def source(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """A weather-off tiny3s world checkpointed at step 12."""
+def make_source(preset: str, root: Path) -> Path:
+    """A weather-off world of ``preset`` checkpointed at step 12 (eager, short cadence)."""
     cfg = load_config(
-        preset="tiny3s",
+        preset=preset,
         overrides=[
             "run.compile=false",
             "run.checkpoint_every=12",
@@ -36,10 +35,21 @@ def source(tmp_path_factory: pytest.TempPathFactory) -> Path:
             "run.heavy_metrics_every=12",
         ],
     )
-    rd = RunDir.create(tmp_path_factory.mktemp("src") / "src", cfg)
+    rd = RunDir.create(root / "src", cfg)
     runner.run(rd, cfg, init_state(cfg), 12, quiet=True)
     assert [s for s, _ in rd.checkpoints()][-1] == 12
     return rd.path
+
+
+@pytest.fixture(scope="module")
+def source(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A weather-off tiny3s world checkpointed at step 12."""
+    return make_source("tiny3s", tmp_path_factory.mktemp("src"))
+
+
+@pytest.fixture(scope="module")
+def mini_source(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return make_source("mini3s", tmp_path_factory.mktemp("src_mini"))
 
 
 @pytest.fixture
@@ -84,3 +94,38 @@ def test_stormsph_is_refused_on_a_tiny3s_source_and_nothing_is_streamed(
     err = cap.err.decode(errors="replace")
     # (the Courant problem of the first build is gone: the weather runs at Courant 0.40 on every planet, C29)
     assert "config problem" in err and "Nf times a power of two" in err and "latitude" in err
+
+
+def check_planet(
+    source: Path, tmp_path: Path, overlay: str, nw: int, radius: float, cap: pytest.CaptureFixture[bytes]
+) -> None:
+    out = tmp_path / "planet"
+    code = cli.main(planet_args(source, out, overlay))
+    got = cap.readouterr()
+    assert code == 0, got.err.decode(errors="replace")
+    assert f"weather spin-up: {SPINUP}/{SPINUP} steps" in got.err.decode(errors="replace")
+    d = sd.decode(got.out)
+    assert d.header["play"]["weather"]["enabled"] and d.header["play"]["weather"]["nside"] == nw
+    assert [r.step for r in d.records if r.tag == "FRMA"][-1] == 40
+    cfg = RunDir.open(out).config()
+    assert cfg.weather.enabled and cfg.weather.cells == nw and cfg.world.radius == radius
+
+
+def test_stormsph22_launches_a_mini3s_planet_and_streams_a_decodable_world(
+    mini_source: Path, tmp_path: Path, short_cadence: None, capfdbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """S7a: the launcher row (48, 24, 11, 12) -> stormsph22 end to end; the other two overlays are refused."""
+    check_planet(mini_source, tmp_path, "stormsph22", 22, 48.0, capfdbinary)
+    for wrong in ("stormsph", "stormsph16"):
+        code = cli.main(planet_args(mini_source, tmp_path / f"no_{wrong}", wrong))
+        cap = capfdbinary.readouterr()
+        assert code == 2 and cap.out == b"", wrong
+
+
+@pytest.mark.slow
+def test_stormsph_launches_a_64k3s_planet_and_streams_a_decodable_world(
+    tmp_path: Path, short_cadence: None, capfdbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """S7a: the same for the 64k3s planet (65 536 rows, eager on the CPU: minutes; Metal: seconds)."""
+    src = make_source("64k3s", tmp_path)
+    check_planet(src, tmp_path, "stormsph", 42, 90.0, capfdbinary)

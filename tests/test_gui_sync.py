@@ -712,7 +712,7 @@ def test_the_play_launch_flags_are_flags_of_alife_play() -> None:
     choices = {s: a.choices for a in parser._actions for s in a.option_strings if a.choices}  # type: ignore[attr-defined]
     assert swift_enum_values(text, "PlayHouses") == set(choices["--houses"])
     assert swift_enum_values(text, "PlayDirector") == set(choices["--director"])
-    assert {"storm", "storm160", "stormsph", "stormsph16"} <= set(choices["--overlay"])
+    assert {"storm", "storm160", "stormsph", "stormsph16", "stormsph22"} <= set(choices["--overlay"])
     # The launcher passes the overlay of the source's geometry, planet shape and size (DESIGN §37.2, §46.8,
     # §46.9): all the names are engine overlays, a planet's is chosen by the source's `world.geometry` and
     # shape (never by an alias; none is passed for a shape without one), and `miniWorldSize` is the
@@ -733,31 +733,27 @@ def test_the_play_launch_flags_are_flags_of_alife_play() -> None:
 
 def test_the_launcher_overlay_table_holds_the_shapes_the_overlays_are_made_for() -> None:
     """`PlanetSpec.weatherOverlays` pairs a planet shape (radius, height, nside, layers) with its overlay.
-    Each pair is an engine overlay and validates on exactly that planet (`tiny3s` and the `64k3s` geometry of
-    the spec); `mini3s`, which has no overlay yet, is not in the table."""
+    Each row is the shape of one engine sphere preset (`tiny3s`, `mini3s`, `64k3s`) and an engine overlay that
+    validates on exactly that preset and is refused on the other two."""
     text = (CORE / "PlayLaunch.swift").read_text(encoding="utf-8")
     rows = re.findall(
         r'\(PlanetShape\(radius: (\d+), height: (\d+), nside: (\d+), layers: (\d+)\), "([a-z0-9]+)"\)', text
     )
-    assert [r[4] for r in rows] == ["stormsph", "stormsph16"]
-    base = ["world.geometry=sphere", "world.size=1024", "sensing.cell_capacity=32", "physics.floor_eps=0.05"]
+    assert [r[4] for r in rows] == ["stormsph", "stormsph16", "stormsph22"]
+    preset_of = {"stormsph": "64k3s", "stormsph16": "tiny3s", "stormsph22": "mini3s"}
+    assert sorted(preset_of.values()) == sorted(config.SPHERE_PRESETS)  # every planet has a row
     for radius, height, nside, layers, overlay in rows:
         assert overlay in config.WORLD_OVERLAYS
-        shape = [
-            f"world.radius={radius}",
-            f"world.height={height}",
-            f"world.nside={nside}",
-            f"world.layers={layers}",
-        ]
-        cfg = config.load_config(preset="tiny3d", overlays=[overlay], overrides=[*base, *shape])
+        cfg = config.load_config(preset=preset_of[overlay], overlays=[overlay])
+        w = cfg.world
+        assert [int(radius), int(height), int(nside), int(layers)] == [w.radius, w.height, w.nside, w.layers]
         assert cfg.weather.enabled and cfg.weather.cells == 2 * int(nside)
-    tiny = config.load_config(preset="tiny3s").world  # the table's second row is the engine's tiny3s preset
-    assert [int(v) for v in rows[1][:4]] == [tiny.radius, tiny.height, tiny.nside, tiny.layers]
-    # a planet of another shape is refused by the engine, which is why the launcher passes none
-    mini = ["world.radius=48", "world.height=24", "world.nside=11", "world.layers=12"]
-    for _r, _h, _n, _l, overlay in rows:
-        with pytest.raises(config.ConfigError):
-            config.load_config(preset="tiny3d", overlays=[overlay], overrides=[*base, *mini])
+        for (
+            other
+        ) in config.SPHERE_PRESETS:  # a planet of another shape is refused, hence no overlay is passed
+            if other != preset_of[overlay]:
+                with pytest.raises(config.ConfigError):
+                    config.load_config(preset=other, overlays=[overlay])
 
 
 def test_the_play_launch_set_keys_are_config_fields() -> None:

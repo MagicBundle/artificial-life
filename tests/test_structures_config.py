@@ -203,7 +203,9 @@ def test_the_build_overlay_validates_against_the_presets_that_can_be_coloured() 
     assert "build" in config.WORLD_OVERLAYS and "build" not in config.OVERLAYS
     for preset in config.PRESETS:
         cfg = load_config(preset=preset, overlays=["build"])
-        if preset == "tiny3s":  # a shell has no lattice side: its closing cycle is 3·n_colours phases
+        if (
+            preset in config.SPHERE_PRESETS
+        ):  # a shell has no lattice side: its closing cycle is 3·n_colours phases
             n_phase = 3 * geom.min_colouring(cfg.world.nside)[1]
             assert cfg.structures.enabled and int(fields.mat_colour(cfg).max().item()) + 1 == n_phase
             continue

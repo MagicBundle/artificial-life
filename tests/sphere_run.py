@@ -96,6 +96,7 @@ def _trajectory(cfg, steps: int, every: int, digest_at: set[int], init: dict | N
     digests: dict[str, str] = {}
     ledger = np.zeros(16, np.int64)
     max_occ = overflow = 0
+    alive_min, alive_max = 1 << 30, 0
     for i in range(1, steps + 1):
         s, out = fn(s)
         mx.eval(s, out)
@@ -105,6 +106,10 @@ def _trajectory(cfg, steps: int, every: int, digest_at: set[int], init: dict | N
         c_max = c.astype(np.int64) if c_max is None else np.maximum(c_max, c)
         max_occ = max(max_occ, int(c[CounterIdx.MAX_OCCUPANCY]))
         overflow += int(c[CounterIdx.CELL_OVERFLOW])
+        alive_min, alive_max = (
+            min(alive_min, int(c[CounterIdx.N_ALIVE])),
+            max(alive_max, int(c[CounterIdx.N_ALIVE])),
+        )
         if i % every == 0 or i == steps:
             problems += [f"step {i}: {p}" for p in full_check(s, cfg, prev, out)]
         if i in digest_at:
@@ -118,6 +123,8 @@ def _trajectory(cfg, steps: int, every: int, digest_at: set[int], init: dict | N
         "max_occupancy": max_occ,
         "overflow": overflow,
         "alive": int(to_numpy(s.alive.sum())),
+        "alive_min": alive_min,
+        "alive_max": alive_max,
         "counters_sum": c_sum.tolist(),
         "counters_max": c_max.tolist(),
         "counters_last": c.tolist(),

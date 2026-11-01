@@ -296,8 +296,10 @@ package enum Preset: String, CaseIterable, Identifiable {
     case tiny3d
     case k64_3d = "64k3d"
     case mini3d
-    /// The sphere world's first preset (DESIGN §46.9: `mini3s` and `64k3s` follow with PR S7, and join this list when the engine lists them).
+    /// The sphere worlds (DESIGN §46.9): `tiny3s` (radius 36), `mini3s` (48) and `64k3s` (90), the planets of the tiny3d, mini3d and 64k3d scale.
     case tiny3s
+    case mini3s
+    case k64_3s = "64k3s"
     package var id: String { rawValue }
 }
 
