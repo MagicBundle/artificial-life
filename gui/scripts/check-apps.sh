@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke test of the two app bundles: builds AlifeControl.app and Storm Worlds.app with make-app.sh, signed ad-hoc only (no
+# Smoke test of the app bundles: builds AlifeControl.app, Storm Worlds.app and "alife Preview.app" with make-app.sh, signed ad-hoc only (no
 # keychain, no prompt), and checks each Info.plist key, the executable, the icon and `codesign --verify`.
 #
 #   gui/scripts/check-apps.sh [--out DIR]
@@ -29,6 +29,8 @@ pass() { echo "ok:   $*"; }
 VERSION_EXPECTED="9.8.7"
 echo "==> make-app.sh --app both --sign - --out $OUT"
 VERSION="$VERSION_EXPECTED" "$SCRIPT_DIR/make-app.sh" --app both --sign - --out "$OUT"
+echo "==> make-app.sh --app alife --preview --sign - --out $OUT"
+VERSION="$VERSION_EXPECTED" "$SCRIPT_DIR/make-app.sh" --app alife --preview --sign - --out "$OUT"
 
 plist() {  # $1 = bundle, $2 = key; prints the value, or nothing when the key is missing
   /usr/libexec/PlistBuddy -c "Print :$2" "$1/Contents/Info.plist" 2>/dev/null || true
@@ -69,10 +71,18 @@ LAB="$OUT/AlifeControl.app"
 STORM="$OUT/Storm Worlds.app"
 check_bundle "$LAB" io.github.magicbundle.alifecontrol AlifeControl AlifeControl lab public.app-category.developer-tools
 check_bundle "$STORM" io.github.magicbundle.stormworlds "Storm Worlds" StormWorlds world public.app-category.simulation-games
+ALIFE="$OUT/alife Preview.app"
+check_bundle "$ALIFE" io.github.magicbundle.alife.preview "alife Preview" alife alife public.app-category.simulation-games
 
 [[ "$(plist "$LAB" CFBundleVersion)" == "$(plist "$STORM" CFBundleVersion)" ]] && pass "both have the same build number" || fail "the build numbers differ"
 [[ "$(plist "$LAB" CFBundleIdentifier)" != "$(plist "$STORM" CFBundleIdentifier)" ]] && pass "the bundle IDs differ" || fail "the bundle IDs are the same"
 cmp -s "$LAB/Contents/Resources/AppIcon.icns" "$STORM/Contents/Resources/AppIcon.icns" && fail "the icons are the same" || pass "the icons differ"
+# The preview has its own id, so that it installs beside the old apps and touches neither (its preferences are its own).
+[[ "$(plist "$ALIFE" CFBundleIdentifier)" != "$(plist "$LAB" CFBundleIdentifier)" && "$(plist "$ALIFE" CFBundleIdentifier)" != "$(plist "$STORM" CFBundleIdentifier)" ]] \
+  && pass "the preview's bundle ID differs from both old apps" || fail "the preview shares a bundle ID with an old app"
+[[ "$(plist "$ALIFE" CFBundleVersion)" == "$(plist "$LAB" CFBundleVersion)" ]] && pass "the preview has the same build number" || fail "the preview's build number differs"
+cmp -s "$ALIFE/Contents/Resources/AppIcon.icns" "$LAB/Contents/Resources/AppIcon.icns" || cmp -s "$ALIFE/Contents/Resources/AppIcon.icns" "$STORM/Contents/Resources/AppIcon.icns" \
+  && fail "the preview's icon is one of the old apps'" || pass "the preview's icon is its own"
 
 if [[ $FAILED -ne 0 ]]; then echo "FAILED (bundles are in $OUT)" >&2; exit 1; fi
 echo "all checks passed (bundles are in $OUT)"
