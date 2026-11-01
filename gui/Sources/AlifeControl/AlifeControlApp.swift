@@ -3,11 +3,29 @@ import AppKit
 import SwiftUI
 
 /// Makes the app a regular foreground app (needed when run unbundled with `swift run`; harmless in the .app
-/// bundle) and stops a running simulation cleanly when the app quits.
+/// bundle) and stops a running simulation cleanly when the app quits. Shared by both modes (`LaunchPlan`).
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    /// Holds the quit while a played world saves its checkpoint (`TerminationGate`).
+    /// Holds the quit while a played world or a run saves its checkpoint (`TerminationGate`).
     let terminationGate = TerminationGate()
+    /// Shown while the quit waits. Owned here, not by a scene, so that it exists when the last window has been closed.
+    let quitPanel = QuitPanel()
+    var plan = LaunchMode.current().plan
+    private let run: RunController
+    private let play: PlayController
+
+    /// The delegate of the app: the shared controllers. The tests give it their own.
+    override convenience init() { self.init(run: .shared, play: .shared) }
+
+    init(run: RunController, play: PlayController) {
+        self.run = run
+        self.play = play
+        super.init()
+    }
+    /// The question before a run is stopped by a quit (tests replace it, so that no alert is shown).
+    var confirmStopRun: (String) -> Bool = { QuitPanel.askToStopRun($0) }
+    /// The panel appears only when the save is not instant.
+    static let panelAfter: Duration = .milliseconds(400)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // The 3D viewer writes control lines to the stdin of `alife stream`; a write to a pipe whose reader has gone must
@@ -18,18 +36,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        LaunchMode.current().plan.quitsAfterLastWindow
+        plan.quitsAfterLastWindow
     }
 
+    /// 1. A run is going: ask "Stop 'X' and quit?" first (Cancel keeps everything as it was). 2. The gate: a played world or a
+    /// run is asked to stop and the quit waits for it, with the panel; the user can give up waiting.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        terminationGate.shouldTerminate(
-            hasProcess: { PlayController.shared.hasProcess },
-            stop: { PlayController.shared.stopForQuit() },
-            reply: { NSApp.reply(toApplicationShouldTerminate: true) })
+        let (play, run) = (play, run)
+        let waitsForRun = plan.quitWaitsForRun
+        if plan.confirmsRunOnQuit, !terminationGate.isWaiting, run.hasRunJob, !run.stopRequested {
+            guard confirmStopRun(run.runningRunName ?? "this run") else { return .terminateCancel }
+        }
+        terminationGate.onWaiting = { [weak self] elapsed in self?.showQuitPanel(after: elapsed) }
+        quitPanel.onQuitNow = { [weak self] in self?.terminationGate.abandonWait() }
+        return terminationGate.shouldTerminate(
+            hasProcess: { play.hasProcess || (waitsForRun && run.hasRunJob) },
+            stop: {
+                play.stopForQuit()
+                if waitsForRun { run.stop() }
+            },
+            reply: { [weak self] in
+                self?.quitPanel.close()
+                NSApp.reply(toApplicationShouldTerminate: true)
+            })
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        RunController.shared.shutdown()  // the last resort for whatever the gate's wait left running
+        // The last resort for whatever the gate's wait left running (it timed out, or the user quit without saving).
+        run.shutdown(escalating: plan.quitWaitsForRun)
+    }
+
+    private func showQuitPanel(after elapsed: Duration) {
+        guard elapsed >= Self.panelAfter else { return }
+        let worlds = play.retiredWorlds
+        let repo = play.directory
+        let minutes = worlds.compactMap { world -> Int? in
+            guard let repo else { return nil }
+            let file = repo.appendingPathComponent("runs/\(world)/play.json")
+            return QuitWording.lossMinutes(baseRate: QuitWording.baseRate(playFile: file))
+        }.max()
+        quitPanel.show(QuitPanelModel(
+            worlds: worlds, run: run.hasRunJob ? run.runningRunName : nil,
+            elapsedSeconds: Int(elapsed.components.seconds), lossMinutes: minutes))
     }
 }
 

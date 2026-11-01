@@ -41,10 +41,16 @@ struct LineSplitter {
 }
 
 /// Where the repository is when the app starts. The stored folder (UserDefaults) can be gone, typically a git worktree
-/// that was deleted; then the default folder is used if it holds the engine, and otherwise the stored path is kept so
-/// that the status line can name it.
+/// that was deleted; then the first of the usual places that holds the engine is used, and otherwise the stored path is kept
+/// so that the status line can name it. With nothing stored the same places are tried, and if none holds the engine the path
+/// is empty: no folder is named that belongs to a particular person.
 enum RepoFolder {
-    static let defaultPath = "~/artificial-life"
+    /// The places tried, in order, for a repository that holds the engine (`.venv/bin/alife`). Only these are looked at, so that
+    /// finding the folder asks the system for access to no others.
+    static let candidates = ["~/artificial-life", "~/alife"]
+
+    /// The text in the empty folder field.
+    static let fieldPrompt = "Folder that holds .venv/bin/alife"
 
     static func isDirectory(_ path: String) -> Bool {
         var isDir: ObjCBool = false
@@ -57,16 +63,26 @@ enum RepoFolder {
             atPath: ((path as NSString).expandingTildeInPath as NSString).appendingPathComponent(".venv/bin/alife"))
     }
 
+    /// The first of `candidates` that is a folder with the engine in it.
+    static func firstUsable(_ candidates: [String]) -> String? {
+        candidates.first { isDirectory($0) && hasEngine($0) }
+    }
+
     /// The path to start with, and a log line when it replaces a stored path that does not exist. A stored path that
-    /// exists is never replaced, whether or not it holds the engine.
-    static func initialPath(stored: String?, defaultPath: String) -> (path: String, note: String?) {
-        guard let stored else { return (defaultPath, nil) }
-        if isDirectory(stored) || !isDirectory(defaultPath) || !hasEngine(defaultPath) { return (stored, nil) }
-        return (defaultPath, "Stored repository folder not found: \(stored). Using \(defaultPath).")
+    /// exists is never replaced, whether or not it holds the engine. With nothing stored and no usable candidate: "".
+    static func initialPath(stored: String?, candidates: [String]) -> (path: String, note: String?) {
+        guard let stored else { return (firstUsable(candidates) ?? "", nil) }
+        if isDirectory(stored) { return (stored, nil) }
+        guard let usable = firstUsable(candidates) else { return (stored, nil) }
+        return (usable, "Stored repository folder not found: \(stored). Using \(usable).")
     }
 
     static func missingMessage(_ path: String) -> String {
-        "Folder not found: \(path). Choose the repository folder."
+        if path.trimmingCharacters(in: .whitespaces).isEmpty {
+            return "No repository folder is chosen yet. Choose the folder that holds .venv/bin/alife "
+                + "(\(candidates.joined(separator: " and ")) were looked at)."
+        }
+        return "Folder not found: \(path). Choose the repository folder."
     }
 }
 
@@ -149,9 +165,9 @@ final class RunController: ObservableObject {
     /// `isApp` false (tests): no link to the shared stream and play controllers and no ticker.
     init(storedPath: String? = RepoPathStore.app.load(),
          savePath: @escaping (String) -> Void = { RepoPathStore.app.save($0) },
-         defaultPath: String = RepoFolder.defaultPath, isApp: Bool = true) {
+         candidates: [String] = RepoFolder.candidates, isApp: Bool = true) {
         saveRepoPath = savePath
-        let start = RepoFolder.initialPath(stored: storedPath, defaultPath: defaultPath)
+        let start = RepoFolder.initialPath(stored: storedPath, candidates: candidates)
         repoPath = start.path
         settings.name = Self.defaultRunName()
         if let note = start.note { appendLines([note], isError: false) }
@@ -181,7 +197,11 @@ final class RunController: ObservableObject {
     // MARK: Derived values
 
     var repoURL: URL {
-        URL(fileURLWithPath: (repoPath as NSString).expandingTildeInPath, isDirectory: true)
+        // An empty path would be the current directory; nothing is ever below this one.
+        if repoPath.trimmingCharacters(in: .whitespaces).isEmpty {
+            return URL(fileURLWithPath: "/var/empty/alife-no-repository-chosen", isDirectory: true)
+        }
+        return URL(fileURLWithPath: (repoPath as NSString).expandingTildeInPath, isDirectory: true)
     }
 
     var alifeURL: URL { repoURL.appendingPathComponent(".venv/bin/alife") }
@@ -206,6 +226,21 @@ final class RunController: ObservableObject {
 
     var canStart: Bool { job == nil && repoReady && validationErrors.isEmpty }
 
+    /// Why Start is disabled, in words for someone who has not read the manual (nil when it is enabled or a job is running):
+    /// the folder, then the engine in it, then the first thing wrong with the settings.
+    var startBlockedReason: String? {
+        guard job == nil, !canStart else { return nil }
+        if !repoFolderExists { return repoProblem }
+        if !repoReady {
+            return "The engine is not set up in this folder (.venv/bin/alife is missing). Use Set up environment, in the Repository box."
+        }
+        return validationErrors.first
+    }
+
+    /// Whether a research run (not a setup or a check) is going, and its directory name.
+    var hasRunJob: Bool { job == .run }
+    var runningRunName: String? { job == .run && !trackedRun.isEmpty ? trackedRun : nil }
+
     var targetRunExists: Bool {
         repoReady && !settings.targetRun.isEmpty && runs.contains(settings.targetRun)
     }
@@ -213,7 +248,8 @@ final class RunController: ObservableObject {
     /// The exact command that Start will execute.
     var commandLine: String {
         let args = settings.arguments(existingRuns: Set(runs)).map(shellQuote).joined(separator: " ")
-        return "cd \(shellQuote(repoPath)) && .venv/bin/alife \(args)"
+        let folder = repoPath.trimmingCharacters(in: .whitespaces).isEmpty ? "<repository folder>" : shellQuote(repoPath)
+        return "cd \(folder) && .venv/bin/alife \(args)"
     }
 
     // MARK: Repository
@@ -241,7 +277,7 @@ final class RunController: ObservableObject {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.directoryURL = repoURL
+        panel.directoryURL = repoFolderExists ? repoURL : FileManager.default.homeDirectoryForCurrentUser
         panel.prompt = "Choose"
         panel.message = "Select the artificial-life repository folder"
         if panel.runModal() == .OK, let url = panel.url {
@@ -565,10 +601,16 @@ final class RunController: ObservableObject {
         }
     }
 
-    /// Called when the app quits: ask a running simulation to stop cleanly (it outlives the app long enough
-    /// to write its checkpoint).
-    func shutdown() {
-        stop()
+    /// Called when the app quits. Without `escalating` a running simulation is asked to stop cleanly (SIGINT, once) and outlives
+    /// the app long enough to write its checkpoint. With it (`LaunchPlan.quitWaitsForRun`: the quit has already waited for the
+    /// run, or the user gave up waiting) whatever job is still running, a run, an environment setup or a check, is ended with
+    /// SIGTERM, so that none is left behind when the app is gone; a run then loses the steps since its last save point.
+    func shutdown(escalating: Bool = false) {
+        if escalating {
+            if let p = process, p.isRunning { p.terminate() }
+        } else {
+            stop()
+        }
         viewerProcess?.terminate()
         StreamController.shared.shutdown()
         PlayController.shared.shutdown()

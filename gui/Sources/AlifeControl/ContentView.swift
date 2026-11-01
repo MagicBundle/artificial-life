@@ -77,7 +77,7 @@ struct ContentView: View {
         GroupBox("Repository") {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    TextField("~/artificial-life", text: $controller.repoPath)
+                    TextField(RepoFolder.fieldPrompt, text: $controller.repoPath)
                         .textFieldStyle(.roundedBorder)
                     Button("Choose...") { controller.chooseRepo() }
                 }
@@ -417,7 +417,17 @@ struct ContentView: View {
             } else {
                 Button("Start") { controller.start() }
                     .buttonStyle(.borderedProminent)
+                    .keyboardShortcut("r", modifiers: .command)
                     .disabled(!controller.canStart)
+                // Why it is grey, in words (the settings' own messages are in the Command box).
+                if let reason = controller.startBlockedReason {
+                    Text(reason)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("start-blocked-reason")
+                }
             }
             Spacer()
             if let exit = controller.lastExit {

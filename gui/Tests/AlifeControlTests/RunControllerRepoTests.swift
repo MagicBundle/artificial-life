@@ -28,7 +28,7 @@ import Testing
     }
 
     private func make(stored: String?, default path: String, saved: Saved = Saved()) -> RunController {
-        RunController(storedPath: stored, savePath: { saved.paths.append($0) }, defaultPath: path, isApp: false)
+        RunController(storedPath: stored, savePath: { saved.paths.append($0) }, candidates: [path], isApp: false)
     }
 
     @Test func aMissingStoredFolderFallsBackToTheDefaultAndLogsIt() throws {

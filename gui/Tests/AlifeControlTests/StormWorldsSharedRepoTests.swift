@@ -19,7 +19,7 @@ import Testing
     }
 
     private func controller(on store: RepoPathStore, default path: String) -> RunController {
-        RunController(storedPath: store.load(), savePath: { store.save($0) }, defaultPath: path, isApp: false)
+        RunController(storedPath: store.load(), savePath: { store.save($0) }, candidates: [path], isApp: false)
     }
 
     @Test func aFolderSetInTheLabIsTheGamesAndTheOtherWayRound() throws {
@@ -51,9 +51,10 @@ import Testing
         let store = RepoPathStore(shared: MemoryDomain(), own: MemoryDomain())
         let missing = scratch.url.appendingPathComponent("no-such-default").path
         let storm = controller(on: store, default: missing)
-        #expect(storm.repoPath == missing)
+        // No folder is named that nobody chose (docs/APP.md F3): the path is empty and the status says that none is chosen.
+        #expect(storm.repoPath.isEmpty)
         #expect(!storm.repoReady)
-        #expect(storm.repoProblem == RepoFolder.missingMessage(missing))
+        #expect(storm.repoProblem == RepoFolder.missingMessage(""))
     }
 
     @Test func theDelegateQuitsWhenTheLastWindowClosesInTheLabAndInStormWorlds() {

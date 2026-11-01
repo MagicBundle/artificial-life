@@ -96,7 +96,7 @@ struct RepoFolderForm: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                TextField(RepoFolder.defaultPath, text: $controller.repoPath)
+                TextField(RepoFolder.fieldPrompt, text: $controller.repoPath)
                     .textFieldStyle(.roundedBorder)
                 Button("Choose...") { controller.chooseRepo() }
             }

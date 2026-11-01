@@ -100,6 +100,14 @@ package struct LaunchPlan: Equatable, Sendable {
     /// Window menu brings either window back while the app runs.
     package var quitsAfterLastWindow: Bool { true }
 
+    /// Quitting while a research run is going asks first ("Stop 'X' and quit?"): a run is stopped, and loses the steps since its
+    /// last save point if it cannot finish saving (docs/APP.md §5.4, R2). On in both modes: it is a fix, not a feature of one app.
+    package var confirmsRunOnQuit: Bool { true }
+
+    /// The quit waits for a research run to write its save point, as it does for a played world, with a panel that says so;
+    /// whatever is still running when the wait ends is ended with SIGTERM so that no run is orphaned. On in both modes.
+    package var quitWaitsForRun: Bool { true }
+
     /// The Window-menu items that open a window, with their Command key equivalents. Only Storm Worlds has them: the Lab app
     /// opens its other windows from its own buttons, as it always did.
     package var windowMenu: [WindowMenuItem] {
