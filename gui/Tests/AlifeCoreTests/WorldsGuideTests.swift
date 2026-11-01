@@ -55,9 +55,16 @@ import Testing
         #expect(WorldsGuide.reason(forPlaying: world("b", locked: true), in: f) == "In use elsewhere")
         #expect(WorldsGuide.reason(forPlaying: world("c", step: nil), in: f) == "No save point")
         #expect(WorldsGuide.reason(forPlaying: world("d"), in: f) == "Saving...")
+        // R5: another world that is live is not a reason to grey Play (the sheet stops it first); one still starting is
         let open = facts(open: "a")
-        #expect(WorldsGuide.reason(forPlaying: world("b"), in: open) == "Close a first")
+        #expect(WorldsGuide.reason(forPlaying: world("b"), in: open) == nil)
         #expect(WorldsGuide.reason(forPlaying: world("a"), in: open) == "Open now")
+        let starting = facts(open: "a", starting: true)
+        #expect(WorldsGuide.reason(forPlaying: world("b"), in: starting) == "a is still starting")
+        #expect(WorldsGuide.reason(forPlaying: world("a"), in: starting) == "Open now")
+        // the other reasons still show with a world open
+        let busy = facts(catalog(worlds: [world("b", locked: true)]), open: "a")
+        #expect(WorldsGuide.reason(forPlaying: world("b", locked: true), in: busy) == "In use elsewhere")
     }
 
     @Test func thePlayButtonsUseTheSpecsWordsNotTheOldOnes() {
@@ -81,7 +88,8 @@ import Testing
         #expect(WorldsGuide.reasonToMakePlanet(facts(folder: false)) == "Folder not found: /x")
         #expect(WorldsGuide.reasonToMakePlanet(facts(engine: false)) == "Set up the engine first.")
         #expect(WorldsGuide.reasonToMakePlanet(facts())?.contains("world with a save point") == true)
-        #expect(WorldsGuide.reasonToMakePlanet(facts(open: "w"))?.hasPrefix("Close w first") == true)
+        #expect(WorldsGuide.reasonToMakePlanet(facts(catalog(sources: [source("r")]), open: "w")) == nil, "a live world is stopped by the sheet (R5)")
+        #expect(WorldsGuide.reasonToMakePlanet(facts(catalog(sources: [source("r")]), open: "w", starting: true))?.hasPrefix("w is still starting") == true)
         #expect(WorldsGuide.reasonToMakePlanet(facts(catalog(sources: [source("r")]))) == nil)
     }
 

@@ -66,6 +66,10 @@ package enum AppShell {
     package static let setupWindowID = "setup"
     /// The preference that remembers the page between launches (`ShellPage.restored`).
     package static let pageKey = "shell.page"
+    /// What closing the window does while a run is going (`ClosePreference`): ask, keep it running, or stop it and quit (docs/APP.md D3).
+    package static let closeWithRunKey = "shell.closeWithRun"
+    /// Whether a world paused by leaving Watch continues when Watch is shown again (*Pick up where I left off*, docs/APP.md D4).
+    package static let pickUpKey = "shell.pickUp"
     /// The minimum size of the window for every page (docs/APP.md M12), so that entering Watch never resizes it.
     package static let minWidth: Double = 1100
     package static let minHeight: Double = 700

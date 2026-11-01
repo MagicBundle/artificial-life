@@ -228,7 +228,10 @@ import Testing
         #expect(WorldsGuide.reasonToMakePlanet(from: catalogState.row(named: "nosave")!, in: facts) == "No save point to start from yet.")
         let open = WorldsGuide.Facts(folderExists: true, engineReady: true, catalog: catalogState.catalog, openWorld: "r")
         #expect(WorldsGuide.reasonToMakePlanet(from: r, in: open) == "Close it first")
-        #expect(WorldsGuide.reasonToMakePlanet(from: catalogState.row(named: "nosave")!, in: open) == "Close r first")
+        // another world that is open is stopped by the sheet (R5): the row's own reason (no save point) is what stays
+        #expect(WorldsGuide.reasonToMakePlanet(from: catalogState.row(named: "nosave")!, in: open) == "No save point to start from yet.")
+        #expect(WorldsGuide.reasonToMakePlanet(from: catalogState.row(named: "nosave")!, in: WorldsGuide.Facts(
+            folderExists: true, engineReady: true, catalog: catalogState.catalog, openWorld: "r", openWorldIsStarting: true)) == "r is still starting")
         let saving = WorldsGuide.Facts(folderExists: true, engineReady: true, catalog: catalogState.catalog, saving: ["r"])
         #expect(WorldsGuide.reasonToMakePlanet(from: r, in: saving) == "Saving...")
         let noEngine = WorldsGuide.Facts(folderExists: true, engineReady: false, catalog: catalogState.catalog)

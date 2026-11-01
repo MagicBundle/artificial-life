@@ -113,6 +113,10 @@ package struct LaunchPlan: Equatable, Sendable {
     /// Window menu brings either window back while the app runs.
     package var quitsAfterLastWindow: Bool { true }
 
+    /// Closing the window while a run is going asks "Keep it running / Stop and quit / Cancel" and, for "keep", lets the app live on with no
+    /// window (docs/APP.md D3 = C, PR-E). Only the `alife` window: the two old apps quit with their last window, as they always did.
+    package var asksWhenClosingWithRun: Bool { mode == .alife }
+
     /// Quitting while a research run is going asks first ("Stop 'X' and quit?"): a run is stopped, and loses the steps since its
     /// last save point if it cannot finish saving (docs/APP.md §5.4, R2). On in both modes: it is a fix, not a feature of one app.
     package var confirmsRunOnQuit: Bool { true }
