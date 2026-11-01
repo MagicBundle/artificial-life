@@ -96,15 +96,19 @@ Swift toolchain and takes minutes, so it is a manual step, also run by `tests/te
 
 In *New run* mode a card under the **Preset** picker shows the selected preset: a snapshot beside a plain-language description (what
 the world is, what it is good for, what it costs), its shape and size and how many organisms it holds (read from the preset file), and
-a caption with the seed, step, population and speed of the snapshot. **Compare presets...** opens a scrolling sheet with all ten, grouped
-as flat worlds, 3D box worlds and planets; clicking a row chooses that preset (as the picker does) and closes the sheet. The pictures are
-frames of real runs of the plain presets (seed 1, no overlay, default settings; `256k` is shown at step 10 000, the others at step
-30 000; a large flat world is shown as a window of it, and the caption says so), and the speed is what the engine measured alone on the Mac named in the sheet, so on another Mac it differs. The images and
-`manifest.json` are in `gui/PresetSnapshots/`, read from the repository folder like the presets; a missing image shows a placeholder.
+captions: the run the picture is from (seed, step, the organisms alive in the whole world and, when the picture is a window of a large
+flat world, how many of them are in it), what the picture shows (the whole world, the whole box, or one side of a planet), the speed at
+that population and the approximate peak memory. **Compare presets...** opens a scrolling sheet with all ten, grouped as flat worlds,
+3D box worlds and planets; clicking a row chooses that preset (as the picker does) and closes the sheet. The pictures are frames of
+real runs of the plain presets (seed 1, no extras, the preset's own settings except a checkpoint every 5 000 steps instead of 10 000;
+`256k` is shown at step 10 000, the others at step 30 000). Speed and memory were measured on a separate continuation of each run, alone
+on the Mac named in the sheet, so on another Mac they differ, and a run slows as its population grows. The images and `manifest.json`
+are in `gui/PresetSnapshots/`, read from the repository folder like the presets; a missing image shows a placeholder.
 
-`scripts/make-preset-snapshots.sh` remakes them (stages `runs speed streams render manifest`; about an hour on an M5 Pro,
-two simulations at a time, output in `~/alife-preset-snapshots`, `STEPS_<preset>` overrides a run length). Drawing needs the opt-in
-tool `PresetSnapshotTool` (`ALIFE_PRESET_SNAPSHOTS=1`, run by the script's `render` stage); the normal `swift test` skips it.
+`scripts/make-preset-snapshots.sh` remakes them from committed code (stages `runs speed streams render manifest`; about an hour on an
+M5 Pro, two simulations at a time, output in `~/alife-preset-snapshots`, `STEPS_<preset>` overrides a run length). It removes its own
+temporary files at the end and keeps the run directories. Drawing needs the opt-in tool `PresetSnapshotTool`
+(`ALIFE_PRESET_SNAPSHOTS=1`, run by the script's `render` stage); the normal `swift test` skips it.
 
 ## Using it
 
