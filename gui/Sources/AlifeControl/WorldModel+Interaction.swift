@@ -574,8 +574,17 @@ extension WorldModel {
     var clockStrip: ClockStrip {
         let store = play.store
         let alertTitle = store.clock.flatMap { $0.reason == .alert ? store.alerts.pausing(atStep: Int($0.head.step))?.title : nil }
-        return ClockStrip(clock: store.clock, requested: play.requestedRate, baseRate: store.play?.baseRate ?? 14.4,
-                          chapterLabel: chapterBar.label, alertTitle: alertTitle)
+        var strip = ClockStrip(clock: store.clock, requested: play.requestedRate, baseRate: store.play?.baseRate ?? 14.4,
+                               chapterLabel: chapterBar.label, alertTitle: alertTitle)
+        // The app's own pause says so (D4): a world that is paused because the player left is not "paused" like one they paused.
+        if strip.paused, strip.stopReason == "paused" || strip.stopReason == nil {
+            switch awayHold {
+            case .away: strip.readout = "paused while you are away"
+            case .left: strip.readout = "paused when you left Watch"
+            case .none: break
+            }
+        }
+        return strip
     }
 
     // MARK: The inspector

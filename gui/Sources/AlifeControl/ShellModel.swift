@@ -30,6 +30,11 @@ final class ShellModel: ObservableObject {
     /// A world that did not open (it failed at once, or the engine stopped while it started), until the player dismisses it or another
     /// world starts.
     @Published var startFailure: StartFailure?
+    /// What became of the world that was open when the window was closed with a run going (it was saved and closed): the Worlds page says so
+    /// until the player dismisses it or opens a world.
+    @Published var closedNote: String?
+    /// The app's own pause of the world while the player is on another page (`AwayPause`): what the Worlds page and the sidebar say.
+    @Published private(set) var awayHold = AwayPause.Hold.none
     /// A world is starting or live: what the menus read (they must not observe the play controller, which publishes with every frame).
     @Published private(set) var worldIsOpen: Bool
     /// Counts the requests to scroll the Worlds page to its planet form (File > Make Planet...).
@@ -45,6 +50,7 @@ final class ShellModel: ObservableObject {
     private let defaults: UserDefaults
     private var startingWorld: String?
     private var phaseObserver: AnyCancellable?
+    private var awayObserver: AnyCancellable?
     private var previousPhase: PlayPhase
     /// The player pressed Play or Make planet on the Worlds page, or `--world` started a world: the next world to go live is theirs and
     /// is shown. (A world is never pulled in front of someone who went on to Activity while it started; the set-up page counts as the page it was started from, since it shows the wait.)
@@ -62,6 +68,10 @@ final class ShellModel: ObservableObject {
         phaseObserver = session.play.$phase.sink { [weak self] phase in
             MainActor.assumeIsolated { self?.phaseChanged(to: phase) }
         }
+        awayHold = session.model.awayHold
+        awayObserver = session.model.$awayHold.removeDuplicates().sink { [weak self] hold in
+            MainActor.assumeIsolated { self?.awayHold = hold }
+        }
     }
 
     private func phaseChanged(to phase: PlayPhase) {
@@ -72,9 +82,11 @@ final class ShellModel: ObservableObject {
         switch phase {
         case .starting:
             startFailure = nil
+            closedNote = nil
             startingWorld = session.play.world
         case .live:
             startFailure = nil
+            closedNote = nil
             startingWorld = nil
             if was != .live, startedByArgument || (startedByThePlayer && (page == .worlds || page == .setup)) { page = .watch }
             startedByThePlayer = false
@@ -96,7 +108,18 @@ final class ShellModel: ObservableObject {
         }
     }
 
-    func select(_ page: ShellPage) { self.page = page }
+    /// Shows a page. With the window closed (the app lives on for a run) a command that names a page brings the window back first.
+    func select(_ page: ShellPage) {
+        self.page = page
+        AppDelegate.current?.showMainWindowIfNeeded()
+    }
+
+    /// The window was closed with a run going and stays closed: the world that was open was saved and closed. When the window comes back,
+    /// Worlds says what became of it (Watch would only say that no world is open).
+    func windowClosedWithRun(world: String?) {
+        if let world, !world.isEmpty { closedNote = SessionRules.closedWorldNote(world) }
+        if page == .watch { page = .worlds }
+    }
 
     /// What the Unfinished card says about a world that was being started when it ended in this session.
     static func buildNote(failed: Bool) -> String {

@@ -29,6 +29,8 @@ struct RunExit: Equatable {
     var forced: Bool
     var problem: String?
     var serial: Int
+    /// The stop-after timer ended it (a `stopRequested` that the person did not ask for).
+    var byTimer = false
 }
 
 /// Splits a byte stream into lines (on "\n" or "\r", so progress bars become lines too).
@@ -156,6 +158,7 @@ final class RunController: ObservableObject {
     @Published private(set) var lastRunExit: RunExit?
     private var runExitCount = 0
     private var forceRequested = false
+    private var timerEnded = false
     private var jobLogStart = 0
     /// The `world.dims` of the run the status, viewer and inspect buttons refer to (from its `config.json`; a run from
     /// before the key is 2D), or nil when there is no such run or its config cannot be read.
@@ -569,6 +572,7 @@ final class RunController: ObservableObject {
         lastExit = nil
         stopRequested = false
         forceRequested = false
+        timerEnded = false
         elapsed = 0
         remaining = nil
         deadline = nil
@@ -605,7 +609,7 @@ final class RunController: ObservableObject {
             let problems = logLines.filter { $0.id >= jobLogStart && $0.isError }.map(\.text)
             lastRunExit = RunExit(
                 run: trackedRun, status: status, signalled: reason == .uncaughtSignal, stopRequested: stopRequested, forced: forceRequested,
-                problem: PipelineWords.firstProblem(in: problems), serial: runExitCount)
+                problem: PipelineWords.firstProblem(in: problems), serial: runExitCount, byTimer: timerEnded)
         }
         stopRequested = false
         refreshRepo()
@@ -847,6 +851,7 @@ final class RunController: ObservableObject {
                 remaining = max(0, deadline.timeIntervalSince(now))
                 if now >= deadline, !stopRequested {
                     appendLines(["Timer elapsed."], isError: false)
+                    timerEnded = true
                     stop()
                 }
             }

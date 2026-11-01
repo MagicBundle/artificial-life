@@ -33,6 +33,8 @@ final class SetupModel: ObservableObject {
     @Published private(set) var refusal: String?
     /// Asks the shell to show the set-up page (a card's button, File > New World).
     var show: () -> Void = {}
+    /// The sheet that stops the open world before a planet is made (R5); without one a planet is refused while a world is open.
+    var switcher: WorldSwitcher?
 
     private var remembered = RememberedLevers()
     private var forwarding: AnyCancellable?
@@ -572,9 +574,16 @@ final class SetupModel: ObservableObject {
         case .makePlanet:
             spec = makePlanetSpec
         }
-        refusal = coordinator.begin(setup, planet: spec, timing: timing)
-        // What was edited is remembered only once the start went through (a refused press forgets nothing and remembers nothing).
-        if refusal == nil { remember() }
+        guard !(switcher?.isBusy ?? false) else { return }  // (the open world is being saved for another switch)
+        let go: @MainActor () -> Void = { [weak self] in
+            guard let self else { return }
+            refusal = coordinator.begin(setup, planet: spec, timing: timing)
+            // What was edited is remembered only once the start went through (a refused press forgets nothing and remembers nothing).
+            if refusal == nil { remember() }
+        }
+        // A planet replaces the open world: the sheet asks first, and the planet starts once the world is saved (R5).
+        if case .makePlanet = intent, let switcher, switcher.ask(.makePlanet(setup.name), then: go) { return }
+        go()
     }
 
     /// The same press with the name made free (the "Try again with a new name" of a failed build).

@@ -27,6 +27,7 @@ struct WatchChrome: View {
     @ObservedObject var shell: ShellModel
     @ObservedObject var play: PlayController
     @ObservedObject var model: WorldModel
+    @ObservedObject var controller: RunController
     @AppStorage("world.dockSide") private var sideRaw = DockSide.right.rawValue
 
     var body: some View {
@@ -39,6 +40,7 @@ struct WatchChrome: View {
             case .ended, .failed: backBar
             case .starting, .live: EmptyView()
             }
+            notes
         }
         .navigationTitle(play.world == nil ? "Watch" : WorldTitle.window(world: play.world, header: play.store.play))
         .navigationSubtitle(WorldTitle.subtitle(header: play.store.play) ?? "")
@@ -57,6 +59,32 @@ struct WatchChrome: View {
                     .disabled(!play.isActive)
             }
         }
+    }
+
+    /// What Watch says about the world's state that the map does not: the app paused it because the player left (D4), and a run shares the GPU
+    /// (R1). Along the top, out of the way of the map; the first needs a button, so it takes input, the second does not.
+    @ViewBuilder private var notes: some View {
+        VStack(spacing: 8) {
+            if case .left = model.awayHold, play.phase == .live {
+                HStack(spacing: 10) {
+                    Image(systemName: "pause.circle.fill").foregroundStyle(.orange)
+                    Text("Paused when you left this page.")
+                    Button("Run") { play.resume() }
+                        .help("Run the world at the rate it holds (Space)")
+                }
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(.regularMaterial, in: Capsule())
+            }
+            if let note = SessionRules.gpuNote(runGoing: controller.hasRunJob, worldOpen: play.isActive) {
+                Label(note, systemImage: "gauge.with.needle")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(.regularMaterial, in: Capsule())
+                    .allowsHitTesting(false)
+            }
+        }
+        .padding(.top, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)  // (layout only: the empty part of the frame takes no clicks)
     }
 
     private var emptyState: some View {

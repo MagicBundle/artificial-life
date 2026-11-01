@@ -182,6 +182,9 @@ final class WorldModel: ObservableObject {
 
     var ticker = Ticker()
     var attention = AttentionTracker()
+    /// The app's own pause of the world while the player is on another page (`AwayPause`, docs/APP.md D4), and what Watch and the sidebar say of it.
+    var away = AwayPause()
+    @Published var awayHold = AwayPause.Hold.none
     var lastCardChapter = 0
     /// When the notice of a chapter whose pause is off goes (seconds of `now`).
     var noticeExpires: Double?
@@ -315,7 +318,10 @@ final class WorldModel: ObservableObject {
         play.onAlerts = { [weak self] changes, backlog in self?.handle(alerts: changes, backlog: backlog) }
         play.onReports = { [weak self] reports in self?.handle(reports: reports) }
         play.onPlans = { [weak self] plans in self?.handle(plans: plans) }
-        play.onReset = { [weak self] in self?.resetInteraction() }
+        play.onReset = { [weak self] in
+            self?.resetInteraction()
+            self?.clearAway()
+        }
         storage.isLive = { [weak play] in play?.phase == .live }
     }
 

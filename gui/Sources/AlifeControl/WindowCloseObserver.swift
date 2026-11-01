@@ -32,9 +32,14 @@ final class WindowGroups {
 /// Windows whose observers name the same `group` count together: `onClose` then runs when the last of them closes, not
 /// for each (the main scene is a `WindowGroup`, so there can be several main windows, and closing one of them is not
 /// the app ending).
+///
+/// With `shouldClose` the window is also asked before it closes (`windowShouldClose`, which the red button, Command-W and `performClose`
+/// all go through): false keeps it open. SwiftUI owns a window's delegate, so the observer puts a forwarding delegate in front of it
+/// (`CloseGuardDelegate`), which hands every other message to the original.
 struct WindowCloseObserver: NSViewRepresentable {
     var restorable = true
     var group: String?
+    var shouldClose: (@MainActor () -> Bool)?
     var onClose: @MainActor () -> Void
 
     func makeNSView(context: Context) -> ObserverView {
@@ -42,19 +47,24 @@ struct WindowCloseObserver: NSViewRepresentable {
         view.restorable = restorable
         view.group = group
         view.onClose = onClose
+        view.shouldClose = shouldClose
         return view
     }
 
     func updateNSView(_ view: ObserverView, context: Context) {
         view.onClose = onClose
+        view.shouldClose = shouldClose
+        view.installCloseGuard()  // (SwiftUI may have put its own delegate back)
     }
 
     @MainActor
     final class ObserverView: NSView {
         var onClose: @MainActor () -> Void = {}
+        var shouldClose: (@MainActor () -> Bool)?
         var restorable = true
         var group: String?
         private var token: (any NSObjectProtocol)?
+        private var closeGuard: CloseGuardDelegate?
         /// The window this view is registered with in its group.
         private weak var registered: NSWindow?
 
@@ -71,6 +81,7 @@ struct WindowCloseObserver: NSViewRepresentable {
                 _ = WindowGroups.shared.remove(registered, from: group)
             }
             if !restorable { window.isRestorable = false }
+            installCloseGuard()
             if let group {
                 WindowGroups.shared.add(window, to: group)
                 registered = window
@@ -85,11 +96,47 @@ struct WindowCloseObserver: NSViewRepresentable {
             }
         }
 
+        /// Puts the forwarding delegate in front of the window's own, once (and again if the window's delegate was replaced).
+        func installCloseGuard() {
+            guard shouldClose != nil, let window else { return }
+            if let installed = window.delegate as? CloseGuardDelegate, installed === closeGuard { return }
+            let guardDelegate = closeGuard ?? CloseGuardDelegate { [weak self] in self?.shouldClose?() ?? true }
+            guardDelegate.original = window.delegate
+            closeGuard = guardDelegate
+            window.delegate = guardDelegate
+        }
+
         private func windowWillClose() {
             var othersOpen = 0
             if let registered, let group { othersOpen = WindowGroups.shared.remove(registered, from: group) }
             registered = nil
             if othersOpen == 0 { onClose() }
         }
+    }
+}
+
+/// A window delegate that answers `windowShouldClose` and forwards everything else to the delegate the window had (SwiftUI's). A window
+/// holds its delegate weakly: the observer view keeps this alive.
+@MainActor
+final class CloseGuardDelegate: NSObject, NSWindowDelegate {
+    weak var original: (any NSWindowDelegate)?
+    private let shouldClose: @MainActor () -> Bool
+
+    init(shouldClose: @escaping @MainActor () -> Bool) { self.shouldClose = shouldClose }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if let original, original.responds(to: #selector(NSWindowDelegate.windowShouldClose(_:))), original.windowShouldClose?(sender) == false {
+            return false
+        }
+        return shouldClose()
+    }
+
+    override func responds(to aSelector: Selector!) -> Bool {
+        super.responds(to: aSelector) || (original as? NSObject)?.responds(to: aSelector) == true
+    }
+
+    override func forwardingTarget(for aSelector: Selector!) -> Any? {
+        if let original = original as? NSObject, original.responds(to: aSelector) { return original }
+        return super.forwardingTarget(for: aSelector)
     }
 }

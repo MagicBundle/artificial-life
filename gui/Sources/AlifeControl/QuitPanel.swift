@@ -166,4 +166,34 @@ final class QuitPanel {
         stop.hasDestructiveAction = true
         return alert.runModal() == .alertSecondButtonReturn
     }
+
+    /// The question when the window of the `alife` app is closed with a run going (docs/APP.md D3): keep it running, stop it and quit, or
+    /// cancel. Return is the first button, Keep Running: it loses nothing and does what closing meant. Escape is Cancel. "Remember my choice"
+    /// is the alert's own checkbox. Modal, like the quit's question; shown while the window is still up.
+    static func askToCloseWindow(_ question: CloseQuestion) -> (answer: CloseAnswer, remember: Bool) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = closeAlert(question)
+        let response = alert.runModal()
+        let remember = alert.suppressionButton?.state == .on
+        switch response {
+        case .alertFirstButtonReturn: return (.keepRunning, remember)
+        case .alertSecondButtonReturn: return (.stopAndQuit, remember)
+        default: return (.cancel, false)
+        }
+    }
+
+    /// The alert of `askToCloseWindow`, made but not run (the tests look at it, and draw it).
+    static func closeAlert(_ question: CloseQuestion) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = question.title
+        alert.informativeText = question.detail
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: question.keepLabel)  // the default button (Return)
+        let stop = alert.addButton(withTitle: question.stopLabel)
+        stop.hasDestructiveAction = true
+        alert.addButton(withTitle: question.cancelLabel)  // Escape
+        alert.showsSuppressionButton = true
+        alert.suppressionButton?.title = question.rememberLabel
+        return alert
+    }
 }

@@ -19,6 +19,9 @@ final class PipelineCoordinator: ObservableObject {
         var playerStartsWorld: () -> Void = {}
         var showActivity: () -> Void = {}
         var showWatch: () -> Void = {}
+        /// A planet is to be made while a world is open: the sheet asks to stop it first (R5). True when it took the request (`then` runs
+        /// after the world is saved); false when no world has to stop.
+        var switchWorld: (SwitchRequest.Goal, @escaping @MainActor () -> Void) -> Bool = { _, _ in false }
         /// Opens the set-up page on an intent, with a name to suggest.
         var openSetup: (SetupIntent, String?) -> Void = { _, _ in }
         /// The planet's failure is told by the pipeline, not also by the Worlds page.
@@ -206,6 +209,8 @@ final class PipelineCoordinator: ObservableObject {
         case .cancel: apply(.cancelPressed)
         case .makePlanet, .makePlanetFromHere:
             if case .parked = p.state {
+                // (a world that is open is stopped first, through the sheet: the planet starts when it is saved)
+                if play.isActive, hooks.switchWorld(.makePlanet(p.name), { [weak self] in self?.apply(.makePlanetPressed) }) { return }
                 apply(.makePlanetPressed)
             } else if let world = p.growName ?? p.source {
                 hooks.openSetup(.makePlanet(from: world), p.name)

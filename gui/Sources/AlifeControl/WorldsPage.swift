@@ -11,8 +11,11 @@ struct WorldsPage: View {
     @ObservedObject var play: PlayController
     @ObservedObject var setup: SetupModel
     @ObservedObject var library: WorldLibrary
+    /// The sheet that stops the open world before another is played (R5).
+    var switcher: WorldSwitcher?
 
     private var model: WorldLauncherModel { setup.launcher }
+    private var worldModel: WorldModel { shell.session.model }
     @Environment(\.openWindow) private var openWindow
 
     private var facts: WorldsGuide.Facts {
@@ -33,6 +36,7 @@ struct WorldsPage: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     if let note = shell.launchNote { launchNote(note) }
+                    if let note = shell.closedNote { closedNote(note) }
                     if let failure = shell.startFailure { failureCard(failure) }
                     if let gone = library.vanished { goneNote(gone) }
                     // (while a world is being made the bar says so, and the card would offer to start another)
@@ -97,8 +101,13 @@ struct WorldsPage: View {
             guard let world = library.state.catalog.worlds.first(where: { $0.name == name }) else { return }
             // (The reason is read again at the moment of the click: another process may have taken the world since the card was drawn.)
             guard WorldsGuide.reason(forPlaying: world, in: facts) == nil else { return }
-            shell.playerStartsWorld()
-            model.resume(world)
+            let start: @MainActor () -> Void = {
+                shell.playerStartsWorld()
+                model.resume(world)
+            }
+            // Another world is open: the sheet stops it first (it is saved), then this one starts (R5).
+            if let switcher, switcher.ask(.play(name), then: start) { return }
+            start()
         }
     }
 
@@ -113,6 +122,18 @@ struct WorldsPage: View {
         }
         .padding(12)
         .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// What became of the world that was open when the window was closed with a run going.
+    private func closedNote(_ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "info.circle.fill").foregroundStyle(.tint)
+            Text(text).fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Button("Dismiss") { shell.closedNote = nil }
+        }
+        .padding(12)
+        .background(.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
     }
 
     /// A world that was there a moment ago and is not: it was removed outside the app, or its drive went away.
@@ -225,6 +246,15 @@ struct WorldsPage: View {
                     Button("Watch") { shell.select(.watch) }.buttonStyle(.borderedProminent)
                     Button("Close World") { shell.closeWorld() }
                     Text("Close World saves first.").font(.caption).foregroundStyle(.secondary)
+                }
+                // D4: the world is paused while the player is on another page, and the page says so.
+                if shell.awayHold.isAway {
+                    Label(worldModel.picksUpWhereLeft ? "Paused while you are on this page. It continues when you go back to Watch."
+                          : "Paused while you are on this page. It stays paused until you press Run in Watch.", systemImage: "pause.circle")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if let note = SessionRules.gpuNote(runGoing: controller.hasRunJob, worldOpen: true) {
+                    Label(note, systemImage: "gauge.with.needle").font(.caption).foregroundStyle(.secondary)
                 }
             case .starting(let name):
                 header("hourglass", "Starting \(name)")

@@ -7,7 +7,7 @@ import Testing
 
 /// A scratch alife folder with a stand-in engine, and the objects of the set-up page wired to it as the app wires them. The stand-in is a bash
 /// script that makes the files the real engine makes (config, meta, save points, metrics) and behaves as `.mode` says, `run:play`:
-/// - run: `ok` (finishes at once), `extinct` (ends at step 4,200 with status extinct and exit 0, as the engine does when nothing is alive), `silent` (makes its directory and nothing else, and ends on SIGINT as a signal: the engine in its first seconds), `long` (runs until it gets SIGINT, then saves at step 12,000 and exits 130), `refuse` (prints a traceback, exit 2)
+/// - run: `ok` (finishes at once), `extinct` (ends at step 4,200 with status extinct and exit 0, as the engine does when nothing is alive), `silent` (makes its directory and nothing else, and ends on SIGINT as a signal: the engine in its first seconds), `long` (runs until it gets SIGINT, then saves at step 12,000 and exits 130), `brief` (the same for about three seconds, then finishes by itself), `refuse` (prints a traceback, exit 2)
 /// - play: `ok` (progress lines, then the committed play stream until `quit`), `slow` (progress lines, then waits for SIGINT: exit 130, leaves an
 ///   unfinished build), `fail` (prints its reason, exit 4), `extinct` (says the world is extinct and exits 0 before any stream), `quits` (ends by itself before any stream)
 @MainActor
@@ -29,7 +29,9 @@ final class PipelineRig {
     var opened: [(SetupIntent, String?)] = []
     private var ownsScratch: Bool
 
-    init(mode: String = "ok:ok", repo existing: URL? = nil, scratch existingScratch: Scratch? = nil) throws {
+    /// `playFixture` is the committed play stream the stand-in plays for `alife play` (`3d_g3b` ends stopped for an alert at a chapter end,
+    /// `3d_n70` paused by the player).
+    init(mode: String = "ok:ok", repo existing: URL? = nil, scratch existingScratch: Scratch? = nil, playFixture: String = "3d_g3b") throws {
         if let existingScratch, let existing {
             scratch = existingScratch
             repo = existing
@@ -38,7 +40,7 @@ final class PipelineRig {
             scratch = try Scratch()
             repo = scratch.url.appendingPathComponent("alife-folder")
             ownsScratch = true
-            try Self.makeFolder(repo, in: scratch)
+            try Self.makeFolder(repo, in: scratch, playFixture: playFixture)
         }
         runs = repo.appendingPathComponent("runs")
         try mode.write(to: repo.appendingPathComponent(".mode"), atomically: true, encoding: .utf8)
@@ -141,7 +143,7 @@ final class PipelineRig {
 
     // MARK: The folder
 
-    static func makeFolder(_ repo: URL, in scratch: Scratch) throws {
+    static func makeFolder(_ repo: URL, in scratch: Scratch, playFixture: String = "3d_g3b") throws {
         let fm = FileManager.default
         let bin = repo.appendingPathComponent(".venv/bin")
         try fm.createDirectory(at: bin, withIntermediateDirectories: true)
@@ -150,7 +152,7 @@ final class PipelineRig {
         try fm.createDirectory(at: repo.appendingPathComponent("src/alife"), withIntermediateDirectories: true)
         try fm.createSymbolicLink(at: repo.appendingPathComponent("src/alife/presets"), withDestinationURL: Repo.root.appendingPathComponent("src/alife/presets"))
         let script = bin.appendingPathComponent("alife")
-        try (Self.engine(fixture: Repo.playFixtureURL("3d_g3b").path)).write(to: script, atomically: true, encoding: .utf8)
+        try (Self.engine(fixture: Repo.playFixtureURL(playFixture).path)).write(to: script, atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
     }
 
@@ -199,6 +201,12 @@ final class PipelineRig {
               mkworld "$out" running 12000
               i=0
               while [ $stopped = 0 ] && [ $i -lt 900 ]; do sleep 0.1; i=$((i+1)); done
+              if [ $stopped = 1 ]; then mkworld "$out" interrupted 12600; exit 130; fi
+              mkworld "$out" done 30000; exit 0;;
+            brief)
+              mkworld "$out" running 12000
+              i=0
+              while [ $stopped = 0 ] && [ $i -lt 30 ]; do sleep 0.1; i=$((i+1)); done
               if [ $stopped = 1 ]; then mkworld "$out" interrupted 12600; exit 130; fi
               mkworld "$out" done 30000; exit 0;;
             *)

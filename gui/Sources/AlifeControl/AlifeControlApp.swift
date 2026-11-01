@@ -73,8 +73,85 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        plan.quitsAfterLastWindow
+        // The `alife` window closed with "Keep it running": the run is the reason to stay (docs/APP.md D3). The flag is set when the window
+        // is asked to close and read once, here.
+        let stays = plan.asksWhenClosingWithRun && keepsAliveForRun
+        return plan.quitsAfterLastWindow && !stays
     }
+
+    // MARK: Closing the window (the `alife` window, D3)
+
+    /// What the person chose last time they were asked ("Remember my choice"), read from the app's preferences; the tests replace it.
+    var closePreference: () -> ClosePreference = { ClosePreference(stored: UserDefaults.standard.string(forKey: AppShell.closeWithRunKey)) }
+    var storeClosePreference: (ClosePreference) -> Void = { UserDefaults.standard.set($0.rawValue, forKey: AppShell.closeWithRunKey) }
+    /// The question put to the person who closes the window with a run going; tests replace it, so that no alert is shown.
+    var askClose: (CloseQuestion) -> (answer: CloseAnswer, remember: Bool) = { QuitPanel.askToCloseWindow($0) }
+    /// The window is closing and the run goes on: the app lives on with no window. Read by `applicationShouldTerminateAfterLastWindowClosed`.
+    private(set) var keepsAliveForRun = false
+    /// Told when the window closed and the run stays (the world that had been open, now saved and closed, if any). Set by the shell.
+    var onKeptRunning: ((String?) -> Void)?
+
+    /// What the app knows when the window is asked to close.
+    var closeFacts: CloseFacts {
+        CloseFacts(runGoing: run.hasRunJob, runName: run.runningRunName, runStopping: run.hasRunJob && run.stopRequested,
+                   world: play.isActive ? play.world : nil)
+    }
+
+    /// `windowShouldClose` of the main window: with a run going, asks "Keep it running / Stop and quit / Cancel" (or does what the person
+    /// asked to be remembered). True lets the window close. "Stop and Quit" does not close it: the quit goes on with the window up, through
+    /// the same gate and panel as a Command-Q, and the question is not asked again. Called once per attempt to close, so a Cancel leaves
+    /// everything as it was, window included.
+    func mainWindowShouldClose() -> Bool {
+        guard plan.asksWhenClosingWithRun else { return true }
+        guard !questionOpen else { return false }  // (a second attempt while the question is up is the first one's business)
+        let decision = SessionRules.decideClose(closeFacts, preference: closePreference())
+        switch decision {
+        case .closeAndQuit:
+            keepsAliveForRun = false
+            return true
+        case .keepRunning:
+            keepsAliveForRun = true
+            return true
+        case .stopAndQuit:
+            beginStopAndQuit()
+            return false
+        case .ask(let question):
+            questionOpen = true
+            let (answer, remember) = askClose(question)
+            questionOpen = false
+            if let preference = SessionRules.remembered(answer, remember: remember) { storeClosePreference(preference) }
+            switch answer {
+            case .keepRunning:
+                keepsAliveForRun = true
+                return true
+            case .stopAndQuit:
+                beginStopAndQuit()
+                return false
+            case .cancel:
+                return false
+            }
+        }
+    }
+
+    /// The person chose to stop the run and quit from the close question: the quit is asked for without asking again.
+    private func beginStopAndQuit() {
+        keepsAliveForRun = false
+        questionAnswered = true
+        requestQuit()
+    }
+
+    /// The window has closed and the run stays: what only the window needed ends (R3). The open world is saved and closed through its
+    /// ladder (the app lives on while it saves), the viewer's stream stops, and the shell is told so that the Worlds page can say what became
+    /// of the world when the window comes back. The run is not touched.
+    private func closeWhatTheWindowNeeded() {
+        let world = play.isActive ? play.world : nil
+        play.stop()
+        stopStream()
+        onKeptRunning?(world)
+    }
+
+    /// Stops the 3D viewer's stream (the shared one; tests replace it).
+    var stopStream: () -> Void = { StreamController.shared.stop() }
 
     // MARK: Reopening (the alife window)
 
@@ -88,11 +165,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// quit question's alert leaves a glass-effect window that counts as visible long after it was answered (seen in the running app: the
     /// reopen event found "visible windows" and did nothing). The old apps keep AppKit's own handling.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        guard plan.isShell, let reopenMainWindow else { return true }
-        let shown = windowsProvider().contains { $0.isVisible && $0.identifier?.rawValue == AppShell.mainWindowID }
-        guard !shown else { return true }
-        reopenMainWindow()
-        return false
+        guard plan.isShell, reopenMainWindow != nil else { return true }
+        // (shown: AppKit does the rest; not shown: the window is asked for, and AppKit is told it has nothing to do)
+        return !showMainWindowIfNeeded()
+    }
+
+    /// The main window of the `alife` window is on screen.
+    var mainWindowIsShown: Bool {
+        windowsProvider().contains { $0.isVisible && $0.identifier?.rawValue == AppShell.mainWindowID }
     }
 
     /// The windows the reopen and the close look at (tests replace it).
@@ -106,6 +186,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for window in (windows ?? windowsProvider)() where window.isVisible && !(window is NSPanel) && window.identifier?.rawValue != AppShell.mainWindowID {
             window.close()
         }
+        if plan.asksWhenClosingWithRun, keepsAliveForRun { closeWhatTheWindowNeeded() }
+    }
+
+    /// Brings the main window back if it is not showing (a Dock click does it through `applicationShouldHandleReopen`; the menus do it
+    /// when a command needs a window and there is none). True when the window was asked for.
+    @discardableResult
+    func showMainWindowIfNeeded() -> Bool {
+        guard plan.isShell, let reopenMainWindow else { return false }
+        guard !mainWindowIsShown else { return false }
+        reopenMainWindow()
+        return true
     }
 
     // MARK: Quit
@@ -123,7 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let attached = NSApp.windows.flatMap { window in window.sheets.map { (window, $0) } }
         if !attached.isEmpty {
             let reason = pendingReason ?? quitReason()
-            if reason.asksQuestion, questionNeeded {
+            if reason.asksQuestion, questionNeeded, !questionAnswered {
                 guard ask() else { pendingReason = nil; return }
                 questionAnswered = true
             }
