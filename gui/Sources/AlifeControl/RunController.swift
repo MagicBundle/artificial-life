@@ -17,6 +17,20 @@ struct ExitInfo {
     let success: Bool
 }
 
+/// How a research run ended, for the pipeline (docs/APP.md §3.2): the status, what asked it to end, and the line that says what went
+/// wrong. `serial` counts the runs that ended, so that two equal exits are still two events.
+struct RunExit: Equatable {
+    var run: String
+    var status: Int32
+    var signalled: Bool
+    /// Stop was pressed, the timer ran out, or the app is quitting: the run was asked to end at a save point.
+    var stopRequested: Bool
+    /// Force stop (SIGTERM) was used.
+    var forced: Bool
+    var problem: String?
+    var serial: Int
+}
+
 /// Splits a byte stream into lines (on "\n" or "\r", so progress bars become lines too).
 /// A value owned by one drain loop, so it needs no locking.
 struct LineSplitter {
@@ -138,6 +152,11 @@ final class RunController: ObservableObject {
     @Published private(set) var stopRequested = false
     @Published private(set) var viewerRunning = false
     @Published private(set) var lastExit: ExitInfo?
+    /// The end of the last research run (not a setup, not a check); nil until one has ended.
+    @Published private(set) var lastRunExit: RunExit?
+    private var runExitCount = 0
+    private var forceRequested = false
+    private var jobLogStart = 0
     /// The `world.dims` of the run the status, viewer and inspect buttons refer to (from its `config.json`; a run from
     /// before the key is 2D), or nil when there is no such run or its config cannot be read.
     @Published private(set) var targetRunDims: Int?
@@ -542,16 +561,19 @@ final class RunController: ObservableObject {
     func forceStop() {
         guard let p = process, p.isRunning else { return }
         appendLines(["Force stop (SIGTERM)."], isError: true)
+        forceRequested = true
         p.terminate()
     }
 
     private func beginJob(_ kind: Job, executable: URL, arguments: [String], keepAwake: Bool) {
         lastExit = nil
         stopRequested = false
+        forceRequested = false
         elapsed = 0
         remaining = nil
         deadline = nil
         logLines.removeAll()
+        jobLogStart = nextLogID
         appendLines(["$ " + ([executable.path] + arguments).map(shellQuote).joined(separator: " ")], isError: false)
         let launched = launch(executable, arguments, prefix: "") { [weak self] status, reason in
             self?.finish(kind, status: status, reason: reason)
@@ -578,6 +600,13 @@ final class RunController: ObservableObject {
         let info = Self.describe(status: status, reason: reason, kind: kind)
         lastExit = info
         appendLines([info.text], isError: !info.success)
+        if kind == .run {
+            runExitCount += 1
+            let problems = logLines.filter { $0.id >= jobLogStart && $0.isError }.map(\.text)
+            lastRunExit = RunExit(
+                run: trackedRun, status: status, signalled: reason == .uncaughtSignal, stopRequested: stopRequested, forced: forceRequested,
+                problem: PipelineWords.firstProblem(in: problems), serial: runExitCount)
+        }
         stopRequested = false
         refreshRepo()
         pollMetrics()
@@ -643,6 +672,36 @@ final class RunController: ObservableObject {
     func openViewer3D() {
         guard let source = viewer3DSource else { return }
         StreamController.shared.start(source, executable: alifeURL, directory: repoURL)
+    }
+
+    // MARK: Viewers and the check of a world by name (the `alife` window's cards; the Lab's buttons use the form's target run)
+
+    /// Starts the stream of the 3D viewer on `world` (the caller opens the window): its newest save points while it grows, else a
+    /// re-simulation from its latest save point.
+    func openViewer3D(world: String, follow: Bool) {
+        guard repoReady, job != .setup else { return }
+        StreamController.shared.start(StreamSource(run: world, follow: follow && job == .run), executable: alifeURL, directory: repoURL)
+    }
+
+    /// The pygame viewer of a flat world.
+    func openClassicViewer(world: String) {
+        guard repoReady, viewerProcess == nil else { return }
+        let args = ["view", "runs/\(world)"]
+        appendLines(["$ " + ([alifeURL.path] + args).map(shellQuote).joined(separator: " ")], isError: false)
+        let launched = launch(alifeURL, args, prefix: "[viewer] ") { [weak self] status, _ in
+            self?.viewerProcess = nil
+            self?.viewerRunning = false
+            self?.appendLines(["[viewer] exited with code \(status)."], isError: status != 0)
+        }
+        guard let p = launched else { return }
+        viewerProcess = p
+        viewerRunning = true
+    }
+
+    /// `alife inspect --check` on `world`: the result is in the log (Activity).
+    func inspect(world: String) {
+        guard job == nil, repoReady else { return }
+        beginJob(.inspect, executable: alifeURL, arguments: ["inspect", "runs/\(world)", "--check"], keepAwake: false)
     }
 
     func revealInFinder() {

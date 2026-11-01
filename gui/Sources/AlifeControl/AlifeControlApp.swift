@@ -27,7 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Self.current = self
     }
     /// The question before a run is stopped by a quit (tests replace it, so that no alert is shown).
-    var confirmStopRun: (String) -> Bool = { QuitPanel.askToStopRun($0) }
+    var confirmStopRun: (String) -> Bool = { QuitPanel.askToStopRun($0, shell: LaunchMode.current().plan.isShell) }
     /// Why the quit was asked for: the reason of the quit Apple event being handled (none for a menu Quit). Tests replace it.
     var quitReason: () -> QuitReason = { AppDelegate.reason(of: NSAppleEventManager.shared().currentAppleEvent) }
     /// Ends the app through AppKit; tests replace it.

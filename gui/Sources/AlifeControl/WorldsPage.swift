@@ -3,16 +3,17 @@ import SwiftUI
 
 /// The Worlds page of the `alife` window (docs/APP.md §2.4, PR-C): what to do next first, then the library of worlds with its search, its
 /// filters and a card for each world (its kind, shape, state in plain words and the actions that make sense for it), and the unfinished
-/// builds with the reason each stopped. Every grey button has its reason beside it. The planet form opens from a world's card (a sheet);
-/// PR-D replaces it with the set-up page.
+/// builds with the reason each stopped. Every grey button has its reason beside it. Make planet, Branch and Keep growing open the set-up
+/// page (PR-D) on the world of the card.
 struct WorldsPage: View {
     @ObservedObject var shell: ShellModel
     @ObservedObject var controller: RunController
     @ObservedObject var play: PlayController
-    @ObservedObject var model: WorldLauncherModel
+    @ObservedObject var setup: SetupModel
     @ObservedObject var library: WorldLibrary
-    @AppStorage("worlds.advanced") private var advancedOpen = false
-    @State private var planetSheet = false
+
+    private var model: WorldLauncherModel { setup.launcher }
+    @Environment(\.openWindow) private var openWindow
 
     private var facts: WorldsGuide.Facts {
         WorldsGuide.Facts(
@@ -34,8 +35,9 @@ struct WorldsPage: View {
                     if let note = shell.launchNote { launchNote(note) }
                     if let failure = shell.startFailure { failureCard(failure) }
                     if let gone = library.vanished { goneNote(gone) }
-                    nextStepCard
-                    if play.phase == .starting { startingBox }
+                    // (while a world is being made the bar says so, and the card would offer to start another)
+                    if !setup.coordinator.isActive { nextStepCard }
+                    if play.phase == .starting, !setup.coordinator.isActive { startingBox }
                     // With no folder or no engine the card above says what to do, and that is all the page needs to say.
                     if controller.repoReady, showsLibrary { librarySection }
                 }
@@ -56,9 +58,6 @@ struct WorldsPage: View {
             handlePlanetFormRequest()
         }
         .onChange(of: shell.planetFormRequests) { _, _ in handlePlanetFormRequest() }
-        .sheet(isPresented: $planetSheet) {
-            PlanetSheet(model: model, advancedOpen: $advancedOpen, reasons: planetReasons, onMake: makePlanet)
-        }
     }
 
     /// File > Make Planet… opens the form on the world that is chosen, else on the newest.
@@ -69,9 +68,18 @@ struct WorldsPage: View {
     }
 
     private func openPlanetForm(from name: String?) {
-        model.prepareForm(from: name)
-        planetSheet = true
+        setup.openMakePlanet(from: name)
     }
+
+    // The viewers and the check of a research world, until its Watch page has them (PR-F).
+    private func open3D(_ row: LibraryRow) {
+        controller.openViewer3D(world: row.name, follow: row.state == .growing)
+        openWindow(id: AppWindow.viewer3d.rawValue)
+    }
+
+    private func openClassic(_ row: LibraryRow) { controller.openClassicViewer(world: row.name) }
+
+    private func check(_ row: LibraryRow) { controller.inspect(world: row.name); shell.select(.activity) }
 
     /// Play and Make planet are the player's own action: the world that goes live from them is shown (`ShellModel.playerStartsWorld`).
     private func playWorld(_ name: String) {
@@ -84,12 +92,6 @@ struct WorldsPage: View {
             shell.playerStartsWorld()
             model.resume(world)
         }
-    }
-
-    private func makePlanet() {
-        planetSheet = false
-        shell.playerStartsWorld()
-        model.startPlanet()
     }
 
     // MARK: Notices
@@ -169,17 +171,18 @@ struct WorldsPage: View {
                 Text("uv is needed. If Set up engine reports that it is missing, install it from docs.astral.sh/uv and press Check again.")
                     .font(.caption).foregroundStyle(.secondary)
             case .makeFirstRun:
-                header("flask", "Start with a small run")
-                Text("A planet grows from a research run. The Lab will open with a small one ready (about two minutes): press Start there, and this page offers the planet as soon as the run has a save point.")
+                header("sparkles", "Start your first world")
+                Text("Press Create and alife grows a small planet for you, then opens it. It takes about two minutes, and you see how far it has got all the time.")
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Button("Open the Lab") {
-                    controller.prepareSmallPlanetRun()
-                    shell.select(.lab)
+                HStack {
+                    Button("Create a small planet") { setup.openCreate(.recipe(Recipes.smallPlanet.id)) }
+                        .buttonStyle(.borderedProminent)
+                    Button("Choose something else…") { setup.openCreate() }
+                        .buttonStyle(.link)
                 }
-                .buttonStyle(.borderedProminent)
             case .makePlanet(let source):
                 header("globe.europe.africa", "Make your first planet")
-                Text("There is no world to play yet. A planet is made from a research run, and \(source) has a save point to start from. It takes a few minutes, mostly the weather warming up.")
+                Text("There is no world to play yet. A planet is made from a world with a save point, and \(source) has one. It takes a short while, mostly the weather warming up.")
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if let growing = WorldsGuide.growingNote(source: source, growing: controller.runningRunName) {
                     Text(growing).font(.caption).foregroundStyle(.secondary)
@@ -268,6 +271,9 @@ struct WorldsPage: View {
                 Text("Your worlds").font(.title3.weight(.semibold))
                 Spacer()
                 searchField
+                Button { setup.openCreate() } label: { Label("New world", systemImage: "plus") }
+                    .buttonStyle(.borderedProminent)
+                    .help("Make a new world from a starting point")
             }
             Picker("Show", selection: $library.filter) {
                 ForEach(LibraryFilter.allCases) { Text("\($0.title) \(state.counts.count($0))").tag($0) }
@@ -322,6 +328,7 @@ struct WorldsPage: View {
             let f = facts
             let playable = Dictionary(state.catalog.worlds.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
             let seeds = Self.seedParents(LibraryState.tree(state.rows))
+            let ruleFacts = setup.ruleFacts
             TimelineView(.everyMinute) { context in
             let now = context.date
             LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 12) {
@@ -331,10 +338,17 @@ struct WorldsPage: View {
                         play: CardAction(label: "Play", reason: playable[row.name].flatMap { WorldsGuide.reason(forPlaying: $0, in: f) }),
                         makePlanet: CardAction(label: "Make planet…", reason: WorldsGuide.reasonToMakePlanet(from: row, in: f)),
                         isOpen: f.openWorld == row.name,
+                        keepGrowing: CardAction(label: "Keep growing…", reason: SetupRules.reason(.keepGrowing, on: row, in: ruleFacts)),
+                        branch: CardAction(label: "Branch…", reason: SetupRules.reason(.branch, on: row, in: ruleFacts)),
                         onSelect: { library.select(row.name, scroll: false) },
                         onPlay: { playWorld(row.name) },
                         onWatch: { shell.select(.watch) },
                         onMakePlanet: { library.select(row.name, scroll: false); openPlanetForm(from: row.name) },
+                        onKeepGrowing: { library.select(row.name, scroll: false); setup.openKeepGrowing(world: row.name) },
+                        onBranch: { library.select(row.name, scroll: false); setup.openBranch(from: row.name) },
+                        onOpen3D: { open3D(row) },
+                        onOpenClassic: { openClassic(row) },
+                        onCheck: { check(row) },
                         onReveal: { Task { await library.reveal(row.name) } })
                         .id(row.name)
                 }
@@ -374,10 +388,7 @@ struct WorldsPage: View {
                                 source: source, sourceStep: step ?? nil,
                                 sourceSteps: source.flatMap { s in state.catalog.sources.first { $0.name == s }?.checkpoints }, in: f)),
                         onSelect: { library.select(build.name, scroll: false) },
-                        onMakeAgain: {
-                            model.prepareAgain(build)
-                            planetSheet = true
-                        },
+                        onMakeAgain: { setup.openMakeAgain(build) },
                         onReveal: { Task { await library.reveal(build.name) } })
                         .id(build.name)
                 }
@@ -418,110 +429,5 @@ struct WorldsPage: View {
             }
             .fixedSize(horizontal: false, vertical: true)
         }
-    }
-
-    /// The words beside a grey Make planet in the form's sheet: the page's reason first, then the form's own.
-    private var planetReasons: [String] {
-        if let why = WorldsGuide.reasonToMakePlanet(facts) { return [why] }
-        return model.planetMessages
-    }
-}
-
-/// The planet form in a sheet, opened from a world's card or File > Make Planet…
-struct PlanetSheet: View {
-    @ObservedObject var model: WorldLauncherModel
-    @Binding var advancedOpen: Bool
-    let reasons: [String]
-    let onMake: () -> Void
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Make a planet").font(.title2.weight(.semibold))
-            Text("A planet is a new world made from a save point of a world you have. Nothing is changed in the world it starts from.")
-                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            ScrollView {
-                PlanetForm(model: model, advancedOpen: $advancedOpen).padding(.trailing, 6)
-            }
-            .frame(maxHeight: 420)
-            Divider()
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(reasons, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
-                }
-                Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Make planet", action: onMake)
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!reasons.isEmpty)
-            }
-        }
-        .padding(20)
-        .frame(width: 540)
-    }
-}
-
-/// The planet form, in the words of docs/APP.md §2.5: *Start from* and *Save point* (were Source and Checkpoint), *Weather warm-up*,
-/// and the technical choices behind an *Advanced* disclosure that is remembered. It edits the launcher model's `PlanetSpec`, so the
-/// command it makes (`PlayLaunch.arguments`) is the one the launcher made.
-struct PlanetForm: View {
-    @ObservedObject var model: WorldLauncherModel
-    @Binding var advancedOpen: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if model.catalog.sources.isEmpty {
-                Text("There is nothing to start from yet: a planet is made from a research run that has a save point.")
-                    .foregroundStyle(.secondary)
-            } else {
-                Picker("Start from", selection: Binding(get: { model.planet.source }, set: { model.selectSource($0) })) {
-                    ForEach(model.catalog.sources) { Text(LauncherPlanetBox.title(of: $0)).tag($0.name) }
-                }
-                if let source = model.selectedSource, source.geometry == "sphere" { note(Self.shapeNote(source)) }
-                if model.sourceIsWorld { note("You can already play this world with Play. Making a planet from it makes a new world from one of its save points.") }
-                if let source = model.selectedSource {
-                    Picker("Save point", selection: Binding(
-                        get: { model.planet.sourceStep ?? source.checkpoints.last ?? 0 }, set: { model.selectCheckpoint($0) })
-                    ) {
-                        ForEach(source.checkpoints, id: \.self) { Text("step \(WorldsGuide.grouped($0))").tag($0) }
-                    }
-                }
-                Toggle("Turn the weather on", isOn: Binding(get: { model.planet.storm }, set: { model.setStorm($0) }))
-                    .disabled(model.selectedSource?.weatherOn == true || model.weatherObstacle != nil)
-                if let obstacle = model.weatherNote { note(obstacle) }
-                if model.planet.storm {
-                    Stepper("Weather warm-up: \(WorldsGuide.grouped(model.planet.weatherSpinup)) steps",
-                            value: $model.planet.weatherSpinup, in: 1...200_000, step: 1000)
-                    if model.planet.sourceGeometry == "sphere" {
-                        note("The weather needs time to settle before play starts. Repeating the same world, save point and length reuses the saved weather and starts at once.")
-                    }
-                }
-                LabeledContent("Name") { TextField("", text: $model.planet.name).textFieldStyle(.roundedBorder) }
-                DisclosureGroup("Advanced", isExpanded: $advancedOpen) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Toggle("This world takes powers", isOn: $model.planet.directorEnabled)
-                        note("On by default. Without it the Powers tab has nothing to offer in this world.")
-                        Picker("How family lines are rebuilt", selection: $model.planet.houses) {
-                            ForEach(PlayHouses.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                        }
-                        .pickerStyle(.segmented)
-                        if let housesNote = model.housesMessage { note(housesNote) }
-                    }
-                    .padding(.top, 6)
-                }
-            }
-        }
-    }
-
-    /// What a planet source means for the new planet: it keeps its shape, and its weather has the overlay its shape calls for.
-    static func shapeNote(_ source: PlaySource) -> String {
-        let keeps = "The new planet keeps this world's shape, a sphere"
-        guard !source.weatherOn, let overlay = PlanetSpec.overlay(forShape: source.planetShape) else { return keeps + "." }
-        return keeps + ", with the weather overlay \(overlay)."
-    }
-
-    private func note(_ text: String) -> some View {
-        Text(text).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
     }
 }

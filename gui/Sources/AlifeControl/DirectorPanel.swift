@@ -6,12 +6,14 @@ import SwiftUI
 /// The "Director" group of the settings column: mode, persona, goal, cadence and the LLM tier.
 struct DirectorSettingsBox: View {
     @ObservedObject var controller: RunController
+    /// "Director" in the two old apps; the `alife` window calls it Autopilot (docs/APP.md §2.5).
+    var title = "Director"
 
     private var busy: Bool { controller.job != nil }
     private var context: DirectorContext { controller.settings.directorContext }
 
     var body: some View {
-        GroupBox("Director") {
+        GroupBox(title) {
             VStack(alignment: .leading, spacing: 8) {
                 if context.available {
                     modePicker

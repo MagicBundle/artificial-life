@@ -381,12 +381,12 @@ final class WorldLibrary: ObservableObject {
         fallback()
     }
 
-    /// Why the Lab must not continue this directory; nil when it may. A played world is continued by playing it; a directory that this
+    /// Why Keep growing must not continue this directory; nil when it may. A played world is continued by playing it; a directory that this
     /// window has open, saves, or that another process holds or writes has a writer already (`alife resume` takes no `play.lock`).
     func reasonNotToResume(_ name: String) -> String? {
         if let row = state.row(named: name) {
             if row.kind == .played {
-                return "'runs/\(name)' is a played world. Play it from Worlds, or make a planet from it; the Lab continues research runs."
+                return "'runs/\(name)' is a played world. Play it from Worlds, or make a planet from it; Keep growing continues research worlds."
             }
             switch row.state {
             case .live, .paused, .starting: return "'runs/\(name)' is open in this window."

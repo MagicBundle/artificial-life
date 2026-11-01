@@ -47,7 +47,7 @@ final class ShellModel: ObservableObject {
     private var phaseObserver: AnyCancellable?
     private var previousPhase: PlayPhase
     /// The player pressed Play or Make planet on the Worlds page, or `--world` started a world: the next world to go live is theirs and
-    /// is shown. (A world is never pulled in front of someone who went on to the Lab or Activity while it started.)
+    /// is shown. (A world is never pulled in front of someone who went on to Activity while it started; the set-up page counts as the page it was started from, since it shows the wait.)
     private var startedByThePlayer = false
     private var startedByArgument = false
     private var launchHandled = false
@@ -76,7 +76,7 @@ final class ShellModel: ObservableObject {
         case .live:
             startFailure = nil
             startingWorld = nil
-            if was != .live, startedByArgument || (startedByThePlayer && page == .worlds) { page = .watch }
+            if was != .live, startedByArgument || (startedByThePlayer && (page == .worlds || page == .setup)) { page = .watch }
             startedByThePlayer = false
             startedByArgument = false
         case .failed(let message):

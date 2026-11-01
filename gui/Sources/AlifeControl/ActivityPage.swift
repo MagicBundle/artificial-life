@@ -2,7 +2,7 @@ import AlifeCore
 import SwiftUI
 
 /// The Activity page (docs/APP.md §2.4): what the app has going, each with the control that ends it, and the log of everything the app
-/// runs. The log is the same one the Lab page shows (`RunController.logLines`).
+/// runs (`RunController.logLines`). The numbers and the autopilot of the run that grows are here until the Run panel of PR-F.
 struct ActivityPage: View {
     @ObservedObject var shell: ShellModel
     @ObservedObject var controller: RunController
@@ -29,7 +29,7 @@ struct ActivityPage: View {
                     Text(ActivityGuide.emptyAdvice).foregroundStyle(.secondary)
                     Spacer()
                     Button("Worlds") { shell.select(.worlds) }
-                    Button("Lab") { shell.select(.lab) }
+                    Button("New world") { shell.select(.setup) }
                 }
                 .padding(14)
                 .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
@@ -42,6 +42,10 @@ struct ActivityPage: View {
                 }
                 .padding(.vertical, 4)
                 .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+            }
+            if controller.hasRunJob {
+                RunNumbersView(controller: controller)
+                DirectorLiveView(controller: controller)
             }
             LogView(controller: controller)
         }

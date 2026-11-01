@@ -135,12 +135,12 @@ final class QuitPanel {
 
     /// The question before a run is stopped by a quit: true to go on. Modal, and shown before the gate, so that the app has not
     /// begun to stop anything when the user cancels.
-    static func askToStopRun(_ run: String) -> Bool {
+    static func askToStopRun(_ run: String, shell: Bool = false) -> Bool {
         // A quit from the Dock with another app in front, or with no window left, must not leave the question behind them.
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = QuitWording.confirmTitle(run: run)
-        alert.informativeText = QuitWording.confirmDetail
+        alert.informativeText = shell ? QuitWording.confirmDetailShell : QuitWording.confirmDetail
         alert.alertStyle = .warning
         alert.addButton(withTitle: QuitWording.confirmCancel)  // the default button (Return) and Escape
         let stop = alert.addButton(withTitle: QuitWording.confirmStop)

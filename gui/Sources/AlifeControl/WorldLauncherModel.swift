@@ -179,8 +179,14 @@ final class WorldLauncherModel: ObservableObject {
 
     func startPlanet() {
         guard planetErrors.isEmpty else { return }
-        startedSpecs[planet.name.trimmingCharacters(in: .whitespaces)] = planet
-        launch(.planet(planet))
+        start(spec: planet)
+    }
+
+    /// Starts a planet that was set up elsewhere (the set-up page's pipeline): the spec is kept for the session, so that an unfinished build
+    /// can be made again.
+    func start(spec: PlanetSpec) {
+        startedSpecs[spec.name.trimmingCharacters(in: .whitespaces)] = spec
+        launch(.planet(spec))
     }
 
     /// The planets this session asked for, by name: what an unfinished build of this session was made with ("Make again with a new name").
