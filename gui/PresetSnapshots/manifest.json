@@ -1,0 +1,115 @@
+{
+ "machine": "Apple M5 Pro",
+ "snapshots": [
+  {
+   "preset": "tiny",
+   "seed": 1,
+   "step": 30000,
+   "population": 456,
+   "steps_per_s": 514.7,
+   "git_rev": "397b0f588205173abf42df7911ff92e3a599c735",
+   "date": "2026-11-01",
+   "view": "the whole world",
+   "speed_measured_over_steps": 1990
+  },
+  {
+   "preset": "dev",
+   "seed": 1,
+   "step": 30000,
+   "population": 7939,
+   "steps_per_s": 352.4,
+   "git_rev": "397b0f588205173abf42df7911ff92e3a599c735",
+   "date": "2026-11-01",
+   "view": "a 512 x 320 window of typical density",
+   "speed_measured_over_steps": 950
+  },
+  {
+   "preset": "64k",
+   "seed": 1,
+   "step": 30000,
+   "population": 33491,
+   "steps_per_s": 97.3,
+   "git_rev": "397b0f588205173abf42df7911ff92e3a599c735",
+   "date": "2026-11-01",
+   "view": "a 512 x 320 window of typical density",
+   "speed_measured_over_steps": 450
+  },
+  {
+   "preset": "256k",
+   "seed": 1,
+   "step": 10000,
+   "population": 116382,
+   "steps_per_s": 17.4,
+   "git_rev": "397b0f588205173abf42df7911ff92e3a599c735",
+   "date": "2026-11-01",
+   "view": "a 512 x 320 window of typical density",
+   "speed_measured_over_steps": 200
+  },
+  {
+   "preset": "tiny3d",
+   "seed": 1,
+   "step": 30000,
+   "population": 992,
+   "steps_per_s": 445.2,
+   "git_rev": "397b0f588205173abf42df7911ff92e3a599c735",
+   "date": "2026-11-01",
+   "view": "the whole world",
+   "speed_measured_over_steps": 1990
+  },
+  {
+   "preset": "mini3d",
+   "seed": 1,
+   "step": 30000,
+   "population": 11422,
+   "steps_per_s": 294.7,
+   "git_rev": "397b0f588205173abf42df7911ff92e3a599c735",
+   "date": "2026-11-01",
+   "view": "the whole world",
+   "speed_measured_over_steps": 450
+  },
+  {
+   "preset": "64k3d",
+   "seed": 1,
+   "step": 30000,
+   "population": 20098,
+   "steps_per_s": 76.9,
+   "git_rev": "397b0f588205173abf42df7911ff92e3a599c735",
+   "date": "2026-11-01",
+   "view": "the whole world",
+   "speed_measured_over_steps": 450
+  },
+  {
+   "preset": "tiny3s",
+   "seed": 1,
+   "step": 30000,
+   "population": 992,
+   "steps_per_s": 348.3,
+   "git_rev": "397b0f588205173abf42df7911ff92e3a599c735",
+   "date": "2026-11-01",
+   "view": "the whole world",
+   "speed_measured_over_steps": 1990
+  },
+  {
+   "preset": "mini3s",
+   "seed": 1,
+   "step": 30000,
+   "population": 7021,
+   "steps_per_s": 220.1,
+   "git_rev": "397b0f588205173abf42df7911ff92e3a599c735",
+   "date": "2026-11-01",
+   "view": "the whole world",
+   "speed_measured_over_steps": 450
+  },
+  {
+   "preset": "64k3s",
+   "seed": 1,
+   "step": 30000,
+   "population": 31678,
+   "steps_per_s": 67.4,
+   "git_rev": "397b0f588205173abf42df7911ff92e3a599c735",
+   "date": "2026-11-01",
+   "view": "the whole world",
+   "speed_measured_over_steps": 450
+  }
+ ]
+}
