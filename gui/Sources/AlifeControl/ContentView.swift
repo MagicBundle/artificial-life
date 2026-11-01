@@ -11,6 +11,16 @@ struct ContentView: View {
 
     private var busy: Bool { controller.job != nil }
 
+    /// The preset guide's words, numbers and snapshots, read from the repository (`PresetGuideContent`).
+    @State private var presetGuide: PresetGuideContent
+    @State private var showPresetCompare = false
+
+    /// `presetGuide` is what the guide shows until the repository's own has loaded (a test gives it the loaded one).
+    init(controller: RunController, presetGuide: PresetGuideContent = .empty) {
+        self.controller = controller
+        _presetGuide = State(initialValue: presetGuide)
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 16) {
             ScrollView {
@@ -40,6 +50,11 @@ struct ContentView: View {
             .frame(maxWidth: .infinity)
         }
         .padding(16)
+        .task(id: controller.repoURL) { presetGuide = PresetGuideContent.load(repo: controller.repoURL) }
+        // A click in the sheet sets the picker's own value, so its `onChange` (the director cadence, the 3D levers) runs as for a pick.
+        .sheet(isPresented: $showPresetCompare) {
+            PresetCompareSheet(content: presetGuide, selected: controller.settings.preset) { controller.settings.preset = $0 }
+        }
         // The main window is the app: when the last one closes the 3D viewer window goes with it, so that the app quits as
         // it did when this was the only window (`applicationShouldTerminateAfterLastWindowClosed`). Another main window
         // (File > New Window) keeps the app and the viewer. In Storm Worlds the Lab is a tool window: it takes only the
@@ -147,6 +162,9 @@ struct ContentView: View {
                     .onChange(of: controller.settings.preset) {
                         controller.refreshDirectorCadence()
                         controller.refreshPresetWorld3D()
+                    }
+                    if let entry = presetGuide.entry(for: controller.settings.preset) {
+                        PresetCard(entry: entry, machine: presetGuide.machine) { showPresetCompare = true }
                     }
                 }
                 if controller.settings.mode == .new {
