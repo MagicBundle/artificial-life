@@ -14567,7 +14567,7 @@ Open after S7a (for the owner and S4c): the calibration is one seed per value an
 
 Open after S4c (for the owner and S7b): the calibration is weather alone, 80 000 to 100 000 steps, two to five seeds per planet; the **window of `mini3s` and `tiny3s` is narrow** (a pool 2 to 4 widths wider or narrower, or a seed rate half or twice, leaves the criterion: §46.6) and the slow gates are what guards it; the storms of `64k3s` are **anchored to their pools and replaced there** (0.9 to 1.8 deaths per 10 000 steps on five seeds, the box 1.8 to 2.0; the largest wind 1.5 times the box's, the hazard threshold follows it; the seed rate 0.05 was chosen on those five seeds, 0.06 also holds), and the seed 3 run keeps 92.8 % of the ticks, 2.8 points over the bar; the couplings were set on the early weather of a run from the founders (3 000 steps), not on a settled population (`storm_exposure` and the real rain share depend on where the agents are: S7b should report them); **the agents' wind is `dt` times what S4b had** (a drift 21 % smaller at `Nw` 42), so any organism-side result recorded before S4c on a weather sphere is not comparable; the spin-up cache is keyed on the world, the weather and the sources the chain runs and keeps 64 entries (0.9 MB each at `Nw` 42); the pole cells and the base-face seams away from the vertices were not tested with a pool on them (the validated band ends at 60°); the rain in the cloud band alone is 5 to 10 times lower than the box's (the metric's band is the box's layers 8 to 13); the study's wall time is the GPU's (100 000 steps of `64k3s` are 3 minutes of it, and ten workers share one GPU).
 
-## 47. Event-triggered calls and far hearing (the calls series, K1 to K4; K1 and K2 built, pilot K5 run)
+## 47. Event-triggered calls and far hearing (the calls series, K1 to K4; K1 and K2 built, pilot K5 and M1 run)
 
 Normative text of the `calls` extension (Review-log I7y (calls K1, K2); the specification is `calls_spec/spec.md`, Revision 1,
 owner-approved with every recommendation of its section 12 on 2026-10-31, after an independent review whose findings are
@@ -14972,6 +14972,8 @@ for a pair within a lineage**: h over lineages is 8.0 % for 3, 3.4 % for 6 and 2
 seeds even within a lineage (0.9 to 1.1 % against 1.4 to 1.5 %), so the lineage is the unit of inference and blocks do not enter the interval. Oracle at these values: `reflex` -27 to -53 % storm deaths with `n_alive` -69 to -80 %; `reflex_near` -26 to -32 % with `n_alive` -3 to -10 %;
 `reflex_call` -7 to +1 %.
 The pre-registration draft is `SP/calls_pilot/prereg_calls_v4_draft.json` (not frozen).
+
+**M1 (2026-11-01; no engine change).** Read against the frozen `docs/results_calls/prereg_calls_v4.json`. Six lineages (the stage rule gave n = 6, final h 2.19 % and 2.38 %). O1 fails in five of six; the storm-death reduction is 1.09 % against `nofar` and 2.10 % against `decoy`, upper 95 % bounds 2.77 % and 3.91 %, Holm over 8 rejects nothing. Labels `warning` and `warning, small` are not reached, M2's condition is not met, and no refutation is drawn because the oracle's net fitness falls. Details and the exploratory link between call rate and contrast: `docs/RESULTS_CALLS.md` section 16.
 
 ## Review log
 

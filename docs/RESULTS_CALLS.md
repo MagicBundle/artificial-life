@@ -455,3 +455,51 @@ Reading: `decoy` raises storm deaths in all six pairs, by 4 to 12 %. `decoy` rep
 **Budget of the extension:** 1.1 M steps, 1.62 h of GPU wall time. In all 4.1 GPU-h of wall time against the ceiling of 5, and about 7.6 process-hours.
 
 Not done: `deaf` at the new values, null forks on the same design as the pilot's section 7, hazard-off and the shipped dial at the new values (M1 has hazard-off), one more far_xref check at 8 in other seeds, runs past 80 000 steps. `tests/test_golden_run.py`'s cold-child test is the known failure on the GPU default device.
+
+## 16. M1, stage 1 and stage 2 (read against `docs/results_calls/prereg_calls_v4.json`, unchanged since its freeze at `fa9c517`)
+
+**Verdict.** The pre-registered result is negative. O1 fails in five of six lineages, and O4 is below the 5 % band against both controls with a valid h. The label `warning` is not reached, and neither is `warning, small`. The refutation clause reads: "no use found; the oracle's ceiling on exposure is not a ceiling on net benefit". No refutation of the design is drawn, because the oracle's net fitness falls (spec 7.4 Revision 2). The condition for M2 (O1 and O2 hold) is not met.
+
+**Runs.** Lineages 21 to 26, 300 000 steps at 100 to 104 steps/s; references D21 and OFF21; four forks per lineage, 30 000 steps from step 300 000, `run.seed` = lineage seed. 26 runs, 1.95 M steps. Every process exited with rc 0, `ledger_error` was 0 in every row read, and `diag` has no error bit (the advisory, sticky `WEATHER_WARN` is set in every run, as in the pilot). `storm_u0`, `far_xref`, `far_range` and `cost` were asserted at launch and read back from the configs of sample forks. The raw output of the final read is `docs/results_calls/m1_final.txt`.
+
+**Stage rule.** Applied once, after stage 1, with a script that prints the sd and n only: sd 0.0061 (`nofar`), 0.0222 (`decoy`), so n = 6 and lineages 24, 25, 26 were added. No mean or sign of a contrast was read before that. Final h: 2.19 % (`nofar`), 2.38 % (`decoy`), both within the 2.5 % limit, so the 5 % band is valid.
+
+**O1** (last 20 000 steps of the long runs; D21 storm rate 0.577; threshold D + 0.05):
+
+| lineage | storm rate | minus D | hurt rate | storm share of deaths % | due share % | `n_alive` | O1 |
+|---|---|---|---|---|---|---|---|
+| F21 | 0.128 | -0.449 | 0.496 | 10.16 | 0.65 | 13 020 | fail |
+| F22 | 0.477 | -0.100 | 0.636 | 5.15 | 3.09 | 12 511 | fail |
+| F23 | 0.452 | -0.125 | 0.928 | 8.87 | 4.32 | 13 723 | fail |
+| F24 | 0.516 | -0.061 | 0.372 | 7.61 | 1.74 | 13 475 | fail |
+| F25 | 0.063 | -0.514 | 0.054 | 10.21 | 0.18 | 12 066 | fail |
+| F26 | 0.938 | +0.361 | 0.081 | 6.19 | 2.94 | 14 578 | pass |
+
+Hazard-off (OFF21) has storm rate 0.465 and hurt rate 0.966. Its storm windows open as often as F's (0.174 per agent-step against 0.156 to 0.176), because the window depends on air speed and `storm_p` removes only the kills. Its rate lies inside the F range, so the rates carry no visible response to the hazard. Rates run from 0.06 to 0.94 between lineages, and the single D21 reference is not at the low end of them, so neutral decay did not bring a rate near 0 in 300 000 steps. One D seed is a weak reference against that spread; the frozen test stands as read.
+
+**O4** (whole fork; "benefit" is the log ratio signed so that positive favours the intact voice, in %; n = 6, df 5; p one-sided):
+
+| contrast, readout | per lineage (21 to 26) | mean | sd | h | one-sided lower 95 % of the reduction | p | Holm x |
+|---|---|---|---|---|---|---|---|
+| `nofar` storm | +0.78, +2.00, +1.32, -0.79, -1.26, +4.50 | +1.09 | 2.08 | 2.19 | -0.62 | 0.128 | 7 |
+| `nofar` births | -1.06, -1.53, -7.58, +0.82, -1.67, -1.75 | -2.13 | 2.84 | 2.98 | | 0.937 | 3 |
+| `nofar` population | -0.38, +1.12, +0.18, -0.21, -0.14, +1.54 | +0.35 | 0.79 | 0.83 | | 0.163 | 6 |
+| `nofar` energy | +0.15, +0.36, -2.02, -2.34, -0.62, -1.16 | -0.94 | 1.11 | 1.17 | | 0.953 | 2 |
+| `decoy` storm | +0.29, +4.71, +2.87, +1.44, -0.97, +4.37 | +2.12 | 2.27 | 2.38 | +0.25 | 0.035 | 8 |
+| `decoy` births | 0.00, -1.18, -2.61, -0.20, -2.66, +3.45 | -0.53 | 2.26 | 2.37 | | 0.706 | 4 |
+| `decoy` population | -0.36, -0.86, -0.37, -0.36, -0.04, -1.53 | -0.59 | 0.53 | 0.56 | | 0.979 | 1 |
+| `decoy` energy | +0.16, +0.63, -0.25, -1.41, -0.39, +0.97 | -0.05 | 0.84 | 0.88 | | 0.555 | 5 |
+
+Estimated reduction of storm deaths: 1.09 % against `nofar`, 2.10 % against `decoy`. One-sided upper 95 % bounds: 2.77 % and 3.91 %; two-sided: 3.22 % and 4.40 %. So 5 % is excluded against both. The `decoy` lower bound is above 0 before correction, but `nofar`'s is not, and Holm over 8 rejects nothing (smallest adjusted p 0.28). Both contrasts had to pass. No readout improves net of the storm effect: births and energy lean the wrong way, and the population under `decoy` is 0.6 % higher than under the intact voice. That last direction was not tested by the frozen one-sided family.
+
+`deaf` was not part of the O4 family: storm +3.49 (sd 3.96, h 4.16), births -3.63, population +0.32, energy -1.30.
+
+**Comparison with the pilot's lineages.** The pilot's `decoy` mean of +7.1 % (sd 4.5, three lineages at 20 000 steps, seeds 10 to 12) did not recur at 300 000 steps of evolution. It fits a founder-era effect or noise, and the pilot lineages entered no M1 estimate.
+
+**Exploratory, not pre-registered.** These correlations were looked for after the contrasts were read, on six points, and the three contrasts share the `none` arm, so they are a lead and not a result.
+
+- The storm contrast tracks how much a lineage calls. Across lineages, `calls_rate_storm` of the `none` fork against the contrast: `nofar` Pearson 0.82 (Spearman 0.89), `decoy` 0.85 (0.83), `deaf` 0.90 (1.00).
+- The two near-silent lineages (F21 rate 0.12, F25 0.06) show effects near 0; the loudest (F26) shows +4.5 and +4.4. A small real effect that scales with use would look like this.
+- F26 is the one lineage whose channels separate: over 300 000 steps its storm rate rose from 0.81 to 0.92 by 100 000-step thirds, and its hurt rate fell from 0.42 to 0.12. F25 fell on both, F24 slightly on both. One lineage cannot separate selection from drift.
+
+**Not done.** O2 and O3 need K3 and were not read. Voice logs can be replayed from the checkpoints in `~/alife-calls-m1` if K3 is built; with O1 and O4 negative they can no longer change the label. Stage 2 has no D or hazard-off reference, by design. The run directories (18 GB) are on the internal disk only, and the external drive was disconnected when M1 finished.
