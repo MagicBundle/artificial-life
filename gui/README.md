@@ -92,6 +92,20 @@ there takes only the 3D viewer with it, and does not stop a run started in it: t
 each `Info.plist` key, the executable, the icon and `codesign --verify`. It installs and launches nothing. It needs macOS and a
 Swift toolchain and takes minutes, so it is a manual step, also run by `tests/test_app_bundles.py` when `ALIFE_APP_SMOKE=1`.
 
+## Choosing a preset
+
+In *New run* mode a card under the **Preset** picker shows the selected preset: a snapshot beside a plain-language description (what
+the world is, what it is good for, what it costs), its shape and size and how many organisms it holds (read from the preset file), and
+a caption with the seed, step, population and speed of the snapshot. **Compare presets...** opens a scrolling sheet with all ten, grouped
+as flat worlds, 3D box worlds and planets; clicking a row chooses that preset (as the picker does) and closes the sheet. The pictures are
+frames of real runs of the plain presets (seed 1, no overlay, default settings; `256k` is shown at step 10 000, the others at step
+30 000; a large flat world is shown as a window of it, and the caption says so), and the speed is what the engine measured alone on the Mac named in the sheet, so on another Mac it differs. The images and
+`manifest.json` are in `gui/PresetSnapshots/`, read from the repository folder like the presets; a missing image shows a placeholder.
+
+`scripts/make-preset-snapshots.sh` remakes them (stages `runs speed streams render manifest`; about an hour on an M5 Pro,
+two simulations at a time, output in `~/alife-preset-snapshots`, `STEPS_<preset>` overrides a run length). Drawing needs the opt-in
+tool `PresetSnapshotTool` (`ALIFE_PRESET_SNAPSHOTS=1`, run by the script's `render` stage); the normal `swift test` skips it.
+
 ## Using it
 
 - **Mode**: *New run* (`alife run --preset ... --out runs/NAME`), *Resume* (`alife resume runs/NAME`, optionally
@@ -290,6 +304,9 @@ Testing), **`AlifeCoreTests`** for the library and **`AlifeControlTests`** for t
   against the preset's values, a fork against its source's, so the 2D command lines do not change; switching the buoyancy
   actuator on from a baseline without one is refused (its cap keys are command-line only, and both 0 there)
 - `PresetFile.swift`: the scalar (integer and number) settings of a preset file `src/alife/presets/NAME.toml`
+- `PresetGuide.swift`: the Lab's preset guide (DESIGN §27.14): a description per preset, its shape, size and population limits read
+  from the preset file (the engine default where it sets none), and the snapshot manifest; `PresetGuideView.swift` (app) draws the card
+  and the compare sheet
 - `DirectorSettings.swift`: the director's settings, baselines from `config.json`, validation, argument construction
   and the `alife llm-check` runner (pure logic apart from that runner)
 - `MetricsTailer.swift`: reads the last row of `metrics.jsonl`
