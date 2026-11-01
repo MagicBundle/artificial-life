@@ -23,12 +23,44 @@ final class SphereMTKView: MTKView {
 
     static let clickSlop: CGFloat = 4
 
-    override var acceptsFirstResponder: Bool { true }
+    /// See `WorldMTKView.canvasVisible`: the same rules for the planet's view.
+    var canvasVisible: Bool { model?.watchActive ?? true }
+    private(set) var drawDeferred = false
+
+    override var acceptsFirstResponder: Bool { canvasVisible }
+
+    override var needsDisplay: Bool {
+        get { super.needsDisplay }
+        set {
+            if newValue, !canvasVisible {
+                drawDeferred = true
+                return
+            }
+            super.needsDisplay = newValue
+        }
+    }
+
+    func canvasVisibilityChanged() {
+        isHidden = !canvasVisible  // (no hit test, no composition of a view the player cannot see)
+        if canvasVisible {
+            if window != nil { window?.makeFirstResponder(self) }
+            if drawDeferred {
+                drawDeferred = false
+                needsDisplay = true
+            }
+            if sphere?.isAnimating == true { startAnimating() }
+        } else {
+            stopAnimating()
+            if window?.firstResponder === self { window?.makeFirstResponder(nil) }
+        }
+    }
+
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        window?.makeFirstResponder(self)
+        isHidden = !canvasVisible
+        if canvasVisible { window?.makeFirstResponder(self) }
         model?.observeWindow(window)
         removeKeyMonitor()
         if window == nil {
@@ -60,7 +92,7 @@ final class SphereMTKView: MTKView {
     func handleKey(_ event: NSEvent) -> Bool {
         if window?.firstResponder is NSText { return false }
         let flags = event.modifierFlags
-        guard let model,
+        guard let model, model.keysEnabled,
               let action = WorldKeys.action(for: event.charactersIgnoringModifiers ?? "", command: flags.contains(.command),
                                             control: flags.contains(.control))
         else { return false }
@@ -148,7 +180,7 @@ final class SphereMTKView: MTKView {
     // MARK: Animation
 
     func startAnimating() {
-        guard link == nil, window != nil else { return }
+        guard link == nil, window != nil, canvasVisible else { return }
         let link = displayLink(target: self, selector: #selector(animationTick(_:)))
         link.add(to: .main, forMode: .common)
         self.link = link
@@ -160,7 +192,7 @@ final class SphereMTKView: MTKView {
     }
 
     @objc private func animationTick(_ link: CADisplayLink) {
-        guard let sphere, sphere.advance() else {
+        guard let sphere, model?.watchActive ?? true, sphere.advance() else {
             stopAnimating()
             return
         }

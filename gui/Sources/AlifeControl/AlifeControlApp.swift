@@ -199,15 +199,21 @@ struct QuitCommands: Commands {
     }
 }
 
-/// The entry point: one executable, two apps (`LaunchMode`). The Lab is today's app (the main window, the viewer and the
+/// The entry point: one executable, three apps (`LaunchMode`): `alife` (one window with a sidebar, `AlifeApp`), and the two it will replace. The Lab is today's app (the main window, the viewer and the
 /// World window as a second window); Storm Worlds opens straight into the World window and has the Lab one menu item away
 /// (`StormWorldsApp`). The mode is read from the bundle, so `swift run` and a bundle from before the key start the Lab.
 @main
 enum AlifeEntry {
     static func main() {
-        switch LaunchMode.current().plan.firstScene {
+        let mode = LaunchMode.current()
+        switch mode {
+        case .alife:
+            // The preferences of the two old apps are brought in once, before anything reads the folder setting. Only a bundle made by
+            // make-app.sh has its own preferences domain: an unbundled run (`swift run`) keeps whatever it had, as it always did.
+            if Bundle.main.object(forInfoDictionaryKey: LaunchMode.infoKey) != nil { PreferenceMigration.forApp().run() }
+            AlifeApp.main()
         case .world: StormWorldsApp.main()
-        case .lab, .viewer3d: AlifeControlApp.main()
+        case .lab: AlifeControlApp.main()
         }
     }
 }

@@ -601,9 +601,9 @@ final class RunController: ObservableObject {
 
     /// `--world RUN` at launch: starts RUN in the World window (the caller opens the window). False if there is no repository
     /// or no such world.
-    func openWorldAtLaunch(_ run: String) -> Bool {
+    func openWorldAtLaunch(_ run: String, play: PlayController = .shared) -> Bool {
         guard repoReady, runs.contains(run) else { return false }
-        PlayController.shared.start(.resume(PlayResume(run: run)), executable: alifeURL, directory: repoURL)
+        play.start(.resume(PlayResume(run: run)), executable: alifeURL, directory: repoURL)
         return true
     }
 

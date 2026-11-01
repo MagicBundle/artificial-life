@@ -53,7 +53,7 @@ extension WorldModel {
         ticker.show(alerts: raised, at: now())
         tickerLine = ticker.line
         let stacked = raised.filter { $0.surface == .alert && $0.alertClass != "chapter" }.count
-        attention.raised(stacked, windowIsKey: windowIsKey())
+        attention.raised(stacked, windowIsKey: viewerIsLooking)
         setBadge(attention.badge)
         scheduleTimers()
     }
@@ -168,7 +168,7 @@ extension WorldModel {
             }
         }
         if (clock.reason == .chapter || clock.reason == .alert), clock.rate == 0, !clock.saving,
-           attention.paused(atStep: currentStep, windowIsKey: windowIsKey()) {
+           attention.paused(atStep: currentStep, windowIsKey: viewerIsLooking) {
             requestAttention()
         }
     }
@@ -231,6 +231,16 @@ extension WorldModel {
     func windowBecameKey() {
         attention.windowBecameKey()
         setBadge(nil)
+    }
+
+    /// The Watch page appeared or went (`ShellModel`). Showing it clears the unread alerts and the badge when the window is the one in
+    /// front, as a window becoming key does.
+    func setWatchActive(_ active: Bool) {
+        guard active != watchActive else { return }
+        watchActive = active
+        view?.canvasVisibilityChanged()
+        sphere.view?.canvasVisibilityChanged()
+        if active, windowIsKey() { windowBecameKey() }
     }
 
     // MARK: Powers

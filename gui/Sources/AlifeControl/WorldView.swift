@@ -9,13 +9,6 @@ struct WorldView: View {
     @ObservedObject var play: PlayController
     @StateObject private var model: WorldModel
     @AppStorage("world.dockSide") private var sideRaw = DockSide.right.rawValue
-    @AppStorage("world.dockExtent") private var sideExtent = Double(DockLayout.defaultExtent)
-    @AppStorage("world.dockExtentBottom") private var bottomExtent = Double(DockLayout.defaultBottomExtent)
-    @AppStorage("world.dockCollapsed") private var collapsed = false
-    @State private var dragStamp = Date.distantPast
-    /// Where the divider was grabbed, from its centre (`DockLayout.grab`); nil while it is not being dragged.
-    @State private var dragGrab: CGFloat?
-    @State private var cursor = DividerCursor()
     @State private var launcher: WorldLauncherModel?
 
     init(play: PlayController) {
@@ -27,6 +20,79 @@ struct WorldView: View {
         }())
     }
 
+    var body: some View {
+        WorldDockLayout(play: play, model: model)
+            .frame(minWidth: 1100, minHeight: LauncherLayout.windowMinHeight)
+            .navigationTitle(WorldTitle.window(world: play.world, header: play.store.play))
+            .background(WindowCloseObserver(restorable: false, group: "world") { play.stop() })
+            .sheet(isPresented: $model.launcherOpen) {
+                if let launcher { WorldLauncherView(model: launcher, play: play, close: { model.launcherOpen = false }) }
+            }
+            .onAppear {
+                if launcher == nil { launcher = Self.makeLauncher() }
+                if play.phase == .idle { model.launcherOpen = true }
+            }
+            .toolbar {
+                ToolbarItemGroup {
+                    Picker("Dock", selection: $sideRaw) {
+                        ForEach(DockSide.allCases) { Image(systemName: Self.symbol($0)).tag($0.rawValue) }
+                    }
+                    .pickerStyle(.segmented)
+                    .help("Dock the control center on the left, the right or the bottom")
+                    Button { model.home() } label: { Label("Home", systemImage: "house") }
+                        .help("Fly to the Home view: the whole width of the world, north up (H)")
+                        .disabled(!play.isActive)
+                    Button("Worlds…") { model.launcherOpen = true }
+                    Button("Close world") {
+                        play.stop()
+                        model.launcherOpen = true
+                    }
+                    .disabled(!play.isActive)
+                    .help("Stop the world (it saves a checkpoint first) and open the launcher")
+                }
+            }
+    }
+
+    private static func symbol(_ side: DockSide) -> String {
+        switch side {
+        case .left: return "sidebar.left"
+        case .right: return "sidebar.right"
+        case .bottom: return "rectangle.bottomhalf.inset.filled"
+        }
+    }
+
+    /// The launcher for the repository the Lab is set to.
+    @MainActor
+    private static func makeLauncher() -> WorldLauncherModel {
+        WorldLauncherModel(
+            runsDirectory: { RunController.shared.repoReady ? RunController.shared.repoURL.appendingPathComponent("runs") : nil },
+            launch: { request in
+                let run = RunController.shared
+                PlayController.shared.start(request, executable: run.alifeURL, directory: run.repoURL)
+            })
+    }
+}
+
+/// The map and the control center docked beside it (DESIGN §33.4.4): the free rectangle holds the canvas, the dock the control center
+/// and the draggable divider. The map view is inset to the free rectangle by its frame, in the same place in the hierarchy
+/// whichever side the dock is on, so moving the dock or dragging the divider changes a frame and never the identity of the
+/// view (and so never re-creates the Metal view and its device state). Shared by the World window and the `alife` window's
+/// Watch layer (`showsDock` is false while another page is shown: the canvas stays, the dock goes).
+struct WorldDockLayout: View {
+    @ObservedObject var play: PlayController
+    @ObservedObject var model: WorldModel
+    var showsDock = true
+    /// "No world is open. Choose one with Worlds..." over the canvas while idle; the `alife` window says it with a button instead.
+    var showsIdleBanner = true
+    @AppStorage("world.dockSide") private var sideRaw = DockSide.right.rawValue
+    @AppStorage("world.dockExtent") private var sideExtent = Double(DockLayout.defaultExtent)
+    @AppStorage("world.dockExtentBottom") private var bottomExtent = Double(DockLayout.defaultBottomExtent)
+    @AppStorage("world.dockCollapsed") private var collapsed = false
+    @State private var dragStamp = Date.distantPast
+    /// Where the divider was grabbed, from its centre (`DockLayout.grab`); nil while it is not being dragged.
+    @State private var dragGrab: CGFloat?
+    @State private var cursor = DividerCursor()
+
     private var side: DockSide { DockSide(rawValue: sideRaw) ?? .right }
 
     private var extent: CGFloat { CGFloat(side == .bottom ? bottomExtent : sideExtent) }
@@ -35,49 +101,23 @@ struct WorldView: View {
         GeometryReader { geometry in
             let frames = DockLayout.frames(in: geometry.size, side: side, extent: extent, collapsed: collapsed)
             ZStack(alignment: .topLeading) {
-                WorldCanvasView(play: play, model: model, dockCollapsed: collapsed, alertsOverMap: collapsed || side == .bottom)
+                WorldCanvasView(play: play, model: model, dockCollapsed: collapsed, alertsOverMap: collapsed || side == .bottom,
+                                showsIdleBanner: showsIdleBanner)
                     .frame(width: frames.free.width, height: frames.free.height)
                     .position(x: frames.free.midX, y: frames.free.midY)
-                ControlCenterView(play: play, model: model, collapsed: $collapsed, side: side, height: frames.dock.height)
-                    .frame(width: frames.dock.width, height: frames.dock.height)
-                    // (the dock's materials give its hit area a margin of 13 points that reaches into the map: its hit shape is its frame)
-                    .contentShape(Rectangle())
-                    .position(x: frames.dock.midX, y: frames.dock.midY)
-                if !collapsed {
-                    divider(frames.divider, in: geometry.size)
+                if showsDock {
+                    ControlCenterView(play: play, model: model, collapsed: $collapsed, side: side, height: frames.dock.height)
+                        .frame(width: frames.dock.width, height: frames.dock.height)
+                        // (the dock's materials give its hit area a margin of 13 points that reaches into the map: its hit shape is its frame)
+                        .contentShape(Rectangle())
+                        .position(x: frames.dock.midX, y: frames.dock.midY)
+                    if !collapsed {
+                        divider(frames.divider, in: geometry.size)
+                    }
                 }
             }
             .coordinateSpace(name: "world")
             .onChange(of: frames.free, initial: true) { _, free in model.setFreeRect(free) }
-        }
-        .frame(minWidth: 1100, minHeight: LauncherLayout.windowMinHeight)
-        .navigationTitle(WorldTitle.window(world: play.world, header: play.store.play))
-        .background(WindowCloseObserver(restorable: false, group: "world") { play.stop() })
-        .sheet(isPresented: $model.launcherOpen) {
-            if let launcher { WorldLauncherView(model: launcher, play: play, close: { model.launcherOpen = false }) }
-        }
-        .onAppear {
-            if launcher == nil { launcher = Self.makeLauncher() }
-            if play.phase == .idle { model.launcherOpen = true }
-        }
-        .toolbar {
-            ToolbarItemGroup {
-                Picker("Dock", selection: $sideRaw) {
-                    ForEach(DockSide.allCases) { Image(systemName: Self.symbol($0)).tag($0.rawValue) }
-                }
-                .pickerStyle(.segmented)
-                .help("Dock the control center on the left, the right or the bottom")
-                Button { model.home() } label: { Label("Home", systemImage: "house") }
-                    .help("Fly to the Home view: the whole width of the world, north up (H)")
-                    .disabled(!play.isActive)
-                Button("Worlds…") { model.launcherOpen = true }
-                Button("Close world") {
-                    play.stop()
-                    model.launcherOpen = true
-                }
-                .disabled(!play.isActive)
-                .help("Stop the world (it saves a checkpoint first) and open the launcher")
-            }
         }
     }
 
@@ -123,25 +163,6 @@ struct WorldView: View {
         case .none: break
         }
     }
-
-    private static func symbol(_ side: DockSide) -> String {
-        switch side {
-        case .left: return "sidebar.left"
-        case .right: return "sidebar.right"
-        case .bottom: return "rectangle.bottomhalf.inset.filled"
-        }
-    }
-
-    /// The launcher for the repository the Lab is set to.
-    @MainActor
-    private static func makeLauncher() -> WorldLauncherModel {
-        WorldLauncherModel(
-            runsDirectory: { RunController.shared.repoReady ? RunController.shared.repoURL.appendingPathComponent("runs") : nil },
-            launch: { request in
-                let run = RunController.shared
-                PlayController.shared.start(request, executable: run.alifeURL, directory: run.repoURL)
-            })
-    }
 }
 
 /// What the free rectangle shows: the Metal view (created once a world is live and kept), the overlay over it, and the
@@ -153,6 +174,8 @@ struct WorldCanvasView: View {
     var dockCollapsed = false
     /// The alert rows are over the map (a bottom dock has no room for them, and a collapsed dock hides them).
     var alertsOverMap = false
+    /// "No world is open. Choose one with Worlds..." while idle (the `alife` window says it with a button).
+    var showsIdleBanner = true
 
     var body: some View {
         let _ = play.revision
@@ -193,7 +216,7 @@ struct WorldCanvasView: View {
             text("Cannot draw: \(failure)", error: true)
         } else {
             switch play.phase {
-            case .idle: text("No world is open. Choose one with Worlds…")
+            case .idle: if showsIdleBanner { text("No world is open. Choose one with Worlds…") }
             case .starting:
                 VStack(spacing: 8) {
                     ProgressView()

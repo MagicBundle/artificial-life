@@ -29,13 +29,48 @@ final class WorldMTKView: MTKView {
     /// A press that moves less than this many points is a click.
     static let clickSlop: CGFloat = 4
 
-    override var acceptsFirstResponder: Bool { true }
+    /// The view is the one the player sees (the Watch page is shown): see `WorldModel.watchActive`. In the old modes it always is.
+    var canvasVisible: Bool { model?.watchActive ?? true }
+    /// A draw was asked for while the canvas was hidden; it is made when the canvas is shown again.
+    private(set) var drawDeferred = false
+
+    /// While the canvas is hidden (the window shows another page) it takes no focus, so that a control of that page keeps its keys,
+    /// and asks for no draw: a hidden world costs the GPU nothing (docs/APP.md §2.4 item 3, spike S1 (d)).
+    override var acceptsFirstResponder: Bool { canvasVisible }
+
+    override var needsDisplay: Bool {
+        get { super.needsDisplay }
+        set {
+            if newValue, !canvasVisible {
+                drawDeferred = true
+                return
+            }
+            super.needsDisplay = newValue
+        }
+    }
+
+    /// `WorldModel.setWatchActive` calls this when the Watch page appears or goes.
+    func canvasVisibilityChanged() {
+        isHidden = !canvasVisible  // (no hit test, no composition of a view the player cannot see)
+        if canvasVisible {
+            if window != nil { window?.makeFirstResponder(self) }
+            if drawDeferred {
+                drawDeferred = false
+                needsDisplay = true
+            }
+            if model?.isAnimating == true { startAnimating() }
+        } else {
+            stopAnimating()
+            if window?.firstResponder === self { window?.makeFirstResponder(nil) }
+        }
+    }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        window?.makeFirstResponder(self)
+        isHidden = !canvasVisible
+        if canvasVisible { window?.makeFirstResponder(self) }
         model?.observeWindow(window)
         removeKeyMonitor()
         if window == nil {
@@ -72,7 +107,7 @@ final class WorldMTKView: MTKView {
     func handleKey(_ event: NSEvent) -> Bool {
         if window?.firstResponder is NSText { return false }
         let flags = event.modifierFlags
-        guard let model,
+        guard let model, model.keysEnabled,
               let action = WorldKeys.action(for: event.charactersIgnoringModifiers ?? "", command: flags.contains(.command),
                                             control: flags.contains(.control))
         else { return false }
@@ -192,7 +227,7 @@ final class WorldMTKView: MTKView {
     /// Runs the display link while something animates (the map fade) and stops it when nothing does: an idle scene costs
     /// nothing.
     func startAnimating() {
-        guard link == nil, window != nil else { return }
+        guard link == nil, window != nil, canvasVisible else { return }
         let link = displayLink(target: self, selector: #selector(animationTick(_:)))
         link.add(to: .main, forMode: .common)
         self.link = link
@@ -204,7 +239,7 @@ final class WorldMTKView: MTKView {
     }
 
     @objc private func animationTick(_ link: CADisplayLink) {
-        guard let model, model.advance() else {
+        guard let model, model.watchActive, model.advance() else {
             stopAnimating()
             return
         }
