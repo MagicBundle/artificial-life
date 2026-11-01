@@ -1,7 +1,7 @@
 {
  "machine": "Apple M5 Pro",
  "git_dirty": false,
- "drawn_with_rev": "516e3abd3d014d181c1e81ba3fccd6e56d22b35c",
+ "drawn_with_rev": "689c4cf191c887c334dcbd024f79334bbce1e865",
  "notes": "steps_per_s: the run's own fork, alone on the GPU, at this population (first metrics row, with the compile, left out). peak_memory_bytes: peak memory footprint of that fork from /usr/bin/time -l, approximate (GPU buffers and the compile included). The runs wrote a checkpoint every 5000 steps instead of the default 10000; nothing else is changed from the preset.",
  "snapshots": [
   {
