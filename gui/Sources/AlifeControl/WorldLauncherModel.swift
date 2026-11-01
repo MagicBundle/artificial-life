@@ -27,7 +27,17 @@ final class WorldLauncherModel: ObservableObject {
             catalog = PlayCatalog()
             return
         }
-        let scanned = PlayCatalogScanner.scan(runsDirectory: runs)
+        adopt(PlayCatalogScanner.scan(runsDirectory: runs))
+    }
+
+    /// Takes a catalog that was scanned elsewhere (the `alife` window's `WorldLibrary` scans off the main thread) and the worlds that are
+    /// still saving, and brings the planet form in line with it. `refresh` is a scan on this thread followed by this.
+    func apply(catalog scanned: PlayCatalog, saving names: Set<String>) {
+        if saving != names { saving = names }
+        adopt(scanned)
+    }
+
+    private func adopt(_ scanned: PlayCatalog) {
         if scanned != catalog { catalog = scanned }
         if planet.source.isEmpty || !catalog.sources.contains(where: { $0.name == planet.source }) {
             selectSource(catalog.sources.first?.name ?? "")
@@ -135,7 +145,29 @@ final class WorldLauncherModel: ObservableObject {
 
     func startPlanet() {
         guard planetErrors.isEmpty else { return }
+        startedSpecs[planet.name] = planet
         launch(.planet(planet))
+    }
+
+    /// The planets this session asked for, by name: what an unfinished build of this session was made with ("Make again with a new name").
+    private(set) var startedSpecs: [String: PlanetSpec] = [:]
+
+    /// Opens the planet form on `source` at its newest save point (the form's name is made free if it is taken).
+    func prepareForm(from source: String?) {
+        if let source, catalog.sources.contains(where: { $0.name == source }) { selectSource(source) }
+        if planet.name.trimmingCharacters(in: .whitespaces).isEmpty || catalog.existingNames.contains(planet.name) { suggestName() }
+    }
+
+    /// Fills the form to make an unfinished build again under a new name: with what this session asked for if it made the build, else with
+    /// its source and save point (`meta.json` names them) and the form's usual choices. Nothing starts.
+    func prepareAgain(_ build: UnfinishedRow) {
+        if let spec = startedSpecs[build.name] {
+            planet = spec
+        } else if let source = build.source {
+            selectSource(source.name)
+            if let step = source.step, selectedSource?.checkpoints.contains(step) == true { selectCheckpoint(step) }
+        }
+        planet.name = RunName.nextFree(after: build.name, taken: catalog.existingNames)
     }
 }
 

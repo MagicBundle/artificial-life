@@ -10,8 +10,13 @@ import Testing
     /// (the label on the button or menu item, the action it triggers). The pages' sources are checked to contain each label.
     static let actions: [(label: String, action: String)] = [
         ("Play", "play-world"),
-        ("Make planet", "make-planet"),
-        ("Make Planet…", "make-planet"),  // the File menu's item: same action, the menu's own capitalisation
+        ("Make planet", "make-planet"),  // the sheet's button: starts the planet
+        ("Make planet…", "open-planet-form"),  // a card's button: opens the form (the ellipsis says a form follows)
+        ("Make Planet…", "open-planet-form"),  // the File menu's item: same action, the menu's own capitalisation
+        ("Make again with a new name", "make-again"),
+        ("Reveal in Finder", "reveal"),
+        ("Clear the search", "clear-search"),
+        ("Show all worlds", "show-all-worlds"),
         ("Close World", "close-world"),
         ("Watch", "show-watch"),
         ("Go to Worlds", "show-worlds"),
@@ -29,8 +34,9 @@ import Testing
 
     /// The page sources that are new in PR-B (the Lab page is `LabPage.swift`).
     static let sources = ["WorldsPage.swift", "ActivityPage.swift", "WatchPage.swift", "GeneralSettingsView.swift", "AppShellView.swift",
-                          "AlifeApp.swift"]
-    static let coreSources = ["WorldsGuide.swift", "ActivityGuide.swift", "WatchCue.swift", "ShellPage.swift"]
+                          "AlifeApp.swift", "WorldCards.swift", "WorldLibrary.swift"]
+    static let coreSources = ["WorldsGuide.swift", "ActivityGuide.swift", "WatchCue.swift", "ShellPage.swift", "WorldLibraryState.swift",
+                              "LibraryScanner.swift"]
 
     /// The words §2.5 retires or reserves, and the engine's own names, which a page of the new window does not show to the user.
     static let banned = ["Resume", "Checkpoint", "Fork", "Home", "spin-up", "Spin-up", "director.enabled", "Storm Worlds", "Source",
@@ -66,7 +72,7 @@ import Testing
         for (label, actions) in byLabel { #expect(actions.count == 1, "\(label) triggers \(actions)") }
         // two different labels for one action are allowed only where a menu repeats a button (the table says which)
         let twins = Dictionary(grouping: Self.actions, by: \.action).filter { $0.value.count > 1 }.mapValues { $0.map(\.label).sorted() }
-        #expect(twins == ["make-planet": ["Make Planet…", "Make planet"], "show-worlds": ["Back to Worlds", "Go to Worlds"]])
+        #expect(twins == ["open-planet-form": ["Make Planet…", "Make planet…"], "show-worlds": ["Back to Worlds", "Go to Worlds"]])
     }
 
     @Test func everyLabelOfTheTableIsInThePagesAndTheRetiredWordsAreNot() throws {
@@ -86,5 +92,45 @@ import Testing
 
     @Test func theLabelsOfTheMenusAndTheSidebarAreThePageTitles() {
         #expect(ShellPage.allCases.map(\.title) == ["Worlds", "Watch", "Activity", "Lab"])
+    }
+
+    // MARK: The library's words (PR-C)
+
+    @Test func theStatesOfAWorldAreTheNamesOfSection2_5AndNoStateIsAnAction() {
+        #expect(WorldState.allCases.map(\.title) == ["Saved", "Live", "Paused", "Starting", "Growing", "Saving", "In use elsewhere", "Unfinished"])
+        let labels = Set(Self.actions.map(\.label))
+        for state in WorldState.allCases { #expect(!labels.contains(state.title), "'\(state.title)' is a state and a button") }
+        #expect(WorldKind.allCases.map(\.title) == ["Played", "Research"])
+        #expect(Set(WorldKind.allCases.map(\.title)).isDisjoint(with: labels.union(WorldState.allCases.map(\.title))))
+        #expect([WorldShape.flat, .box, .planet].map(\.title) == ["Flat", "3D box", "Planet"])
+        #expect(LibraryFilter.allCases.map(\.title) == ["All", "Played", "Research", "Unfinished"])
+    }
+
+    @Test func noWordOfAStateOrAReasonIsOneOfTheRetiredOnes() {
+        var texts = WorldState.allCases.flatMap { [$0.title, $0.meaning] }
+        let cadence = PlayWorldFile.Cadence(metricsEvery: 1, heavyMetricsEvery: 1, checkpointEvery: 1, keepCheckpoints: 1)
+        let file = PlayWorldFile(playVersion: 1, baseRate: 14.4, cadence: cadence, tick: 1, weather: nil, planet: nil)
+        let world = PlayWorld(name: "w", file: file, newestStep: 1, status: nil, modified: Date(), locked: true)
+        let facts = WorldsGuide.Facts(folderExists: true, engineReady: true, catalog: PlayCatalog(), saving: ["w"])
+        texts.append(WorldsGuide.reason(forPlaying: world, in: facts) ?? "")
+        for status in [nil, "interrupted", "violation", "extinct", "running"] {
+            for mark in [nil, "planet"] {
+                for steps in [[], [1]] {
+                    var r = LibraryRecord(
+                        name: "u", play: nil, steps: steps, status: status, parent: nil, dims: 3, geometry: "sphere", worldSize: nil, planetRadius: nil,
+                        planetShape: nil, weatherOn: false, hasEvents: false, directoryModified: Date(), lastSaved: Date(), hasContent: true,
+                        looksUnfinished: true, buildMark: mark)
+                    r.status = status
+                    texts.append(LibraryState.unfinishedReason(r))
+                    texts.append(LibraryState.unfinishedReason(r, sessionNote: "You cancelled it"))
+                }
+            }
+        }
+        for status in ["extinct", "violation", "running"] { texts.append(LibraryState.endNote(status) ?? "") }
+        for filter in LibraryFilter.allCases { texts.append(WorldsGuide.emptyList(filter: filter, query: "", counts: LibraryCounts())) }
+        for text in texts {
+            for word in Self.banned { #expect(!text.contains(word), "'\(word)' in \"\(text)\"") }
+            #expect(!text.localizedCaseInsensitiveContains("checkpoint"), "\(text)")
+        }
     }
 }

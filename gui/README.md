@@ -58,6 +58,8 @@ swift run AlifeControl --launch-mode alife               # unbundled (keeps its 
 ```
 
 `--world RUN` works (`open -a "alife Preview" --args --world RUN` on a fresh launch). The world's keys (Space, `.`, `g`, ...) act only on
+
+The Worlds page is the library (PR-C): a search, the filters All / Played / Research / Unfinished and a card for each world with its state in plain words (Saved, Live, Paused, Growing, Saving, In use elsewhere, Unfinished); the sidebar lists the first eight worlds under the pages, a research world nested under the played world made from it. The folder is scanned off the main thread and cached per directory (200 worlds: about 5 ms to look again), and links in `runs/` to a drive that is not connected are counted, not listed. *Make planet...* on a card opens the planet form in a sheet; an unfinished build says why it stopped and can be made again under a new name. Nothing is deleted. Details: `docs/DESIGN.md` 33.4.12.
 the Watch page (Cmd-1 Worlds, Cmd-2 Watch, Cmd-3 Activity, Cmd-4 Lab). `ALIFE_PREFS_SUITE=name` (with `open --env ALIFE_PREFS_SUITE=name -a "alife Preview"`, or the executable run directly) reads and writes only that domain for the folder, and skips the migration. The Lab and Storm Worlds are unchanged.
 
 ## Install as an app

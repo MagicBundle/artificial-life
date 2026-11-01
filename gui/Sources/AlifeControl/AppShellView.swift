@@ -11,14 +11,17 @@ struct AppShellView: View {
     @ObservedObject var play: PlayController
     @ObservedObject var stream: StreamController
     @ObservedObject var model: WorldModel
+    @ObservedObject var library: WorldLibrary
     @StateObject private var launcher: WorldLauncherModel
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.openWindow) private var openWindow
     private let arguments: [String]
 
-    init(shell: ShellModel, controller: RunController, stream: StreamController = .shared, arguments: [String] = CommandLine.arguments) {
+    init(shell: ShellModel, controller: RunController, library: WorldLibrary, stream: StreamController = .shared,
+         arguments: [String] = CommandLine.arguments) {
         self.shell = shell
         self.controller = controller
+        self.library = library
         play = shell.session.play
         self.stream = stream
         model = shell.session.model
@@ -48,6 +51,24 @@ struct AppShellView: View {
         .onAppear {
             // A click on the Dock icon brings a closed window back (`AppDelegate.applicationShouldHandleReopen`).
             AppDelegate.current?.reopenMainWindow = { openWindow(id: AppShell.mainWindowID) }
+            // A world that stopped while it was starting is an unfinished build; the library keeps what this session knows of it.
+            shell.buildEnded = { [weak library] world, note in library?.note(note, forBuild: world) }
+            controller.pollsRunList = shell.page == .lab
+            library.update(live: liveFacts)
+            applyCatalog()
+            library.refresh()
+            library.startTimer()
+        }
+        // The library follows the folder, what this app does with its worlds, and the planet form follows the library.
+        .onChange(of: controller.repoReady) { _, _ in library.refresh() }
+        .onChange(of: controller.repoPath) { _, _ in library.refresh() }
+        .onChange(of: liveFacts) { _, facts in library.update(live: facts) }
+        .onChange(of: library.state.catalog) { _, _ in applyCatalog() }
+        .onChange(of: play.retiredWorlds) { _, _ in applyCatalog() }
+        // The Lab's pickers read the run list, which is polled only while the Lab is shown; the library scans on its own.
+        .onChange(of: shell.page) { _, page in
+            controller.pollsRunList = page == .lab
+            if page == .lab { controller.refreshRuns() }
         }
         .task {
             // `--world RUN` (a fresh launch): started once, through the same path as Play.
@@ -60,7 +81,7 @@ struct AppShellView: View {
         case .watch:
             WatchChrome(shell: shell, play: play, model: model)
         case .worlds:
-            WorldsPage(shell: shell, controller: controller, play: play, model: launcher)
+            WorldsPage(shell: shell, controller: controller, play: play, model: launcher, library: library)
                 .navigationTitle("Worlds")
         case .activity:
             ActivityPage(shell: shell, controller: controller, play: play, stream: stream)
@@ -74,15 +95,49 @@ struct AppShellView: View {
     // MARK: Sidebar
 
     private var sidebar: some View {
-        List(selection: Binding(get: { shell.page }, set: { if let page = $0 { shell.select(page) } })) {
+        List(selection: sidebarSelection) {
             ForEach(ShellPage.allCases) { page in
                 let row = rowText(of: page)
                 SidebarRow(page: page, detail: row.text, marked: row.marked)
-                    .tag(page)
+                    .tag(SidebarItem.page(page))
                     .help(page.purpose)
             }
+            LibrarySidebarSection(library: library)
         }
         .safeAreaInset(edge: .bottom) { engineStatus }
+    }
+
+    /// The page, or the world that is chosen on the Worlds page. A row that opens a list (all the worlds, the unfinished builds) is a
+    /// button more than a place: choosing it shows the list and the selection goes back to the page.
+    private var sidebarSelection: Binding<SidebarItem?> {
+        Binding(
+            get: {
+                if shell.page == .worlds, let name = library.selected { return .world(name) }
+                return .page(shell.page)
+            },
+            set: { item in item?.choose(shell: shell, library: library) })
+    }
+
+    /// What this app is doing with its worlds, for the library's states (no file shows it). Cheap: it is read whenever the model changes.
+    private var liveFacts: LiveFacts {
+        var facts = LiveFacts()
+        if play.isActive, let world = play.world {
+            facts.openWorld = world
+            if play.phase == .starting {
+                facts.openPhase = .starting
+            } else {
+                let stopped = play.requestedRate.map { $0 == .multiplier(0) } ?? (play.store.clock?.rate == 0)
+                facts.openPhase = stopped ? .paused : .live
+            }
+        }
+        facts.growing = controller.runningRunName
+        facts.saving = Set(play.retiredWorlds)
+        return facts
+    }
+
+    /// The planet form's catalog is the library's (the scan ran off the main thread), and the worlds still saving are the play controller's.
+    private func applyCatalog() {
+        launcher.apply(catalog: library.state.catalog, saving: Set(play.retiredWorlds))
     }
 
     /// The second line of a sidebar row, and whether the row is marked (something there waits for the player).
