@@ -854,7 +854,8 @@ unit (§37.4).
      from, **Reveal in Finder** and **Make again with a new name** (fills the form, starts nothing; grey with a reason when the source is gone).
      Nothing is deleted.
   8. **A drive that is not connected:** with `runs/` links to the archive volume and the volume unmounted, the page says "N worlds are on the
-     drive "X", which is not connected" and nothing breaks; connect it and switch to the app (or wait): they appear.
+     drive "X", which is not connected" and nothing breaks; connect it and the entries are listed the next time the library looks (when
+     you come back to the app, open the Worlds page, or a world changes; a drive mounting does not touch `runs/` by itself).
   9. **A world that vanishes:** remove a world's folder in Finder while the app runs: its row goes within a second; if it was chosen the page
      says "X is no longer in this folder".
   10. **Long list:** with 60 or more worlds the sidebar stays eight rows, the page scrolls, the Lab's pickers still list every run (the Lab
@@ -864,7 +865,26 @@ unit (§37.4).
      a drive that is not connected, the planet sheet (a real click on a card, closed with Escape), a chosen world removed while the app ran,
      Play of a real planet and quit with it live. **Not exercised:** a click on a sidebar row (the posted events did not select a row of the
      sidebar; the choice logic is unit-tested), a trackpad, Make planet from the sheet to the end, Keep growing (PR-D), a real removable drive.
-  12. Known, left as is: a card has no picture; selecting a world does not open a Details page (PR-F); Keep growing and Branch are PR-D; a
+  12. **After the independent review (what to try, and what ran on the final bundle).** (a) In a terminal `alife resume runs/<a played world>`
+     (the engine allows it and takes no `play.lock`): within 4 s the world reads "In use elsewhere", its Play is grey, the card at the top
+     offers another world, and in the Lab *Resume* with that world as source has Start grey with "is a played world...". (b) Silence is not
+     the end: stop that process with `kill -STOP` and the world stays "In use elsewhere" for its window (75 s for the default cadence; the
+     run's `metrics_every` scales it) and is never called "cut off" before ten windows. (c) A research run grown by the Lab stays *Growing*
+     however quiet it is, and its row nests under the played world made from it, ranked first. (d) Move `runs/` away and make a new one, or
+     remove it and bring it back: the list follows. (e) Close World: the card reads Saving, then Saved with the new step and date. (f) The
+     arrow keys walk the whole sidebar, "All N worlds..." and "Unfinished" included, and the page follows. (g) File > Reveal in Finder
+     shows the chosen world on Worlds, the Lab's run on the Lab. Seen in the running final bundle (private suite, private alife folder, the real
+     engine, display awake): (a), (b) with a 110 s `SIGSTOP`, (c) with a 100 s `SIGSTOP` of the Lab's own engine, (d) replaced, (e), (f);
+     the Return key and (g) through the menu were not exercised in the window (g is unit-tested), nor a hung or slow volume (unit-tested with a
+     look that hangs), nor a sidebar click with a real mouse.
+  13. **Mutation check of the library's logic** (`gui/` copied, 38 hand-made one-line mutants, each run against the library, planet-form, Lab-polling
+     and shell tests; the script is outside the repository): killed, all 38. The reviewed code had 16 mutants with 10 survivors (the `meta.json`
+     stamp, the lock probe of builds, the follow-up scan, the folder-changed guard, five of `pollsRunList`); each is now killed by a named test
+     (`LibrarySafetyTests`, `LibraryLiveTests`, `RunListPollingTests`), and so are the new behaviours' mutants (the sign-of-life window and
+     its three extra signs, the growing and played reasons, the node rank, the probe's skip and its identity check, the watch's re-arming on a
+     rename and its retry, "cut off" needing silence, the Lab's refusal, Reveal's page rule, the anchor row, names of unreadable entries,
+     the stamp's size, the 2 s settle rule, the lane's deadline and its not asking a stuck entry twice).
+  14. Known, left as is: a card has no picture; selecting a world does not open a Details page (PR-F); Keep growing and Branch are PR-D; a
      research world cannot be watched yet (PR-F); a run written by another app is "in use" only while its `metrics.jsonl` moves (20 s).
 - **3D viewer click-through checklist** (3D PR 5, to add to the checklist above; `gui/README.md`, DESIGN §27.12; not yet
   run by the owner; use the `tiny3d` preset, and `tiny` for the 2D items; run the GPU tests first with the GPU free:
