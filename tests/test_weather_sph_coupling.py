@@ -276,7 +276,7 @@ def test_the_edge_clip_on_the_vertical_wind_is_counted_over_the_valid_rows() -> 
 
 
 @pytest.mark.parametrize("which", ("tiny3s", "64k3s"))
-def test_the_force_is_alpha_drag_times_the_wind_and_the_hazard_reads_its_speed(which: str) -> None:
+def test_the_force_is_alpha_drag_dt_times_the_wind_and_the_hazard_reads_its_speed(which: str) -> None:
     cfg = weather_cfg(
         which,
         "weather.storm_p=0.5",
@@ -294,10 +294,11 @@ def test_the_force_is_alpha_drag_times_the_wind_and_the_hazard_reads_its_speed(w
     wind = weather.agent_wind(ws, mx.array(pos, dtype=mx.float32), buoy, alive, cfg)
     aw = weather_sph.sample_wind(ws, mx.array(pos, dtype=mx.float32), p, geo, valid=alive)
     alpha = p.alpha0 + p.alpha1 * np.array(buoy)
-    assert np.allclose(
-        np.array(wind.force), alpha[:, None] * cfg.physics.drag * np.array(aw.u), rtol=1e-5, atol=1e-8
-    )
-    assert np.allclose(np.array(wind.speed), np.linalg.norm(np.array(aw.u), axis=1), atol=1e-7)
+    want = (
+        alpha[:, None] * cfg.physics.drag * p.dt * np.array(aw.u)
+    )  # S4c: the wind is per unit of weather time
+    assert np.allclose(np.array(wind.force), want, rtol=1e-5, atol=1e-8)
+    assert np.allclose(np.array(wind.speed), np.linalg.norm(np.array(aw.u), axis=1), atol=1e-7)  # the air's
     assert wind.breaks is None and not bool(wind.clip_bad)
     # the drift the observers see is the force over the drag
     drift = weather_sph.agent_drift(weather_sph.pack(ws), mx.array(pos, dtype=mx.float32), buoy, alive, cfg)
@@ -507,9 +508,10 @@ def test_the_force_carries_the_drag_factor() -> None:
     wind = weather.agent_wind(ws, pos, buoy, alive, cfg)
     aw = weather_sph.sample_wind(ws, pos, p, geo, valid=alive)
     alpha = p.alpha0 + p.alpha1 * np.array(buoy)
-    assert np.allclose(np.array(wind.force), alpha[:, None] * 1.7 * np.array(aw.u), rtol=1e-5, atol=1e-8)
+    dt = p.dt  # a step is dt of a unit of weather time (S4c): the force is alpha·drag·dt·u
+    assert np.allclose(np.array(wind.force), alpha[:, None] * 1.7 * dt * np.array(aw.u), rtol=1e-5, atol=1e-8)
     drift = weather_sph.agent_drift(weather_sph.pack(ws), pos, buoy, alive, cfg)
-    assert np.allclose(np.array(drift), alpha[:, None] * np.array(aw.u), rtol=1e-5, atol=1e-8)
+    assert np.allclose(np.array(drift), alpha[:, None] * dt * np.array(aw.u), rtol=1e-5, atol=1e-8)
 
 
 def test_the_engine_gives_the_pools_their_time_and_the_seeding_its_factor() -> None:

@@ -1,31 +1,42 @@
 # stormsph16 overlay: the weather layer of the `tiny3s` planet (docs/SPHERE.md 4 and 7.3, DESIGN §46.6, §46.8). A WORLD
 # overlay, like `stormsph`: it needs the planet it is tuned for (Rp 36, H 16, field Nside 8 and 8 layers, so the
-# weather Nside Nw = 2 Nf = 16, 3 072 cells of side 2.30) and fails validation on the others. PROVISIONAL, like
-# `stormsph`: S4c calibrates it. It exists because `stormsph` (Rp 90, Nw 42) is refused on `tiny3s` (Nw 42 is not Nf
-# times a power of two, the Courant number is over the limit, the pools lie beyond 60 degrees and beyond 2 pi Rp), so
-# the launcher of a tiny3s planet needs its own. The shape the launcher matches is (radius, height, nside, layers).
+# weather Nside Nw = 2 Nf = 16, 3 072 cells of side 2.30) and fails validation on the others. CALIBRATED in S4c
+# (DESIGN §46.6). It exists because `stormsph` (Rp 90, Nw 42) is refused on `tiny3s` (Nw 42 is not Nf times a power of
+# two, the pools lie beyond 60 degrees and beyond 2 pi Rp), so the launcher of a tiny3s planet needs its own. The
+# shape the launcher matches is (radius, height, nside, layers).
 #
 # `weather.cells` is the weather Nside Nw (not a grid side) and must be Nf times a power of two. A pool is
 # (x, y, sx, sy, amp, vx, vy) with x the arc length east of longitude 0 and y the arc length north of the equator
 # (lon = x/Rp, lat = y/Rp), sx and sy Gaussian widths in length, vx the drift along the pool's own latitude circle
 # per unit of weather time (so `vx·dt` per engine step: dt = 0.829 here, derived from the geometry at Courant 0.40 by
-# owner decision C29, `weather_sph.weather_dt`; the overlay does not set dt), vy = 0. The six pools sit where `stormsph`'s do (latitude +-40 degrees, f
-# at the pool 0.0162, three per hemisphere 120 degrees apart, the southern offset by 60) and are the narrower pools
-# of `tests/sphere_weather_helpers.pools("tiny3s")`: 10 x 6 (S4a: tiny3s needs pools 2 to 3 times narrower than
-# the box's 32 x 16). The drift is `stormsph`'s angular rate, -0.009·36/90 = -0.0036 (a lap in the same number of
-# steps; the helper's -0.009 is the 64k3s arc length and would be 2.5 times faster round the small planet).
+# owner decision C29, `weather_sph.weather_dt`; the overlay does not set dt), vy = 0. The six pools sit where
+# `stormsph`'s do (latitude +-40 degrees, f at the pool 0.0162, three per hemisphere 120 degrees apart, the southern
+# offset by 60) and are **18 x 12** (S4c; the 10 x 6 of the first draft hold no storm: 0.02 / 0.01 named per hemisphere).
+# Measured by the study driver (weather alone, 80 000 steps, a detection every 25, seeds 0 and 1, the window after
+# 20 000 steps): a mean of 2.9 / 2.8 and 2.8 / 2.7 named storms per hemisphere, 2 to 6 of them in both hemispheres at
+# 100 and 98 % of the ticks, a lifetime above 3 000 (the median 14 000 steps, 23 and 26 named tracks in 60 000 steps). **The window is narrow and
+# the planet is at the edge of what the weather holds**: three pools on the 40-degree circle of 173 length are 58 apart,
+# 3.2 widths of 18, so a larger pool joins its neighbours into a band (20 x 14 holds 0.02, 22 x 14 and 24 x 16 none), a
+# smaller one is too weak to be named (16 x 10: 0.5 / 0.4; 14 x 8: 0.06), a pool with the amplitude lowered to 0.9
+# holds 0.4, and 20 x 12 is half way (1.8 to 2.1, 2 to 6 at 52 to 65 % of the ticks). The planet is smaller than the
+# deformation radius of the weather (c/f = 0.9/0.016 = 56 against Rp 36), which is what leaves this narrow window. The
+# drift is `stormsph`'s angular rate, -0.009·36/90 = -0.0036 (a lap in the same number of steps).
 #
-# The coupling values are PROVISIONAL (those of `stormsph`, which are those of `storm`). Not rescaled to the
-# smaller planet and left to S4c: `seed_rate` (a probability per unit of weather time for the whole planet, whose
-# area is 0.16 of the 64k3s one) and the default `seed_sigma`, `rain_gain`. The vertical map of the shell onto the
-# atmosphere is s = (H1 + H2)/H = 5 here (2 on 64k3s).
+# The couplings: `seed_rate` is scaled to the planet's area (0.02 x 16 286 / 102 400 = 0.0032: the density of seeds of the
+# box; 0.02 per planet puts 6 times more seeds on this planet and holds 2.6 / 2.7 and 2.8 / 2.9 with more fragments,
+# 0.06 holds 2.2 / 2.3 at 54 % and 0.12 none), and the winds are the box's with it (the largest wind of the weather 0.057,
+# the box's 0.058; 0.093 with 0.02). `rain_gain` 4 400 (the box's 50 000 gave 1.4e-2 of the regeneration here, 17 times the
+# box's 8.0e-4: `regen_max` 320 and a planet an eighth covered by rain; the share is not linear in the gain, the floors of
+# the quanta take more of a small one: 2 900 gave 4.0e-4, 5 800 gave 1.2e-3, 4 400 gives 8e-4). `storm_u0`, `storm_span`,
+# `storm_p` and `f0` are the box's (the largest air speed an agent meets is 0.054 against the box's 0.062).
+# The vertical map of the shell onto the atmosphere is s = (H1 + H2)/H = 5 here (2 on 64k3s).
 [weather]
 enabled = true
 cells = 16
 f0 = 0.025
-seed_rate = 0.02
-pools = [37.699112, 25.132741, 10.0, 6.0, 1.0, -0.0036, 0.0, 113.097336, 25.132741, 10.0, 6.0, 1.0, -0.0036, 0.0, 188.495559, 25.132741, 10.0, 6.0, 1.0, -0.0036, 0.0, 0.0, -25.132741, 10.0, 6.0, 1.0, -0.0036, 0.0, 75.398224, -25.132741, 10.0, 6.0, 1.0, -0.0036, 0.0, 150.796447, -25.132741, 10.0, 6.0, 1.0, -0.0036, 0.0]
-rain_gain = 50000.0
+seed_rate = 0.0032
+pools = [37.699112, 25.132741, 18.0, 12.0, 1.0, -0.0036, 0.0, 113.097336, 25.132741, 18.0, 12.0, 1.0, -0.0036, 0.0, 188.495559, 25.132741, 18.0, 12.0, 1.0, -0.0036, 0.0, 0.0, -25.132741, 18.0, 12.0, 1.0, -0.0036, 0.0, 75.398224, -25.132741, 18.0, 12.0, 1.0, -0.0036, 0.0, 150.796447, -25.132741, 18.0, 12.0, 1.0, -0.0036, 0.0]
+rain_gain = 4400.0
 storm_p = 0.002
 storm_u0 = 0.06
 storm_span = 0.03

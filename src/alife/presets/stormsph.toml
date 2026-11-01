@@ -1,24 +1,46 @@
 # stormsph overlay: the storm world's weather layer on a sphere (docs/SPHERE.md 4 and 7.3, DESIGN §46.6). A WORLD
 # overlay, like `storm`: it needs the planet it is tuned for and fails validation on the others. It is made for the
 # `64k3s` world of the sphere series (Rp 90, H 40, field Nside 21, so the weather Nside Nw = 2 Nf = 42, 21 168
-# cells of side 2.19; the weather time step per engine step is derived, Courant 0.40, dt 0.789); the preset itself is S7's, so until then compose it over a world with those
-# numbers. `tiny3s` (Nw 16) and `mini3s` (Nw 22) need narrower pools and a smaller `cells`: S4c's calibration.
+# cells of side 2.19; the weather time step per engine step is derived, Courant 0.40, dt 0.789).
+#
+# CALIBRATED in S4c (DESIGN §46.6; `python -m alife.analysis.w0_sphere`, weather alone, a detection every 25 steps, the
+# window after 20 000). The pools: 40 x 20, three per hemisphere. What matters is the meridional width `sy`: 16 holds
+# weak storms that rarely reach the naming strength (0.5 f0), 17 is half way (1.9 / 2.5 named per hemisphere at 62 % of
+# the ticks), 18 and above holds a storm on every pool (the plateau runs from 34 x 19 and 36 x 18 to at least 44 x 22,
+# 40 x 20 is its middle); the box's 32 x 16 held 0.7 to 1.4 and 2 to 6 at 3 to 15 % of the ticks. An amplitude lowered
+# to 0.9 holds none. **The seed rate gives the storms a life**: at the box's 0.02 the storms of 40 x 20 form once and
+# last the run (0 to 0.25 deaths per 10 000 steps, six named tracks in 100 000 steps: a frozen world, which the owner
+# did not want), at **0.05** they die and are replaced as the box's do. Five seeds of 100 000 steps (0.05, 40 x 20):
+# 2.9 / 2.8, 3.0 / 2.9, 2.9 / 2.9, 2.8 / 2.9 and 2.8 / 2.9 named storms per hemisphere, 2 to 6 of them in both
+# hemispheres at 98.7, 100, 100, 92.8 and 100 % of the ticks, 0.9 to 1.8 deaths per 10 000 steps (the box 1.8 to 2.0), a
+# Kaplan-Meier median life of 31 500 to 48 700 steps (the box 20 000 to 23 000). 0.06 holds as well (91.7 to 100 %, 1.5
+# to 2.2 deaths, review of S4c); a larger rate on narrower pools shreds the storms (36 x 18 at 0.08: 62 %).
+# `tests/test_sphere_presets.py` pins the values and `tests/test_sphere_presets_slow.py` repeats the criteria, with
+# storms born in the window.
 #
 # `weather.cells` is the weather Nside Nw (not a grid side) and must be Nf times a power of two. A pool is
 # (x, y, sx, sy, amp, vx, vy) with x the arc length east of longitude 0 and y the arc length north of the
 # equator (lon = x/Rp, lat = y/Rp), sx and sy Gaussian widths in length, vx the drift along the pool's own
-# latitude circle per unit of weather time (vx·dt per engine step, dt 0.789), vy = 0. Six pools of the box's 32 x 16, at latitude +-40 degrees (f at the pool
-# 0.0162, as 64k3d), three per hemisphere, 120 degrees apart; the southern ones are offset by 60 degrees.
+# latitude circle per unit of weather time (vx·dt per engine step, dt 0.789), vy = 0. Six pools at latitude +-40
+# degrees (f at the pool 0.0162, as 64k3d), three per hemisphere, 120 degrees apart; the southern ones are offset
+# by 60 degrees.
 #
-# The coupling values are PROVISIONAL (those of `storm`; S4c calibrates them). The vertical map of the shell onto
-# the atmosphere is s = (H1 + H2)/H = 2 here.
+# The couplings: `seed_rate` 0.05 per planet and unit of weather time (the box's 0.02 over the same area, 2.5 times
+# the density: the seeds are what kills and replaces a storm). Set against the box's early weather (3 000 steps from
+# the founders, the same procedure for both): `rain_gain` stays at 52 000 (the box's 50 000), which gives the nominal
+# rain of the box, 0.08 % of the regeneration (`rain_global_share` 8.5e-4 against 8.0e-4). `storm_u0` is raised from
+# the box's 0.06 to 0.09: the winds of these storms are 1.5 times the box's (the largest air speed an agent meets is
+# 0.089 against 0.062; 0.083 at the seed rate 0.02), and the onset of the hazard stays just above that largest
+# speed (the storm exposure of the agents is 6e-6 against the box's 9e-6; 1.6e-4 with the onset at 0.08);
+# `storm_span` and `storm_p` are the box's.
+# The vertical map of the shell onto the atmosphere is s = (H1 + H2)/H = 2 here.
 [weather]
 enabled = true
 cells = 42
 f0 = 0.025
-seed_rate = 0.02
-pools = [94.24778, 62.831853, 32.0, 16.0, 1.0, -0.009, 0.0, 282.743339, 62.831853, 32.0, 16.0, 1.0, -0.009, 0.0, 471.238898, 62.831853, 32.0, 16.0, 1.0, -0.009, 0.0, 0.0, -62.831853, 32.0, 16.0, 1.0, -0.009, 0.0, 188.495559, -62.831853, 32.0, 16.0, 1.0, -0.009, 0.0, 376.991118, -62.831853, 32.0, 16.0, 1.0, -0.009, 0.0]
-rain_gain = 50000.0
+seed_rate = 0.05
+pools = [94.24778, 62.831853, 40.0, 20.0, 1.0, -0.009, 0.0, 282.743339, 62.831853, 40.0, 20.0, 1.0, -0.009, 0.0, 471.238898, 62.831853, 40.0, 20.0, 1.0, -0.009, 0.0, 0.0, -62.831853, 40.0, 20.0, 1.0, -0.009, 0.0, 188.495559, -62.831853, 40.0, 20.0, 1.0, -0.009, 0.0, 376.991118, -62.831853, 40.0, 20.0, 1.0, -0.009, 0.0]
+rain_gain = 52000.0
 storm_p = 0.002
-storm_u0 = 0.06
+storm_u0 = 0.09
 storm_span = 0.03

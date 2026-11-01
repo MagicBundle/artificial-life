@@ -236,11 +236,20 @@ import Testing
         let model = make(runs, launches: Launches())
         model.refresh()
         model.planet.name = "planet_t"
-        for (source, overlay) in [("tiny_s0", "stormsph16"), ("64k_s0", "stormsph"), ("mini_s0", "stormsph22")] {
+        // the spin-up is the planet's own, by its shape (S4c): the table of `PlanetSpec.sphereSpinups`, one length per overlay row
+        for (source, overlay, shape) in [("tiny_s0", "stormsph16", PlanetShape(radius: 36, height: 16, nside: 8, layers: 8)),
+                                         ("64k_s0", "stormsph", PlanetShape(radius: 90, height: 40, nside: 21, layers: 18)),
+                                         ("mini_s0", "stormsph22", PlanetShape(radius: 48, height: 24, nside: 11, layers: 12))] {
             model.selectSource(source)
+            let spinup = try #require(PlanetSpec.sphereSpinups.first { $0.shape == shape }).steps
             #expect(model.planet.storm && model.weatherObstacle == nil && model.planetErrors.isEmpty, "\(source)")
+            #expect(model.planet.weatherSpinup == spinup, "\(source) starts at its planet's spin-up")
             #expect(PlayLaunch.arguments(planet: model.planet).starts(with: ["play", "--init-from", "runs/\(source):200", "--overlay", overlay,
-                                                                           "--set", "director.enabled=true", "--weather-spinup", "20000"]))
+                                                                           "--set", "director.enabled=true", "--weather-spinup", "\(spinup)"]))
+            // switching the overlay off and on keeps the planet's default, and a user's value stays across a refresh
+            model.setStorm(false)
+            model.setStorm(true)
+            #expect(model.planet.weatherSpinup == spinup)
         }
         model.selectSource("odd_s0")
         let obstacle = try #require(model.weatherObstacle)

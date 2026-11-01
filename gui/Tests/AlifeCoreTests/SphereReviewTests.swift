@@ -224,9 +224,17 @@ import simd
 
     // MARK: The launcher
 
-    @Test func aPlanetTakesTheSphereSpinupWhateverItsSize() {
+    @Test func aPlanetTakesTheSpinupOfItsShapeWhateverItsWorldSize() {
+        // a shape without a row (it has no overlay either) takes the long value, whatever the size
         #expect(PlanetSpec.defaultSpinup(forGeometry: "sphere", worldSize: 160) == PlanetSpec.sphereSpinup)
         #expect(PlanetSpec.defaultSpinup(forGeometry: "sphere", worldSize: 1024) == PlanetSpec.sphereSpinup)
+        for row in PlanetSpec.sphereSpinups {
+            #expect(PlanetSpec.defaultSpinup(forGeometry: "sphere", shape: row.shape, worldSize: 160) == row.steps)
+            #expect(PlanetSpec.defaultSpinup(forGeometry: "sphere", shape: row.shape, worldSize: 1024) == row.steps)
+            #expect(PlanetSpec.defaultSpinup(forGeometry: "box", shape: row.shape, worldSize: 320) == PlanetSpec.defaultSpinup, "a box ignores the shape")
+            #expect(PlanetSpec.overlay(forShape: row.shape) != nil, "every shape with a spin-up has an overlay")
+        }
+        #expect(PlanetSpec.sphereSpinups.map(\.shape) == PlanetSpec.weatherOverlays.map(\.shape), "one row per overlay, in order")
         #expect(PlanetSpec.defaultSpinup(forGeometry: "box", worldSize: 160) == PlanetSpec.miniSpinup)
         #expect(PlanetSpec.defaultSpinup(forGeometry: nil, worldSize: 320) == PlanetSpec.defaultSpinup)
     }

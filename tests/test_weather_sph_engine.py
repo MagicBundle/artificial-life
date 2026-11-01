@@ -113,26 +113,24 @@ def test_the_stormsph_overlay_is_made_for_the_64k3s_world() -> None:
 
 
 def test_the_stormsph16_overlay_is_made_for_the_tiny3s_world() -> None:
-    """The overlay of the `tiny3s` planet (DESIGN §46.6, §46.8): the weather Nside 16, the pools of
-    `sphere_weather_helpers.pools("tiny3s")` at the angular drift of `stormsph`, the coupling of `stormsph`;
-    it sets no weather time step (it runs at the derived one)."""
+    """The overlay of the `tiny3s` planet (DESIGN §46.6, §46.8): the weather Nside 16, the 18 x 12 pools of
+    the S4c calibration (`w0_sphere.make_pools`) at the angular drift of `stormsph`; it sets no weather time
+    step (it runs at the derived one). The calibrated values are pinned in `test_sphere_presets`."""
     import tomllib
     from importlib import resources
 
-    from sphere_weather_helpers import pools
+    from alife.analysis.w0_sphere import make_pools
 
     assert "stormsph16" in config.WORLD_OVERLAYS and "stormsph16" in config.ALL_OVERLAYS
     cfg = load_config(preset="tiny3s", overlays=["stormsph16"])
     p = weather_sph.params_from_config(cfg)
     assert cfg.weather.enabled and (cfg.weather.cells, len(cfg.weather.pools) // 7) == (16, 6)
     assert cfg.weather.cells == 2 * cfg.world.nside == NW["tiny3s"]
-    # the pools are the tests' narrow ones (10 x 6 at +-40 degrees) with `stormsph`'s angular drift:
+    # the pools are 18 x 12 at +-40 degrees with `stormsph`'s angular drift:
     # -0.009 on a planet of radius 90 is -0.0036 on radius 36 (a lap in the same number of steps)
-    assert list(cfg.weather.pools) == pytest.approx(pools("tiny3s", drift=-0.009 * 36.0 / 90.0), abs=1e-6)
-    # the coupling is `stormsph`'s
+    assert list(cfg.weather.pools) == pytest.approx(make_pools(36.0, 3, 18.0, 12.0), abs=1e-6)
     sph = load_config(preset="tiny3s", overlays=["stormsph"], overrides=W64K[1:]).weather
-    for key in ("enabled", "f0", "seed_rate", "rain_gain", "storm_p", "storm_u0", "storm_span"):
-        assert getattr(cfg.weather, key) == getattr(sph, key), key
+    assert (cfg.weather.enabled, cfg.weather.f0) == (sph.enabled, sph.f0)
     # nothing per step is configured by the overlay: the keys it sets are those of `stormsph`, and none is a
     # time step (S4b derives it from the Courant number, so the overlay validates before and after that)
     text = resources.files("alife.presets").joinpath("stormsph16.toml").read_text(encoding="utf-8")
@@ -262,13 +260,21 @@ def test_a_prescribed_wind_moves_the_agents_by_alpha_times_the_wind() -> None:
     alive = np.array(s.alive)
     dpos = (np.array(b.pos) - np.array(a.pos))[alive]
     drift = np.array(weather.agent_drift(wx_w, s.pos, s.buoy_cap, s.alive, cfg))[alive]
+    # the expected drift, computed from the sampler and the coupling alone (not through `agent_drift`):
+    # alpha(buoyancy) · dt · u_air, a step being dt of a unit of weather time (S4c)
+    p = weather_sph.params_from_config(cfg)
+    geo = weather_sph.WeatherGeometry.from_config(cfg)
+    air = np.array(weather_sph.sample_wind(weather_sph.unpack(wx_w), s.pos, p, geo, valid=s.alive).u)[alive]
+    alpha = (p.alpha0 + p.alpha1 * np.array(s.buoy_cap))[alive][:, None]
+    want = alpha * p.dt * air
+    assert np.allclose(drift, want, rtol=1e-5, atol=1e-8)
     assert np.linalg.norm(drift, axis=1).mean() > 0.02
     cos = (dpos * drift).sum(1) / np.maximum(
         np.linalg.norm(dpos, axis=1) * np.linalg.norm(drift, axis=1), 1e-12
     )
     assert np.median(cos) > 0.9
-    ratio = np.linalg.norm(dpos, axis=1).sum() / np.linalg.norm(drift, axis=1).sum()
-    assert 0.5 < ratio < 1.5, ratio
+    ratio = np.linalg.norm(dpos, axis=1).sum() / np.linalg.norm(want, axis=1).sum()
+    assert 0.8 < ratio < 1.1, ratio  # without the factor dt (0.829) the ratio would be 1.2 times larger
 
 
 def test_the_metrics_row_has_the_sphere_weather_block() -> None:
@@ -509,9 +515,13 @@ def test_the_shear_layer_must_lie_within_the_floor_layer_in_weather_units() -> N
     assert "z_sl <= s·z_1" in _msgs("weather.z_sl=14.2")
 
 
-def test_the_load_rule_uses_the_vertical_wind_of_the_shell() -> None:
-    """Rule 16: ``thrust_max + max(g + a·drag·w_edge/s, ...) < 2·radius·k_repel``: with ``s = 5`` the largest
-    accepted ``w_edge`` is 0.15 (thrust 0.1, gravity 0.03, limit 0.16); without the division by ``s`` it would
-    be 0.03."""
-    assert "rule 16" not in _msgs("weather.w_edge=0.14")
-    assert "rule 16" in _msgs("weather.w_edge=0.16")
+def test_the_load_rule_uses_the_vertical_wind_of_the_shell_and_the_weather_time_of_a_step() -> None:
+    """Rule 16: ``thrust_max + max(g + a·drag·dt·w_edge/s, ...) < 2·radius·k_repel``: with ``s = 5`` and
+    ``dt = 0.829`` the largest accepted ``w_edge`` is 0.15/0.829 = 0.181 (thrust 0.1, gravity 0.03, limit
+    0.16); without the division by ``s`` it would be 0.036, without ``dt`` (the force is ``α·drag·dt·u``)
+    0.15."""
+    assert "rule 16" not in _msgs("weather.w_edge=0.17")
+    assert "rule 16" in _msgs("weather.w_edge=0.19")
+    # the speed rule carries dt too: (thrust_max + a·drag·dt·u_max)/drag <= v_max (0.5)
+    assert "rule 16" not in _msgs("weather.u_max=0.45")
+    assert "rule 16" in _msgs("weather.u_max=0.52")

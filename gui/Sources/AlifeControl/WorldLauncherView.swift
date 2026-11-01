@@ -173,6 +173,10 @@ struct LauncherPlanetBox: View {
         return shape + ", and the weather overlay is \(overlay)."
     }
 
+    /// Under the spin-up of a planet: the length is the planet's own (the weather of a small planet settles sooner), and the saved weather
+    /// of a launch is reused by the next launch of the same world (`weather_spinup` cache, DESIGN §46.6).
+    static let spinupNote = "The spin-up is the length this planet's weather needs to settle. A launch that repeats a world (the same save, overlay and length) reuses the saved weather and starts at once."
+
     var body: some View {
         let _ = ViewProbe.note("LauncherPlanetBox", for: model)
         GroupBox("New planet") {
@@ -208,6 +212,11 @@ struct LauncherPlanetBox: View {
                 if model.planet.storm {
                     Stepper("Weather spin-up: \(model.planet.weatherSpinup) steps",
                             value: $model.planet.weatherSpinup, in: 1...200_000, step: 1000)
+                    if model.planet.sourceGeometry == "sphere" {
+                        Text(LauncherPlanetBox.spinupNote)
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 Toggle("Compile the director into the world (director.enabled)", isOn: $model.planet.directorEnabled)
                 Picker("Houses", selection: $model.planet.houses) {
