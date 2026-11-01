@@ -36,17 +36,11 @@ READ_KEY = re.compile(
 # (World3DLevers documents the choice).
 CLI_ONLY_3D = {("physics", "floor_eps")}
 
-# The sphere keys (DESIGN §46.9, config.SPHERE_KEYS) are command-line only until the sphere GUI (PR S6 of the
-# true-sphere series) gives them levers: a key leaves this set in the PR that makes it a lever, and the test
-# below fails in either direction, so a lever added without leaving the set is noticed, and a key added to
-# SPHERE_KEYS without a lever must be listed here on purpose.
-CLI_ONLY_SPHERE = {
-    ("world", "geometry"),
-    ("world", "radius"),
-    ("world", "nside"),
-    ("world", "layers"),
-    ("physics", "ceiling_band"),
-}
+# The sphere keys (DESIGN §46.9, config.SPHERE_KEYS) all have a place in the GUI since PR S6 of the sphere
+# series (SphereLevers.swift: the radius, the Nside, the layers and the ceiling band are levers; the geometry
+# is read from the preset or the source and shown, never an input). A key added to SPHERE_KEYS without a
+# lever must be listed here on purpose, and the test below fails in either direction.
+CLI_ONLY_SPHERE: set[tuple[str, str]] = set()
 
 
 def sources() -> dict[str, str]:
@@ -181,9 +175,9 @@ def test_the_stream_records_the_decoder_knows_are_the_writers() -> None:
     assert {"STRC", "FSOL", "FSIG"} <= swift_tags
     for tag in getattr(sr, "EXT_TAGS", ()):
         assert tag in swift_tags, tag
-    # MAPH (the sphere's weather map, protocol 2) is the Swift decoder's S6 work, not yet in PlayRecords.swift
-    sphere_only = set(getattr(sr, "SPHERE_TAGS", ()))
-    assert set(getattr(sr, "ALL_TAGS", sr.TAGS)) - sphere_only <= swift_tags | {"FARS"}
+    # MAPH (the sphere's weather map, protocol 2) is decoded too (PR S6)
+    assert set(getattr(sr, "SPHERE_TAGS", ())) <= swift_tags
+    assert set(getattr(sr, "ALL_TAGS", sr.TAGS)) <= swift_tags | {"FARS"}
     role = (CORE / "RoleColours.swift").read_text(encoding="utf-8")
     assert re.search(r'static let mode = "role"', role)
     assert tuple(getattr(sr, "EXT_COLOR_MODES", ("role",))) == ("role",)
@@ -305,16 +299,10 @@ def test_the_feature_key_tables_are_consistent() -> None:
         assert set(config.CLI_ONLY_FEATURE_KEYS.get(feature, ())) <= set(keys), feature
 
 
-# The sphere presets exist in the engine (S2 adds `tiny3s`) but not yet in the Swift `Preset` enum: the GUI
-# is PR S6 of the true-sphere series (docs/SPHERE.md 7.4), which removes this exemption.
-SPHERE_PRESETS_PENDING_GUI = frozenset({"tiny3s"})
-
-
 def test_the_preset_picker_lists_the_engine_presets() -> None:
     values = swift_enum_values(sources()["Levers.swift"], "Preset")
-    assert values == set(config.PRESETS) - SPHERE_PRESETS_PENDING_GUI
-    assert set(config.PRESETS) >= SPHERE_PRESETS_PENDING_GUI
-    for name in values | SPHERE_PRESETS_PENDING_GUI:
+    assert values == set(config.PRESETS)
+    for name in values:
         assert (ROOT / "src" / "alife" / "presets" / f"{name}.toml").is_file(), name
 
 
@@ -453,7 +441,10 @@ def test_the_play_header_keys_match_playheader() -> None:
         assert set(full["structures"]) < set(full["niche"])  # `farm` is niche's alone
         assert swift_struct_keys(text, "Comm") == set(full["comm"])
         assert swift_struct_keys(text, "BondFlow") == set(full["bonds"])
-    assert swift_struct_keys(text, "Weather") == set(play["weather"])
+    # a box's block has cells and dx, a sphere's (protocol 2) nside instead: one struct reads both
+    sphere_weather = sr.weather_block_sphere(enabled=True, dc_ref=1.0, nside=16, coarse=8)
+    assert swift_struct_keys(text, "Weather") == set(play["weather"]) | set(sphere_weather)
+    assert set(sphere_weather) == (set(play["weather"]) - {"cells", "dx"}) | {"nside"}
     assert swift_struct_keys(text, "Refs") == set(play["weather"]["refs"])
     assert swift_struct_keys(text, "Labels") == set(play["labels"])
     assert swift_struct_keys(text, "Gate") == set(play["labels"]["gate"])
@@ -470,7 +461,16 @@ def test_the_play_header_keys_match_playheader() -> None:
         step=0, run=None, config_hash="h", source="preset",
     )  # fmt: skip
     stream_header = (CORE / "StreamProtocol.swift").read_text(encoding="utf-8")
-    assert swift_struct_keys(stream_header, "StreamHeader") == {*legacy, "play"}
+    # `sphere` is not a key: it holds the planet keys of a protocol 2 header, which the CodingKeys below read
+    assert swift_struct_keys(stream_header, "StreamHeader") == {*legacy, "play", "sphere"}
+    planet = sr.sphere_block(
+        planet_radius=36.0, shell_edges=[36.0, 40.0, 52.0], nside_field=8, nside_weather=0, nside_territory=9,
+        weather_depth=0.0,
+    )  # fmt: skip
+    header_text = swift_body(stream_header, "struct StreamHeader")
+    for key in planet:
+        assert f'"{key}"' in header_text or re.search(rf"\bcase {key}\b|, {key}\b", header_text), key
+    assert sr.sphere_header(legacy, planet).keys() >= set(planet)
 
 
 def swift_body(text: str, header: str) -> str:
@@ -528,7 +528,10 @@ def test_the_g3b_records_have_the_keys_the_swift_types_decode() -> None:
     assert swift_struct_keys(body, "Sentence") == keys_of([r["headline"] for r in reports])
     assert swift_struct_keys(body, "Line") == keys_of([b for r in reports for b in r["body"]])  # type: ignore[index]
     assert swift_struct_keys(body, "Tick") == keys_of([t for r in reports for t in r["ticker"]])  # type: ignore[index]
-    assert swift_struct_keys(body, "Entity") == keys_of([e for r in reports for e in r["entities"].values()])  # type: ignore[index]
+    entity_keys = keys_of([e for r in reports for e in r["entities"].values()])  # type: ignore[index]
+    assert (
+        swift_struct_keys(body, "Entity") - {"z"} == entity_keys
+    )  # z: a sphere place, absent in a box report
     assert swift_struct_keys(body, "Since") == keys_of([r["since"] for r in reports])
     assert swift_struct_keys(body, "Ending") == keys_of([e for r in reports for e in r["since"]["ending"]])  # type: ignore[index]
     assert swift_struct_keys(body, "Versions") == keys_of([r["versions"] for r in reports])
@@ -555,7 +558,14 @@ def test_the_g3b_environment_and_identity_keys_match() -> None:
     env = swift_body(text, "struct PlayEnvironment")
     assert swift_struct_keys(env, "PlayEnvironment") == set(envs)  # type: ignore[arg-type]
     assert swift_struct_keys(env, "Influence") == set(envs["influence"])  # type: ignore[index]
-    assert swift_struct_keys(env, "Patch") == keys_of(envs["patches"])  # type: ignore[index]
+    # a sphere's patches carry the unit vector and the degrees too (protocol 2, §46.7): optional keys
+    import numpy as np
+
+    from alife.game import powers as game_powers
+
+    sphere_patch = set(game_powers.patches_block(np.array([[0.0, 0.6, 0.8]]), np.array([1.0]), 3.0)[0])
+    assert sphere_patch == keys_of(envs["patches"]) | {"z", "lon", "lat"}  # type: ignore[index]
+    assert swift_struct_keys(env, "Patch") == sphere_patch
     assert swift_struct_keys(env, "PowerState") == keys_of(list(envs["powers"].values()))  # type: ignore[index]
     kin = [k for r in fixture_json("IDNT") for k in r["kin"]]  # type: ignore[index]
     assert swift_struct_keys(swift_body(text, "struct IdentityTables"), "Kin") == keys_of(kin)
@@ -702,14 +712,52 @@ def test_the_play_launch_flags_are_flags_of_alife_play() -> None:
     choices = {s: a.choices for a in parser._actions for s in a.option_strings if a.choices}  # type: ignore[attr-defined]
     assert swift_enum_values(text, "PlayHouses") == set(choices["--houses"])
     assert swift_enum_values(text, "PlayDirector") == set(choices["--director"])
-    assert {"storm", "storm160"} <= set(choices["--overlay"])
-    # The launcher passes the overlay of the source's size (DESIGN §37.2): both names are engine overlays, and
-    # `miniWorldSize` is the world.size of the preset that `storm160` is made for.
-    assert '"--overlay", PlanetSpec.overlay(forWorldSize: p.sourceWorldSize)' in text
+    assert {"storm", "storm160", "stormsph", "stormsph16"} <= set(choices["--overlay"])
+    # The launcher passes the overlay of the source's geometry, planet shape and size (DESIGN §37.2, §46.8,
+    # §46.9): all the names are engine overlays, a planet's is chosen by the source's `world.geometry` and
+    # shape (never by an alias; none is passed for a shape without one), and `miniWorldSize` is the
+    # world.size of the preset that `storm160` is made for.
+    assert re.search(
+        r"let overlay = p\.storm \? PlanetSpec\.weatherOverlay\(forGeometry: p\.sourceGeometry, "
+        r"shape: p\.sourceShape, worldSize: p\.sourceWorldSize\) : nil",
+        text,
+    )
+    assert re.search(
+        r'geometry == "sphere" \? overlay\(forShape: shape\) : overlay\(forWorldSize: size\)', text
+    )
     assert re.search(r'size == miniWorldSize \? "storm160" : "storm"', text)
     assert re.search(r"miniWorldSize = 160\.0", text)
     assert config.load_config(preset="mini3d").world.size == 160.0
     assert config.WORLD_OVERLAYS[:2] == ("storm", "storm160")
+
+
+def test_the_launcher_overlay_table_holds_the_shapes_the_overlays_are_made_for() -> None:
+    """`PlanetSpec.weatherOverlays` pairs a planet shape (radius, height, nside, layers) with its overlay.
+    Each pair is an engine overlay and validates on exactly that planet (`tiny3s` and the `64k3s` geometry of
+    the spec); `mini3s`, which has no overlay yet, is not in the table."""
+    text = (CORE / "PlayLaunch.swift").read_text(encoding="utf-8")
+    rows = re.findall(
+        r'\(PlanetShape\(radius: (\d+), height: (\d+), nside: (\d+), layers: (\d+)\), "([a-z0-9]+)"\)', text
+    )
+    assert [r[4] for r in rows] == ["stormsph", "stormsph16"]
+    base = ["world.geometry=sphere", "world.size=1024", "sensing.cell_capacity=32", "physics.floor_eps=0.05"]
+    for radius, height, nside, layers, overlay in rows:
+        assert overlay in config.WORLD_OVERLAYS
+        shape = [
+            f"world.radius={radius}",
+            f"world.height={height}",
+            f"world.nside={nside}",
+            f"world.layers={layers}",
+        ]
+        cfg = config.load_config(preset="tiny3d", overlays=[overlay], overrides=[*base, *shape])
+        assert cfg.weather.enabled and cfg.weather.cells == 2 * int(nside)
+    tiny = config.load_config(preset="tiny3s").world  # the table's second row is the engine's tiny3s preset
+    assert [int(v) for v in rows[1][:4]] == [tiny.radius, tiny.height, tiny.nside, tiny.layers]
+    # a planet of another shape is refused by the engine, which is why the launcher passes none
+    mini = ["world.radius=48", "world.height=24", "world.nside=11", "world.layers=12"]
+    for _r, _h, _n, _l, overlay in rows:
+        with pytest.raises(config.ConfigError):
+            config.load_config(preset="tiny3d", overlays=[overlay], overrides=[*base, *mini])
 
 
 def test_the_play_launch_set_keys_are_config_fields() -> None:

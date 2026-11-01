@@ -1,4 +1,5 @@
 import Foundation
+import simd
 
 // The Powers tab (DESIGN §34.7): the grid of what the player can do, the aim-preview-confirm exchange with the world, the
 // units, the effects that run, and the cards of what happened. A pure state machine over the records and the lines, so the
@@ -255,6 +256,46 @@ package struct PowersModel: Equatable, Sendable {
             return nil
         }
         return requestPreview()
+    }
+
+    /// A click on the planet at longitude `lon` and latitude `lat` (degrees): the patch nearest to it by great-circle arc, or the column over it.
+    /// The world's places are a longitude and a latitude (`x` and `y` of a power line, DESIGN §46.7).
+    package mutating func aim(lon: Double, lat: Double, patches: [PlayEnvironment.Patch]) -> PlayCommand? {
+        guard let offer, offer.scope != .global else { return nil }
+        switch phase {
+        case .submitted, .idle: return nil
+        default: break
+        }
+        switch offer.scope {
+        case .patch:
+            guard let index = Self.nearestPatch(lon: lon, lat: lat, in: patches) else { return nil }
+            target = .patch(index)
+        case .column:
+            target = .point(x: lon, y: lat)
+        case .global:
+            return nil
+        }
+        return requestPreview()
+    }
+
+    /// The patch of a sphere nearest to the place `(lon, lat)` degrees by great-circle arc; the lowest index on a tie. A patch is placed by
+    /// its `lon`, `lat` (or the unit vector `x, y, z`). Nil with no patch.
+    package static func nearestPatch(lon: Double, lat: Double, in patches: [PlayEnvironment.Patch]) -> Int? {
+        let here = SphereFrame.direction(lat: lat, lon: lon)
+        var best: (index: Int, angle: Float)?
+        for patch in patches {
+            let there: SIMD3<Float>
+            if let plon = patch.lon, let plat = patch.lat {
+                there = SphereFrame.direction(lat: plat, lon: plon)
+            } else if let z = patch.z {
+                there = simd_normalize(SIMD3(Float(patch.x), Float(patch.y), Float(z)))
+            } else {
+                continue
+            }
+            let a = SphereFrame.angle(here, there)
+            if best == nil || a < best!.angle { best = (patch.i, a) }
+        }
+        return best?.index
     }
 
     /// The patch nearest to `point` on the torus of side `size`; the lowest index on a tie. Nil with no patch.

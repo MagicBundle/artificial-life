@@ -523,6 +523,7 @@ WORLD_OVERLAYS: tuple[str, ...] = (
     *(s.overlay for s in ext.REGISTRY if s.overlay),
     "niche3d",  # farming at the 3D design point (farm_cost 150): a variant of the niche overlay
     "stormsph",  # the weather layer of a sphere world (DESIGN §46.6), made for the 64k3s planet
+    "stormsph16",  # the same for the tiny3s planet (Nw 16, narrower pools; DESIGN §46.8), provisional
 )
 ALL_OVERLAYS: tuple[str, ...] = OVERLAYS + WORLD_OVERLAYS  # what the loaders and the CLI accept
 DEFAULT_PRESET: Final = "64k"

@@ -141,6 +141,9 @@ struct WorldLauncherView: View {
 
     private func describe(_ world: PlayWorld) -> String {
         var parts: [String] = []
+        if world.geometry == "sphere" {
+            parts.append("sphere" + (world.planetRadius.map { ", radius " + World3DLevers.text($0) } ?? ""))
+        }
         if let step = world.newestStep { parts.append("step \(step)") }
         if let planet = world.file.planet {
             parts.append("planet of \(planet.source ?? "a preset")")
@@ -157,6 +160,19 @@ struct WorldLauncherView: View {
 struct LauncherPlanetBox: View {
     @ObservedObject var model: WorldLauncherModel
 
+    /// The source's name, with "sphere" and its radius for a planet (DESIGN §46.9: the launcher shows a world's geometry).
+    static func title(of source: PlaySource) -> String {
+        source.geometry == "sphere" ? "\(source.name)  (sphere\(source.planetRadius.map { ", radius " + World3DLevers.text($0) } ?? ""))" : source.name
+    }
+
+    /// What a sphere source means for the planet: it stays a sphere, and its weather overlay is its own, chosen by its shape (none for a
+    /// shape without a calibrated weather: the toggle then says so).
+    static func sphereNote(_ source: PlaySource) -> String {
+        let shape = "A sphere world: the new planet is a sphere of the same shape (a fork cannot change its geometry)"
+        guard !source.weatherOn, let overlay = PlanetSpec.overlay(forShape: source.planetShape) else { return shape + "." }
+        return shape + ", and the weather overlay is \(overlay)."
+    }
+
     var body: some View {
         let _ = ViewProbe.note("LauncherPlanetBox", for: model)
         GroupBox("New planet") {
@@ -164,7 +180,11 @@ struct LauncherPlanetBox: View {
                 Picker("Source", selection: Binding(
                     get: { model.planet.source }, set: { model.selectSource($0) })
                 ) {
-                    ForEach(model.catalog.sources) { Text($0.name).tag($0.name) }
+                    ForEach(model.catalog.sources) { Text(Self.title(of: $0)).tag($0.name) }
+                }
+                if let source = model.selectedSource, source.geometry == "sphere" {
+                    Text(Self.sphereNote(source)).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 if model.sourceIsWorld {
                     Text(WorldLauncherModel.continueHint).font(.caption).foregroundStyle(.secondary)

@@ -39,6 +39,8 @@ package struct World3DLevers: Equatable, Sendable {
     /// `mutation.buoy_init` and `mutation.buoy_sigma` of the baseline (CLI-only; see above).
     package var buoyInit = "0"
     package var buoySigma = "0"
+    /// The shape of a planet (`SphereLevers`); inert for a box world.
+    package var sphere = SphereLevers()
 
     package init() {}
 
@@ -56,6 +58,7 @@ package struct World3DLevers: Equatable, Sendable {
         if let v = file.double("fields", "photic_lambda") { photicLambda = Self.text(v) }
         if let v = file.double("mutation", "buoy_init") { buoyInit = Self.text(v) }
         if let v = file.double("mutation", "buoy_sigma") { buoySigma = Self.text(v) }
+        sphere = SphereLevers(preset: file)
     }
 
     /// The 3D values of the named preset in the repository, or nil if its file cannot be read.
@@ -113,7 +116,7 @@ package struct World3DLevers: Equatable, Sendable {
         if buoyancyOff, costs.contains(where: { $0 != 0 }) {
             errors.append("energy.buoyancy_cost and energy.buoyancy_cap_cost must be 0 when physics.buoyancy_max is 0.")
         }
-        return errors
+        return errors + sphere.validate()
     }
 
     /// Problems of switching the actuator on that no field of this struct can fix. The cap every agent carries is what
@@ -157,6 +160,6 @@ package struct World3DLevers: Equatable, Sendable {
         // Not editable: only the baseline's values count, and only when the actuator goes off.
         decimal("mutation.buoy_init", buoyancyOff ? "0" : baseline.buoyInit, baseline.buoyInit)
         decimal("mutation.buoy_sigma", buoyancyOff ? "0" : baseline.buoySigma, baseline.buoySigma)
-        return args
+        return args + sphere.setArguments(baseline: baseline.sphere)
     }
 }

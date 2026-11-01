@@ -2,7 +2,7 @@ import Foundation
 
 // What the World window knows of the world it is connected to, reduced from the decoded records (DESIGN §33.4.2). A value
 // type with no UI and no clock, so that the reducers are tested alone. A latest-wins record (`FRMA IDNT INTN TERR STRM
-// MAP1 ENVS CLCK FOCS`) replaces the one before it, and is complete by itself (§33.1.1); `EVNT` is queued: every event is
+// MAP1 MAPH ENVS CLCK FOCS`) replaces the one before it, and is complete by itself (§33.1.1); `EVNT` is queued: every event is
 // kept, in order, once.
 
 /// The chronicle: the events of the world in the order of their ids (`step * 1000 + family base + index`), without
@@ -268,6 +268,8 @@ package struct WorldStore: Sendable {
     package private(set) var territory: PlayTerritory?
     package private(set) var storms: PlayStormRecord?
     package private(set) var map: PlayWeatherMap?
+    /// A sphere world's weather map (`MAPH`); `map` is nil there, and this is nil in a box world.
+    package private(set) var sphereMap: PlaySphereWeather?
     package private(set) var environment: PlayEnvironmentRecord?
     package private(set) var clock: PlayClock?
     package private(set) var focus: PlayFocus?
@@ -316,6 +318,7 @@ package struct WorldStore: Sendable {
         case .terr(let r): territory = r; territorySerial += 1; changes = .territory
         case .strm(let r): storms = r; changes = .storms
         case .map1(let r): map = r; mapSerial += 1; changes = .map
+        case .maph(let r): sphereMap = r; mapSerial += 1; changes = .map
         case .envs(let r): environment = r; changes = .environment
         case .clck(let r): clock = r; changes = .clock
         case .focs(let r): focus = r; changes = .focus

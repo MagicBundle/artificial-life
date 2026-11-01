@@ -19,6 +19,10 @@ extension WorldModel {
     /// The Side view has a distance of its own, so the one the player had is kept (`sideReturn`) and is the wish of the next view
     /// chosen from it, if the zoom has not been touched since: Top after Side goes back to the overview and not to a third of the world.
     func viewPreset(_ preset: ViewPreset) {
+        if sphereActive {
+            dismissHint()
+            return sphere.viewPreset(preset)
+        }
         guard hasTiltableView, play.store.header != nil else { return }
         dismissHint()
         let following = Self.followsHeight(followState.target)
@@ -47,6 +51,7 @@ extension WorldModel {
     /// The 3D button: from a view that is angled to straight down (the heading is kept), from the Top view to the angle last used (the
     /// Oblique one at first, and never steeper than the Low view: the edge-on view is the Side button's and the handle's), eased.
     func toggle3D() {
+        if sphereActive { return sphere.toggle3D() }
         guard hasTiltableView, play.store.header != nil else { return }
         dismissHint()
         let following = Self.followsHeight(followState.target)

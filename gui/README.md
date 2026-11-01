@@ -365,3 +365,10 @@ ALIFE_GPU_TESTS=1 swift test --filter GPURenderTests
 `GPUWorldTests` (the World's shaders and pixels), `GPUPatchTests` (the one-world patch and its copies, drawn by the renderer of the hosted `WorldView`) and `WorldRenderBench` (the client's draw time, DESIGN §33.5.5, settings by
 `ALIFE_BENCH_*`) are opt in the same way. Without the variable they are reported as skipped. Run them when the GPU is free (a simulation on it slows both), and
 after any change to `Shaders.swift` or `Renderer.swift`.
+
+## The sphere world
+
+A world with `world.geometry = "sphere"` (preset `tiny3s`) is drawn as a planet by Storm Worlds and by the Lab's 3D viewer (DESIGN §46.8): drag turns
+the planet, a two-finger scroll pans (View > Scroll zooms swaps it with the zoom), a pinch or a wheel zooms, T O L S tilt, H goes home, I shows the minimap (an
+equal-area Mollweide chart). The Lab's levers for it are in the 3D levers box. The GPU tests are opt-in:
+`ALIFE_GPU_TESTS=1 swift test --filter "GPUSphereTests|GPUPlanetWindowTests"` (pictures under `$ALIFE_GPU_TESTS_OUT`; `$ALIFE_SPHERE_STREAM` names a protocol 2 play stream to draw).

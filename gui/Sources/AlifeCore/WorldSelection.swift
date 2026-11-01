@@ -1,4 +1,5 @@
 import Foundation
+import simd
 
 /// The numbers of the event registry of version 1 (DESIGN §33.1.8; the header lists them as `play.events`, and a test pins
 /// these to it).
@@ -56,6 +57,21 @@ package struct ChronicleAction: Equatable, Sendable {
     /// Where it happened, on the floor; nil for an event with no place (a checkpoint, a house).
     package var at: SIMD2<Float>?
     package var select: WorldSelection
+    /// The third coordinate of the place, when the record has one: on a sphere `(x, y, z)` is the planet-frame point (`at` is its first two).
+    package var z: Float?
+
+    package init(at: SIMD2<Float>?, select: WorldSelection, z: Float? = nil) {
+        self.at = at
+        self.select = select
+        self.z = z
+    }
+
+    /// The place on a planet: the direction of `(x, y, z)`, when the record has all three.
+    package var planetDirection: SIMD3<Float>? {
+        guard let at, let z else { return nil }
+        let v = SIMD3(at.x, at.y, z)
+        return simd_length(v) > 1e-6 ? simd_normalize(v) : nil
+    }
 
     /// The action of an event: a storm's id for a storm event, a kin group's for a kin event, the organism the follow passed
     /// to for a hand-off (the old one is dead) and the dead organism for its death; a house, a director entry and a system
@@ -76,6 +92,6 @@ package struct ChronicleAction: Equatable, Sendable {
             }
         default: break
         }
-        return ChronicleAction(at: at, select: select)
+        return ChronicleAction(at: at, select: select, z: event.z.map { Float($0) })
     }
 }

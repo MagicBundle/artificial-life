@@ -18,16 +18,63 @@ package struct PlayHeader: Equatable, Sendable, Codable {
             package var zeta: Double
         }
         package var enabled: Bool
+        /// The weather grid side of a box world; a sphere has none (0 here): its weather Nside is `nside`.
         package var cells: Int
         package var dx: Double
         package var f0: Double
         package var coarse: Int
         package var nameZeta: Double
         package var refs: Refs
+        /// A sphere world's weather Nside (0 when the weather is off); nil for a box world, whose block has `cells` and `dx`.
+        package var nside: Int?
 
         private enum CodingKeys: String, CodingKey {
-            case enabled, cells, dx, f0, coarse, refs
+            case enabled, cells, dx, f0, coarse, refs, nside
             case nameZeta = "name_zeta"
+        }
+
+        package init(enabled: Bool, cells: Int, dx: Double, f0: Double, coarse: Int, nameZeta: Double, refs: Refs, nside: Int? = nil) {
+            self.enabled = enabled
+            self.cells = cells
+            self.dx = dx
+            self.f0 = f0
+            self.coarse = coarse
+            self.nameZeta = nameZeta
+            self.refs = refs
+            self.nside = nside
+        }
+
+        /// A box block has `cells` and `dx` (a missing one is an error); a sphere block (protocol 2) has `nside` instead.
+        package init(from decoder: any Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            enabled = try c.decode(Bool.self, forKey: .enabled)
+            f0 = try c.decode(Double.self, forKey: .f0)
+            coarse = try c.decode(Int.self, forKey: .coarse)
+            nameZeta = try c.decode(Double.self, forKey: .nameZeta)
+            refs = try c.decode(Refs.self, forKey: .refs)
+            nside = try c.decodeIfPresent(Int.self, forKey: .nside)
+            if nside != nil {
+                cells = 0
+                dx = 0
+            } else {
+                cells = try c.decode(Int.self, forKey: .cells)
+                dx = try c.decode(Double.self, forKey: .dx)
+            }
+        }
+
+        package func encode(to encoder: any Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(enabled, forKey: .enabled)
+            try c.encode(f0, forKey: .f0)
+            try c.encode(coarse, forKey: .coarse)
+            try c.encode(nameZeta, forKey: .nameZeta)
+            try c.encode(refs, forKey: .refs)
+            if let nside {
+                try c.encode(nside, forKey: .nside)
+            } else {
+                try c.encode(cells, forKey: .cells)
+                try c.encode(dx, forKey: .dx)
+            }
         }
     }
 
@@ -179,7 +226,7 @@ package struct PlayHeader: Equatable, Sendable, Codable {
         }
     }
 
-    /// The tags the writer actually sends (a 2D or dry world has no `MAP1` and `STRM`).
+    /// The tags the writer actually sends (a 2D or dry world has no `MAP1` and `STRM`; a sphere sends `MAPH` where a box sends `MAP1`).
     package var records: [String]
     package var versions: [String: Int]
     /// Steps per second at 1x.
@@ -229,10 +276,17 @@ package struct PlayHeader: Equatable, Sendable, Codable {
         guard rates.allSatisfy({ $0.isFinite && $0 > 0 }) else { throw bad("a rate is not positive") }
         guard tick > 0, snapshotEvery > 0, frameHz > 0, chapter > 0 else { throw bad("a cadence is not positive") }
         guard energyCap > 0 else { throw bad("energy_cap \(energyCap) is not positive") }
-        guard weather.cells > 0, weather.coarse > 0, weather.cells % weather.coarse == 0 else {
-            throw bad("weather.cells \(weather.cells) is not a multiple of weather.coarse \(weather.coarse)")
+        if let nside = weather.nside {  // a sphere: the weather Nside is a power-of-two multiple of the field Nside
+            guard nside >= 0, weather.coarse >= 2, nside == 0 || (nside % weather.coarse == 0 && (nside / weather.coarse).nonzeroBitCount == 1),
+                  weather.enabled == (nside > 0) else {
+                throw bad("weather.nside \(nside) is not a power-of-two multiple of weather.coarse \(weather.coarse), or enabled disagrees")
+            }
+        } else {
+            guard weather.cells > 0, weather.coarse > 0, weather.cells % weather.coarse == 0 else {
+                throw bad("weather.cells \(weather.cells) is not a multiple of weather.coarse \(weather.coarse)")
+            }
+            guard weather.dx.isFinite, weather.dx > 0 else { throw bad("weather.dx is not positive") }
         }
-        guard weather.dx.isFinite, weather.dx > 0 else { throw bad("weather.dx is not positive") }
         guard Set(records).count == records.count else { throw bad("records lists a tag twice") }
         if let alerts {
             guard !alerts.classes.isEmpty else { throw bad("alerts lists no class") }
@@ -536,7 +590,8 @@ package struct PlayLabels: Equatable, Sendable {
 
 // MARK: - TERR
 
-/// `TERR`: the dominance map, `ny` rows of `nx` cells, row-major (`owner[y * nx + x]`).
+/// `TERR`: the dominance map, `ny` rows of `nx` cells, row-major (`owner[y * nx + x]`). On a sphere `ny` is 1 and `nx` is
+/// `12 nside_territory^2`: `owner[p]` belongs to the RING pixel `p` of the territory map.
 package struct PlayTerritory: Equatable, Sendable {
     package var head: RecordHead
     package var nx: Int
@@ -548,6 +603,14 @@ package struct PlayTerritory: Equatable, Sendable {
     package var owner: [UInt8]
     /// `round(purity_q16 / 257)`.
     package var purity: [UInt8]
+
+    /// The Nside of a sphere's territory map, from the record's own `nx = 12 nside^2` (`ny == 1`); nil for a box's map. The map is sized
+    /// by the record, not by the header's `nside_territory`.
+    package var nside: Int? {
+        guard ny == 1, nx >= 48 else { return nil }
+        let k = Int(Double(nx / 12).squareRoot().rounded())
+        return 12 * k * k == nx ? k : nil
+    }
 }
 
 // MARK: - STRM
@@ -560,9 +623,11 @@ package struct PlayStorms: Equatable, Sendable, Codable {
         package var name: String?
         package var named: Bool
         package var hemi: Int
-        /// Wrapped into `[0, L)`.
+        /// Wrapped into `[0, L)`. On a sphere `(x, y, z)` is the centre on the planet at the floor radius (planet frame).
         package var x: Double
         package var y: Double
+        package var z: Double?
+        /// On a sphere the radius is an arc length at the floor.
         package var r: Double
         package var ext: [Double]
         /// Peak lower-layer vorticity over f0 so far.
@@ -575,13 +640,13 @@ package struct PlayStorms: Equatable, Sendable, Codable {
         package var parent: Int
         /// `"active"` or `"coasting"`.
         package var state: String
-        /// `[step, ux, uy]` with unwrapped coordinates, at most 24.
+        /// `[step, ux, uy]` with unwrapped coordinates, at most 24; on a sphere `[step, x, y, z]`.
         package var track: [[Double]]
-        /// `[lead, x, y]` for the leads 250, 500 and 1000.
+        /// `[lead, x, y]` for the leads 250, 500 and 1000; on a sphere `[lead, x, y, z]`.
         package var pred: [[Double]]
 
         private enum CodingKeys: String, CodingKey {
-            case id, name, named, hemi, x, y, r, ext, zeta, wind, rain, age, parent, state, track, pred
+            case id, name, named, hemi, x, y, z, r, ext, zeta, wind, rain, age, parent, state, track, pred
             case zetaNow = "zeta_now"
         }
     }
@@ -637,6 +702,41 @@ package struct PlayWeatherMap: Equatable, Sendable {
     package func rain(_ byte: UInt8) -> Float { let u = Float(byte) / 255; return u * u * pRef }
 }
 
+// MARK: - MAPH
+
+/// `MAPH` (protocol 2, the sphere's weather map, version 1): the planes of `MAP1` over the `12 nside^2` ring-ordered cells of the field's
+/// HEALPix grid, and the winds as the eastward and northward components at the pixel centre.
+package struct PlaySphereWeather: Equatable, Sendable {
+    package var head: RecordHead
+    /// `nside` of the planes (the header's `nside_field`).
+    package var nside: Int
+    /// `nside_weather = nside * 2^k` (informational).
+    package var k: Int
+    package var f0: Float
+    package var pRef: Float
+    package var dcRef: Float
+    package var uRef: Float
+    package var zetaRef: Float
+    /// Rain rate, companded: `rain = (byte / 255)^2 * pRef`.
+    package var p: [UInt8]
+    /// Cloud depth, `byte / 255 * dcRef`.
+    package var dc: [UInt8]
+    /// Layer-1 vorticity, `byte / 127 * zetaRef`.
+    package var zeta: [Int8]
+    /// The warm-pool (sea) map, `byte / 255`.
+    package var ts: [UInt8]
+    /// `u1, v1, u2, v2`, plane-major (`4 * npix`), `byte / 127 * uRef`: eastward and northward.
+    package var winds: [Int8]
+
+    package var npix: Int { 12 * nside * nside }
+    package func rain(_ byte: UInt8) -> Float { let u = Float(byte) / 255; return u * u * pRef }
+    /// The wind of layer `layer` (0 or 1) at pixel `p`, east and north components in the world's units.
+    package func wind(layer: Int, pixel p: Int) -> SIMD2<Float> {
+        let scale = uRef / 127
+        return SIMD2(Float(winds[2 * layer * npix + p]), Float(winds[(2 * layer + 1) * npix + p])) * scale
+    }
+}
+
 // MARK: - EVNT
 
 /// One event of the chronicle (the closed template table of the server writes `text`).
@@ -685,8 +785,12 @@ package struct PlayEventBatch: Equatable, Sendable {
 /// `ENVS`: the environment (warm pools at this step, levers, the director's effects and cooldowns).
 package struct PlayEnvironment: Equatable, Sendable, Codable {
     package struct Pool: Equatable, Sendable, Codable {
+        /// A box: the pool's position. A sphere: the planet-frame point at the floor radius, with `z`, `lon` and `lat` (degrees).
         package var x: Double
         package var y: Double
+        package var z: Double?
+        package var lon: Double?
+        package var lat: Double?
         package var amp: Double
         package var sx: Double
         package var sy: Double
@@ -731,8 +835,12 @@ package struct PlayEnvironment: Equatable, Sendable, Codable {
     /// A food patch the powers can target (Bloom and Blight land on the nearest one).
     package struct Patch: Equatable, Sendable, Codable {
         package var i: Int
+        /// A box: the patch centre. A sphere: the unit vector of the centre, with `z`, and `lon`, `lat` in degrees.
         package var x: Double
         package var y: Double
+        package var z: Double?
+        package var lon: Double?
+        package var lat: Double?
         package var gain: Double
         package var sigma: Double
     }
@@ -915,6 +1023,8 @@ package struct ReportBody: Equatable, Sendable, Codable {
         package var name: String?
         package var x: Double?
         package var y: Double?
+        /// On a planet the place is `(x, y, z)`, the planet-frame point (stream protocol 2): `z` is nil in a box world.
+        package var z: Double?
     }
 
     package struct Since: Equatable, Sendable, Codable {
@@ -1147,6 +1257,8 @@ package enum StreamRecord: Equatable, Sendable {
     case terr(PlayTerritory)
     case strm(PlayStormRecord)
     case map1(PlayWeatherMap)
+    /// Protocol 2 (the sphere): the weather map on the field's HEALPix cells.
+    case maph(PlaySphereWeather)
     case evnt(PlayEventBatch)
     case envs(PlayEnvironmentRecord)
     case clck(PlayClock)
@@ -1169,6 +1281,7 @@ package enum StreamRecord: Equatable, Sendable {
         case .terr: "TERR"
         case .strm: "STRM"
         case .map1: "MAP1"
+        case .maph: "MAPH"
         case .evnt: "EVNT"
         case .envs: "ENVS"
         case .clck: "CLCK"
@@ -1190,6 +1303,7 @@ package enum StreamRecord: Equatable, Sendable {
         case .terr(let r): r.head
         case .strm(let r): r.head
         case .map1(let r): r.head
+        case .maph(let r): r.head
         case .evnt(let r): r.head
         case .envs(let r): r.head
         case .clck(let r): r.head
@@ -1259,7 +1373,7 @@ enum RecordDecoder {
         case "FRMA": 20
         case "IDNT", "INTN", "STRM": 16
         case "TERR": 16
-        case "MAP1": 32
+        case "MAP1", "MAPH": 32
         case "EVNT": 8
         case "ENVS": 4
         case "ALRT": 8
@@ -1314,7 +1428,16 @@ enum RecordDecoder {
             return head + 16 + 12 * rows
         case "TERR":
             let nx = Int(r.u16(head)), ny = Int(r.u16(head + 2)), jsonLength = Int(r.u32(head + 8))
-            guard (1...256).contains(nx), (1...256).contains(ny) else { throw malformed(tag, "map \(nx) x \(ny)") }
+            if let sphere = header.sphere {  // a sphere: one row of 12 nside^2 ring-ordered cells
+                // sized by the record: one row of 12 nside^2 ring-ordered cells (the header's nside_territory is informational)
+                let k = Int(Double(nx / 12).squareRoot().rounded())
+                guard ny == 1, nx >= 48, 12 * k * k == nx else {
+                    throw malformed(tag, "map \(nx) x \(ny) is not one row of 12 nside^2 cells, nside >= 2")
+                }
+                _ = sphere
+            } else {
+                guard (1...256).contains(nx), (1...256).contains(ny) else { throw malformed(tag, "map \(nx) x \(ny)") }
+            }
             try checkJSON(tag, jsonLength)
             return head + 16 + pad4(jsonLength) + pad4(2 * nx * ny)
         case "STRM":
@@ -1322,7 +1445,18 @@ enum RecordDecoder {
             guard count <= maxStorms else { throw malformed(tag, "\(count) storms exceed the cap of \(maxStorms)") }
             try checkJSON(tag, jsonLength)
             return head + 16 + pad4(jsonLength)
+        case "MAPH":
+            guard let sphere = header.sphere else { throw malformed(tag, "MAPH is the sphere's: a box world sends MAP1") }
+            let nside = Int(r.u16(head)), k = Int(r.u16(head + 2))
+            guard nside == sphere.nsideField else {
+                throw malformed(tag, "nside \(nside) differs from the header's nside_field \(sphere.nsideField)")
+            }
+            guard sphere.hasWeather, sphere.nsideWeather == nside << k else {
+                throw malformed(tag, "k \(k) does not make nside_weather \(sphere.nsideWeather) from \(nside)")
+            }
+            return head + pad4(32 + 8 * Healpix.npix(nside))
         case "MAP1":
+            guard header.sphere == nil else { throw malformed(tag, "a protocol 2 stream never carries MAP1; it sends MAPH") }
             let n = Int(r.u16(head)), nw = Int(r.u16(head + 2))
             guard (1...1024).contains(n), (1...n).contains(nw), n % nw == 0 else {
                 throw malformed(tag, "map \(n) cells with \(nw) wind blocks")
@@ -1376,6 +1510,7 @@ enum RecordDecoder {
         case "TERR": return .terr(try terr(head, r))
         case "STRM": return .strm(try strm(head, r))
         case "MAP1": return .map1(try map1(head, r))
+        case "MAPH": return .maph(try maph(head, r))
         case "EVNT": return .evnt(try evnt(head, r))
         case "ENVS": return .envs(try envs(head, r))
         case "CLCK": return .clck(try clck(head, r))
@@ -1416,6 +1551,10 @@ enum RecordDecoder {
         let pos: [Float] = r.copy(count: 3 * n, at: offset)
         offset += 12 * n
         let orient: [UInt16] = r.copy(count: 2 * n, at: offset)
+        if header.sphere != nil {  // a planet's positions are finite (the independent decoder checks them too): a NaN would be a NaN billboard
+            guard pos.allSatisfy(\.isFinite) else { throw malformed(tag, "a position is not finite") }
+            guard orient.allSatisfy({ $0 & 0x7C00 != 0x7C00 }) else { throw malformed(tag, "a bearing is not finite") }
+        }
         offset += 4 * n
         let rgb: [UInt32] = r.copy(count: n, at: offset)
         offset += 4 * n
@@ -1538,6 +1677,33 @@ enum RecordDecoder {
                               uRef: r.f32(32), zetaRef: r.f32(36), p: p, dc: dc, zeta: zeta, ts: ts, winds: winds)
     }
 
+    private static func maph(_ head: RecordHead, _ r: ByteReader) throws -> PlaySphereWeather {
+        let tag = "MAPH"
+        let nside = Int(r.u16(16)), k = Int(r.u16(18))
+        guard head.flags == 3 else { throw malformed(tag, "a version 1 record carries T_s and the winds (flags 3), not \(head.flags)") }
+        let f0 = r.f32(20), pRef = r.f32(24), dcRef = r.f32(28), uRef = r.f32(32), zetaRef = r.f32(36)
+        guard [f0, pRef, dcRef, uRef, zetaRef].allSatisfy({ $0.isFinite }), [pRef, dcRef, uRef, zetaRef].allSatisfy({ $0 >= 0 }) else {
+            throw malformed(tag, "a reference scale is not a finite non-negative number")
+        }
+        guard (40..<48).allSatisfy({ r.u8($0) == 0 }) else { throw malformed(tag, "reserved bytes are not zero") }
+        let npix = Healpix.npix(nside)
+        var offset = 48
+        let p: [UInt8] = r.copy(count: npix, at: offset)
+        offset += npix
+        let dc: [UInt8] = r.copy(count: npix, at: offset)
+        offset += npix
+        let zeta: [Int8] = r.copy(count: npix, at: offset)
+        offset += npix
+        let ts: [UInt8] = r.copy(count: npix, at: offset)
+        offset += npix
+        let winds: [Int8] = r.copy(count: 4 * npix, at: offset)
+        offset += 4 * npix
+        guard !zeta.contains(-128), !winds.contains(-128) else { throw malformed(tag, "a signed byte is -128, outside -127 to 127") }
+        try checkZero(tag, r, from: offset, to: pad4(offset))
+        return PlaySphereWeather(head: head, nside: nside, k: k, f0: f0, pRef: pRef, dcRef: dcRef, uRef: uRef, zetaRef: zetaRef,
+                                 p: p, dc: dc, zeta: zeta, ts: ts, winds: winds)
+    }
+
     private static func evnt(_ head: RecordHead, _ r: ByteReader) throws -> PlayEventBatch {
         let tag = "EVNT"
         let count = Int(r.u32(16)), jsonLength = Int(r.u32(20))
@@ -1637,8 +1803,14 @@ enum RecordDecoder {
     /// `STRC` and `FSOL`: `u16 nx, ny, nz, flags; u32 count; count x u32 idx; count x u8 level`, padded to 4.
     private static func cells(_ tag: String, _ head: RecordHead, _ r: ByteReader, _ header: StreamHeader) throws -> PlayCells {
         let nx = Int(r.u16(16)), ny = Int(r.u16(18)), nz = Int(r.u16(20)), bodyFlags = r.u16(22), count = Int(r.u32(24))
-        guard nx == header.fieldGrid, ny == header.fieldGrid, nz == header.fieldLayers else {
-            throw malformed(tag, "grid \(nz) x \(ny) x \(nx) differs from the header's \(header.fieldLayers) x \(header.fieldGrid) x \(header.fieldGrid)")
+        if let sphere = header.sphere {  // a sphere: (FZ, 1, Npix), the flat index is layer * Npix + pixel
+            guard nx == sphere.fieldCells, ny == 1, nz == header.fieldLayers else {
+                throw malformed(tag, "grid \(nz) x \(ny) x \(nx) differs from the header's \(header.fieldLayers) x 1 x \(sphere.fieldCells)")
+            }
+        } else {
+            guard nx == header.fieldGrid, ny == header.fieldGrid, nz == header.fieldLayers else {
+                throw malformed(tag, "grid \(nz) x \(ny) x \(nx) differs from the header's \(header.fieldLayers) x \(header.fieldGrid) x \(header.fieldGrid)")
+            }
         }
         guard bodyFlags == head.flags else { throw malformed(tag, "the body flags \(bodyFlags) differ from the head's \(head.flags)") }
         guard head.flags & PlayCells.truncatedFlag == 0 || count == PlayCells.maxCells else {

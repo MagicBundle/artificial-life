@@ -219,6 +219,51 @@ import Testing
         #expect(model.planet.storm && model.weatherObstacle == nil, "a 3D source gets the weather again")
     }
 
+    @Test func aPlanetPicksItsWeatherOverlayByShapeAndAnUncalibratedOneIsForkedWithoutWeatherAndSaysWhy() throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let runs = try runs(scratch)
+        func planet(_ name: String, radius: Int, height: Int, nside: Int, layers: Int, weather: Bool = false) throws {
+            try write(#"{"world": {"dims": 3, "size": 1024.0, "geometry": "sphere", "radius": \#(radius), "height": \#(height), "nside": \#(nside), "layers": \#(layers)}, "weather": {"enabled": \#(weather)}}"#,
+                      "config.json", in: runs.appendingPathComponent(name))
+            try write("x", "checkpoints/step_0000000200.safetensors", in: runs.appendingPathComponent(name))
+        }
+        try planet("tiny_s0", radius: 36, height: 16, nside: 8, layers: 8)
+        try planet("64k_s0", radius: 90, height: 40, nside: 21, layers: 18)
+        try planet("mini_s0", radius: 48, height: 24, nside: 11, layers: 12)
+        try planet("mini_wet", radius: 48, height: 24, nside: 11, layers: 12, weather: true)
+        let model = make(runs, launches: Launches())
+        model.refresh()
+        model.planet.name = "planet_t"
+        for (source, overlay) in [("tiny_s0", "stormsph16"), ("64k_s0", "stormsph")] {
+            model.selectSource(source)
+            #expect(model.planet.storm && model.weatherObstacle == nil && model.planetErrors.isEmpty, "\(source)")
+            #expect(PlayLaunch.arguments(planet: model.planet).starts(with: ["play", "--init-from", "runs/\(source):200", "--overlay", overlay,
+                                                                           "--set", "director.enabled=true", "--weather-spinup", "20000"]))
+        }
+        model.selectSource("mini_s0")
+        let obstacle = try #require(model.weatherObstacle)
+        #expect(obstacle.hasPrefix("No weather is calibrated yet for this planet size"))
+        #expect(!model.planet.storm && model.planet.weatherSpinup == 0 && model.planetErrors.isEmpty, "the planet is forked without weather")
+        #expect(!PlayLaunch.arguments(planet: model.planet).contains("--overlay") && !PlayLaunch.arguments(planet: model.planet).contains("--weather-spinup"))
+        model.setStorm(true)
+        #expect(model.planetErrors.contains(obstacle), "forcing it on is refused before launch")
+        // a source whose weather is on is forked as it is, whatever its size: no caption, no overlay
+        model.selectSource("mini_wet")
+        #expect(model.weatherObstacle == nil && !model.planet.storm && model.planetErrors.isEmpty)
+        #expect(!PlayLaunch.arguments(planet: model.planet).contains("--overlay"))
+        #expect(LauncherPlanetBox.sphereNote(try #require(model.selectedSource)).hasSuffix("(a fork cannot change its geometry)."))
+        let tiny = try #require(model.catalog.sources.first { $0.name == "tiny_s0" })
+        #expect(LauncherPlanetBox.sphereNote(tiny).hasSuffix("the weather overlay is stormsph16."))
+        let mini = try #require(model.catalog.sources.first { $0.name == "mini_s0" })
+        #expect(!LauncherPlanetBox.sphereNote(mini).contains("stormsph"))
+        // a refresh follows a changed shape of the selected source
+        model.selectSource("tiny_s0")
+        try planet("tiny_s0", radius: 36, height: 20, nside: 8, layers: 8)
+        model.refresh()
+        #expect(model.planet.sourceShape?.height == 20 && !model.planet.storm && model.weatherObstacle != nil)
+    }
+
     @Test func theSuggestedNameIsFree() throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }

@@ -1,0 +1,31 @@
+# stormsph16 overlay: the weather layer of the `tiny3s` planet (docs/SPHERE.md 4 and 7.3, DESIGN §46.6, §46.8). A WORLD
+# overlay, like `stormsph`: it needs the planet it is tuned for (Rp 36, H 16, field Nside 8 and 8 layers, so the
+# weather Nside Nw = 2 Nf = 16, 3 072 cells of side 2.30) and fails validation on the others. PROVISIONAL, like
+# `stormsph`: S4c calibrates it. It exists because `stormsph` (Rp 90, Nw 42) is refused on `tiny3s` (Nw 42 is not Nf
+# times a power of two, the Courant number is over the limit, the pools lie beyond 60 degrees and beyond 2 pi Rp), so
+# the launcher of a tiny3s planet needs its own. The shape the launcher matches is (radius, height, nside, layers).
+#
+# `weather.cells` is the weather Nside Nw (not a grid side) and must be Nf times a power of two. A pool is
+# (x, y, sx, sy, amp, vx, vy) with x the arc length east of longitude 0 and y the arc length north of the equator
+# (lon = x/Rp, lat = y/Rp), sx and sy Gaussian widths in length, vx the drift along the pool's own latitude circle
+# per unit of weather time (so `vx·dt` per engine step: dt = 0.829 here, derived from the geometry at Courant 0.40 by
+# owner decision C29, `weather_sph.weather_dt`; the overlay does not set dt), vy = 0. The six pools sit where `stormsph`'s do (latitude +-40 degrees, f
+# at the pool 0.0162, three per hemisphere 120 degrees apart, the southern offset by 60) and are the narrower pools
+# of `tests/sphere_weather_helpers.pools("tiny3s")`: 10 x 6 (S4a: tiny3s needs pools 2 to 3 times narrower than
+# the box's 32 x 16). The drift is `stormsph`'s angular rate, -0.009·36/90 = -0.0036 (a lap in the same number of
+# steps; the helper's -0.009 is the 64k3s arc length and would be 2.5 times faster round the small planet).
+#
+# The coupling values are PROVISIONAL (those of `stormsph`, which are those of `storm`). Not rescaled to the
+# smaller planet and left to S4c: `seed_rate` (a probability per unit of weather time for the whole planet, whose
+# area is 0.16 of the 64k3s one) and the default `seed_sigma`, `rain_gain`. The vertical map of the shell onto the
+# atmosphere is s = (H1 + H2)/H = 5 here (2 on 64k3s).
+[weather]
+enabled = true
+cells = 16
+f0 = 0.025
+seed_rate = 0.02
+pools = [37.699112, 25.132741, 10.0, 6.0, 1.0, -0.0036, 0.0, 113.097336, 25.132741, 10.0, 6.0, 1.0, -0.0036, 0.0, 188.495559, 25.132741, 10.0, 6.0, 1.0, -0.0036, 0.0, 0.0, -25.132741, 10.0, 6.0, 1.0, -0.0036, 0.0, 75.398224, -25.132741, 10.0, 6.0, 1.0, -0.0036, 0.0, 150.796447, -25.132741, 10.0, 6.0, 1.0, -0.0036, 0.0]
+rain_gain = 50000.0
+storm_p = 0.002
+storm_u0 = 0.06
+storm_span = 0.03
