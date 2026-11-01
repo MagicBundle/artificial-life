@@ -44,6 +44,22 @@ end of a session (log out, restart, shut down) nothing is asked: the same stop a
 With a sheet open (Storm Worlds' launcher, the Lab's preset comparison) AppKit ignores `terminate`, so the app's own Quit command
 and quit Apple-event handler end the sheets first (after the question, so that Cancel leaves them).
 
+## alife Preview (one window)
+
+The one-app program (`docs/APP.md`) merges the two apps into one window, **alife**: a sidebar of *Worlds* (choose or make a world),
+*Watch* (the live picture), *Activity* (what runs, and the log) and *Lab* (the research form, for now). Until the old apps are retired
+it is built as a **preview** that installs beside them and touches neither (own bundle id `io.github.magicbundle.alife.preview`, own
+preferences; the dock and display settings of Storm Worlds, or the Lab, are copied in once on the first launch):
+
+```bash
+gui/scripts/make-app.sh --app alife --preview --install   # "alife Preview.app" in /Applications
+gui/scripts/make-app.sh --app alife --preview --sign - --out DIR   # ad-hoc, bundle only
+swift run AlifeControl --launch-mode alife               # unbundled (keeps its own preferences, no migration)
+```
+
+`--world RUN` works (`open -a "alife Preview" --args --world RUN` on a fresh launch). The world's keys (Space, `.`, `g`, ...) act only on
+the Watch page. The Lab and Storm Worlds are unchanged.
+
 ## Install as an app
 
 Two apps are built from the one executable:

@@ -790,6 +790,39 @@ unit (§37.4).
   11. A remembered folder on a drive that is not connected: the Repository box (and Storm Worlds' folder page) says it cannot be
      found and offers "Use ~/alife instead" (or `~/artificial-life`) and "Choose..."; nothing is replaced until you click.
   12. Known, left as is: after closing the last Lab window with a run going and answering Cancel the app has no window (click its Dock icon).
+- **Click-through list for PR-B of the one-app program** (the owner's hands; `docs/APP.md` §2.4, §7.1; DESIGN row I82; install with
+  `gui/scripts/make-app.sh --app alife --preview --install`, which makes `alife Preview.app` beside the two old apps and touches
+  neither; quit the old apps first if they run; the first launch asks again for folder access, see APP.md §6 TCC). What the scripted runs
+  showed is in I82 and APP.md §2.4 (S1) and §6 (S3); what no one has done is a real mouse, a trackpad and the Dock:
+  1. Open it. The window opens on **Worlds** with one thing to do first (a card): with the folder you already use, "Make your first planet"
+     or "Play <world>". Nothing starts by itself. Sidebar: Worlds, Watch, Activity, Lab, and "Engine ready" at the foot.
+  2. **Play** your latest world from the card, then from the list: the window moves to **Watch** by itself when the world is live (during
+     the start the Worlds page shows the progress and Cancel). Space, `.`, `[`... behave as in the World window. Dock side, **Overview**
+     and **Close World** are in the toolbar; the control center is docked as you left it.
+  3. **Keys belong to Watch.** While a world runs, go to Worlds, Activity and the Lab (sidebar or Cmd-1, Cmd-2, Cmd-4) and press Space, `.`,
+     `g`, `k`, `1`: nothing happens to the world; in the Lab's fields you can type those letters. Back on Watch (Cmd-3) the keys act again.
+     The world keeps running on the other pages (pausing it when you leave is PR-E, decision D4).
+  4. An alert while you are on another page: the Dock icon bounces and the badge counts the unread ones (it did not, in one window,
+     before this change: the window was "key"); showing Watch clears them.
+  5. **Make planet** on the Worlds page from a research run (Advanced: powers, how family lines are rebuilt). Every grey button has the
+     reason beside it: with a world open ("Close <name> first"), without a save point, with a name that is taken. With no research run at all
+     the page sends you to the Lab (this is PR-D/G's job to remove).
+  6. **Activity**: with a run going (Lab) and a world open, each is a row with its button (Stop, Force stop, Close World); with nothing
+     going the page says where to start. The log is the Lab's.
+  7. **Lab**: today's form in a page (its words are unchanged until PR-D; the grey strip says so). Start a run; Stop; Cmd-R, Cmd-. work.
+     "Open 3D viewer" still opens its own window, which closes with the main window.
+  8. **Cmd-Q**, and closing the window, with a run going and with a world open: as in PR-A (the question, the panel). Closing the last
+     window still quits (the "Keep it running" choice is PR-E, decision D3; the spike shows it can be built).
+  9. `open -a "alife Preview" --args --world NAME` (a fresh launch): the world starts and the window shows Watch; with a wrong name the
+     Worlds page says so.
+  10. **Settings** (Cmd-,): the alife folder and the engine; Choose... and the engine status agree with the Worlds page. With no folder
+     (move `~/artificial-life` away for a minute, or use `ALIFE_PREFS_SUITE=x open ...`) the Worlds page asks "Where is alife?"; with a
+     folder but no `.venv/bin/alife` it offers *Set up engine*.
+  11. Settings carried over: the dock side and size, the display options and the hint come from Storm Worlds' (else the Lab's)
+     preferences once, the first time. They are then the preview's own: changing them does not touch the old apps.
+  12. Dark mode, a small window (1,100 x 700 is the minimum), the sidebar hidden (Ctrl-Cmd-S), the icon (a world with stars, no bolt: your eye).
+  13. Known, left as is: the on-map hint still says "H home"; Watch's keys are the World window's; a planet can be made only from an
+     existing research run; the Dock click after closing the window cannot reopen it (the window closing quits the app, until PR-E).
 - **3D viewer click-through checklist** (3D PR 5, to add to the checklist above; `gui/README.md`, DESIGN §27.12; not yet
   run by the owner; use the `tiny3d` preset, and `tiny` for the 2D items; run the GPU tests first with the GPU free:
   `cd gui && ALIFE_GPU_TESTS=1 swift test --filter GPURenderTests`, which prints where the PNGs went):

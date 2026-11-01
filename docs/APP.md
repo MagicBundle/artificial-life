@@ -2,7 +2,7 @@
 
 > **Status: approved by the owner, 2026-11-01.** Decisions of section 8: D0 (c) build the default path to newcomer standard, keep Welcome minimal, decide the rest after the preview; D1 B, grow then planet, with A tried by the owner; D2 A, an existing checkout with instructions; D3 C, ask on close, with Dock progress and a bounce, falling back to B if spike S3 fails; D4 A, pause on leaving Watch within the app, with the setting; D5 B, a parallel track after a play-through of the preview.
 
-Status: design only, nothing built. Base: worktree `preset-wt` (= main, `4d98ba3`). Owner request, 2026-11-01: "merge both apps into one.
+Status: PR-A and PR-B built (§5.4 as built, §7.1); the rest design only. Base: worktree `preset-wt` (= main, `4d98ba3`). Owner request, 2026-11-01: "merge both apps into one.
 Simply call the new app 'alife'. Emphasize user-friendly interfaces and intuitive workflows."
 Revision 1 answers the independent review (`app_review/review.md`) and the coordinator's resolutions; Revision 0 is `spec_rev0.md`.
 Section 12 lists every finding and what was done, including the ones I checked and where I disagree (none were wrong; three needed correction of the review's own
@@ -186,7 +186,27 @@ does not exist when a header or backlog arrives loses the toasts, alerts and rep
    close and `--world` still reach the model. **Fallback F1:** hoisted model, but the Metal view is created on entering Watch and removed on leaving it (the model keeps camera, selection,
    store; the renderer rebuilds: measure time to first frame). **Fallback F2:** a full-window Watch with no sidebar, entered by Play/Open and left by an explicit "Worlds" button (the
    sidebar and Watch never share a window). F1 and F2 need the same hoist and the same `watchActive` gate, so only step 3 differs.
-5. Spike S2 and S3 (quit panel, `@SceneStorage`/Dock reopen) are in §5.4 and §6.
+**Spike S1, done 2026-11-01 (PR-B): the primary design passes; neither fallback is needed.** *Spike.* A throwaway package outside the repository
+(a lone `Window`, a `NavigationSplitView` with four pages, a `WatchCanvasHost` holding a real `MTKView` that installs a local key monitor and takes
+first responder as `WorldMTKView` does, toolbar and title only on the Watch page, a key monitor gated by `watchActive`), driven by its own timer and by
+key events posted to the application's queue. (a) Over 9 page changes, a window resize and two sidebar toggles: `makeNSView` once, `dismantleNSView`
+never, one view identity. (b) Space, `.`, `g`, `k`, `1` on the Worlds page: the monitor saw 5, the world acted on 0, and the page's own focusable
+view took 5; the **ungated control** (same code, gate off) had the world act on 5 and the page take 0, which is the leak the gate closes. On Watch the
+world acted on all 5. (c) Toolbar items `overview` and `close` and the title "World mini3s_a" exist only while Watch is selected; the other pages have the
+sidebar toggle and their own title. (d) Hidden for 3 s: 0 draws (the model's 90 deliveries asked for none); shown for 3 s: 90. *Real app, same session*
+(the debug binary with the shell, a private repository and preferences suite, the real engine; actions injected in the process by a dylib kept outside
+the repository, mouse and keys posted to the event queue): a planet made from the Worlds page (a click on *Make planet*) went live, the window moved to
+Watch by itself, and the one `SphereMTKView` (same address, 0x783e24b200) was **not hidden** on Watch, **hidden, not first responder, not accepting
+first responder** on Worlds (and Activity, Lab), and back on Watch it was first responder again; with `--world planet_a` the world started through the
+same path and was delivered to a model that no page had made (criterion (e) for `--world`; the unit test `aWorldStartedByTheLaunchArgumentIsDeliveredWithNoPageEverShown`
+does it without a view). On Watch, Space, `.`, Space reached the engine as `pause`, `step`, `run`; on Worlds, Activity and Lab, 13 key events (Space `.` `g` `k` `1`
+and Space `.` `g`) sent **nothing**; back on Watch, Space paused it. Cmd-Q and a window close go through PR-A's gate as before (exercised in the quit run
+below). *Not shown:* Space or Return **activating a focused button** on another page (Tab did not move focus to a button in the scripted runs, with or
+without full keyboard access: the evidence is that the keys reach the focused list, text field editor and page and none reaches the world), the GPU frame
+time of the hidden canvas in a real world (the draw count is 0 in the spike and the real view defers its draws and stops its display link while hidden:
+`WorldMTKView.drawDeferred`, `canvasVisibilityChanged`), and an owner's hand on the trackpad.
+
+5. Spike S2 (quit panel) is in §5.4, spike S3 (Dock reopen of a lone `Window`, `@SceneStorage`) in §6.
 
 **Menus.** Bare letters are never menu key equivalents: they can fire while typing in a text field, and `WorldKeys` already handles them (CORE/WorldKeys.swift:61 ignores Command chords, so
 chords cannot clash). The World menu lists actions with the key shown as text in the title where a single-letter key exists; a test compares the shown hints with the active form's key table (§3.4).
@@ -541,8 +561,18 @@ bundle-id test at :45-51 is extended with the preview id. The remaining 12 `Laun
 **Docs (counts corrected).** DESIGN.md §33.4.10 is rewritten as "The alife app" with a Review-log row (id from the coordinator) in PR-H; DESIGN.md has 60 lines naming an old app (20 say "Storm Worlds")
 and most are history; `gui/README.md` has 20 lines (its "Install as an app" is rewritten); `docs/HANDOVER.md` has 10 lines (749-757 and the click-through checklist); `CLAUDE.md:17` names a *path*
 (`gui/Sources/AlifeControl/...`), which does not change; top-level `README.md` gains one paragraph.
-**Spike S3 [U]:** `@SceneStorage` restoring the selected page in a lone `Window` scene, and a Dock click reopening a closed `Window` when `applicationShouldTerminateAfterLastWindowClosed` is false;
-`applicationShouldHandleReopen` is added to the plan (none exists today) rather than relied on.
+**Spike S3, done 2026-11-01 (PR-B): reopening works with an explicit handler; `@SceneStorage` could not be shown to work here, so the page is a preference.**
+The same throwaway app as S1, as an ad-hoc bundle (`open -a` on a running app sends the same reopen Apple event as a Dock click; a real Dock click was not
+made). With `applicationShouldTerminateAfterLastWindowClosed` false and the lone `Window` closed: the app lives on with no window (visible windows 0 for 14
+s). *SwiftUI's default does not reopen it:* `applicationShouldHandleReopen(hasVisibleWindows: false)` was called twice and no window came, with the default
+`return true`. *With the handler calling a captured `openWindow(id:)` and returning false,* the window came back at once, **the same hierarchy**: one window,
+`makeNSView` still 1, `dismantleNSView` 0, the selected page unchanged (a closed `Window`'s content is kept alive, so the Metal view and the model survive a
+close). The captured `openWindow` (stored when the content first appeared) still worked after the window closed. *`@SceneStorage`:* in five attempts (direct
+launch, `open`, `-NSQuitAlwaysKeepsWindows`, the app's own default, `applicationSupportsSecureRestorableState`) the page was **not** restored after a normal
+quit, and macOS 27.2 wrote no saved-state files at all for the spike, so the property is unproven here; the window reports itself restorable. **Outcomes for
+the plan: D3 = C stays feasible** (it needs `applicationShouldHandleReopen` + a captured `openWindow`, as planned, PR-E); the selected page is kept in the
+app's own preferences (`shell.page`, never Watch), not in `@SceneStorage`, so PR-F must not depend on the latter. The question of D3 for the owner is
+unchanged: the preview built in PR-B still quits with its last window (as the old apps do), because R3 is PR-E.
 
 ---
 
@@ -563,6 +593,15 @@ ranges; my earlier point estimates were low (the review judged 1.5x to 2x: I acc
 | **G. Welcome** (size depends on D0) | detect, choose, set up with progress, `uv` guidance, health check, `alife play --preset` recipe (A) behind D1 via an additive `PlayLaunch.arguments(preset:)` | S-M 300-1,200 | `.alife` | F1, F3, F4 |
 | **H. Retire the old modes** | remove `StormWorldsApp`, `WorldWindowRoot`, `RepoGateView`, `LaunchPlan` fields; flip the default key; final bundle id replaces the preview; rewrite the pinned tests (§6); docs | M -1,800..-1,000 deleted, +300..+600 added | all | F12 |
 Dependencies: A independent (ship first); B before C-H; C before D, E, F; D before G; H last. After PR-B the owner can dogfood while C-G land.
+
+### 7.1 As built in PR-B (the shell; what differs from the row above)
+- **Bundle:** `alife Preview.app`, id `io.github.magicbundle.alife.preview`, executable `alife`, `AlifeLaunchMode` `alife`, a third icon (the storm icon's world, a few stars, no cloud or bolt; the owner's eye is needed). `make-app.sh --app alife` requires `--preview` (the final `alife.app` is PR-H); `check-apps.sh` builds and checks it too. The Python `tests/test_app_bundles.py` edits are the two §6 names (the mode list, the preview id) plus one new test.
+- **Window:** one `Window("alife Preview", id: "main")`, minimum 1,100 x 700 for every page, sidebar **Worlds, Watch, Activity, Lab** with a second line (the open world and its state; what runs; nothing for the others) and an engine-status line at the foot. Window menu: Worlds Cmd-1, Activity Cmd-2 (the spec's), Watch Cmd-3 and Lab Cmd-4 (the spec has no keys for them; the Lab goes in PR-D). File: Make Planet..., Close World, Reveal in Finder (Shift-Cmd-R). Settings (Cmd-,) is General only: the alife folder and the engine (set up). The *World* and *Help* menus, "Show advanced settings by default" and "Show Welcome" of §2.4 are PR-F/G/D; a toggle that does nothing is not shown.
+- **Hoist:** `WorldSession.shared` (made with the shell, before any page) owns the `WorldModel`; `ShellModel` owns the page, remembers it in `shell.page` (never Watch), sets `watchActive` from it, brings Watch forward when a world goes **live** (during `starting` the Worlds page shows the progress and Cancel, as the launcher's did), and handles `--world`. A `--world` that cannot start says why on the Worlds page. `RunController.openWorldAtLaunch` gained a defaulted `play:` parameter (tests).
+- **Gate:** `WorldModel.watchActive` (true in the two old modes, always), `keysEnabled` (= `watchActive`: a key event reaches the monitor only for the key window, so the spec's `&& windowIsKey` adds nothing and would change the old modes' tests), `viewerIsLooking` (= `watchActive && windowIsKey()`, read by the attention rules: the dock badge and bounce), `setWatchActive`. The Metal views (`WorldMTKView`, `SphereMTKView`) take no focus, defer draws, stop their display link and are `isHidden` while `!watchActive`; both are used unchanged by the old modes (`watchActive` stays true).
+- **Pages:** *Worlds* has the next step first (`WorldsGuide`: choose the folder, set up the engine, "start with a research run" in the Lab when there is nothing to make a planet from, make the first planet, Play the latest world, a world is open) and then, once there is a world or a run to start from (with neither, the card is the whole page), *Play* (rows with a reason beside every grey Play), *Make a planet* (the launcher's form with §2.5's words: Start from, Save point, Weather warm-up, "How family lines are rebuilt" and "This world takes powers (director.enabled)" under a remembered *Advanced*; the command is the launcher's, `PlanetSpec` untouched) and *Unfinished*. **A planet can always be made from the app, but still only from an existing research run** (F1 is PR-D/G): with none the page says so and offers *Open the Lab*. *Watch* is the World window's content (`WorldDockLayout`, shared with `WorldView`), toolbar Dock / **Overview** / **Close World** (the old "Home" and "Close world" are unchanged in the old modes); with no world open it is a card with *Go to Worlds* and **no control center**; after a world ended or failed a *Back to Worlds* button. The on-map hint still says "H home" (PR-F renames it with the World menu). *Activity* lists what runs with Stop / Force stop / Cancel / Close World (`ActivityGuide`) and the global log, or says what to do. *Lab* is today's `ContentView` with a one-line note that its words are unchanged until PR-D; "Open World" reads "Go to Worlds" there; "Open 3D viewer" still opens the 3D Viewer window (a second window, until PR-F) which closes with the main window. The Lab's grey buttons keep their tooltips as reasons.
+- **Preferences:** `TypedPreferenceDomain` (`object(forKey:)`, `set(_:forKey:)`; `UserDefaults` and the tests' `MemoryDomain`), `AppPreferenceKeys` (the 14 `world.*` keys), `PreferenceMigration` as in §6, run once at launch **only for a bundle** (an unbundled `swift run` keeps its own preferences, as it always did); with `ALIFE_PREFS_SUITE` the suite is the only source. It writes only the app's own domain.
+- **Tests:** `LaunchModeTests` line 44 and the `windowsAtLaunch` switch are the only edits to pinned tests; `AppWindow` is unchanged (the main window id is `AppShell.mainWindowID`). New: `AlifeModeTests`, `ShellPageTests`, `PreferenceMigrationTests`, `WorldsGuideTests`, `ActivityGuideTests`, `ShellTests` (delivery before any page, the key gate, the canvas, attention, the page following the world), `ShellViewTests` (every page, light and dark, five folder states).
 
 **Headless tests.** Pure logic in `AlifeCoreTests` (migration precedence and idempotence, `SessionRules`, `DirectoryGuard`, `PipelinePlan` state table, library merge, `NameAuditTests`, key-table-versus-menu
 hints); view construction through `NSHostingView` as `PresetGuideViewTests` does (ran here in 1.1 s); the key gate and delivery-closure tests of §2.4; `check-apps.sh` and `tests/test_app_bundles.py`.
