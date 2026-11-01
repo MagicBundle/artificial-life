@@ -139,12 +139,12 @@ import Testing
     }
 
     @Test func theTextsOfTheNumbers() {
-        #expect(PresetFacts.count(65536) == "65\u{2009}536")
+        #expect(PresetFacts.count(65536) == "65\u{202F}536")
         #expect(PresetFacts.count(256) == "256")
-        #expect(PresetFacts.count(1_048_576) == "1\u{2009}048\u{2009}576")
+        #expect(PresetFacts.count(1_048_576) == "1\u{202F}048\u{202F}576")
         let flat = PresetFacts(shape: .flat, size: 128, height: 0, radius: 0, nMax: 1024, nInit: 256)
         #expect(flat.worldText == "128\u{2009}\u{00D7}\u{2009}128")
-        #expect(flat.populationText == "up to 1\u{2009}024 organisms, 256 at the start")
+        #expect(flat.populationText == "up to 1\u{202F}024 organisms, 256 at the start")
         let box = PresetFacts(shape: .box3D, size: 320, height: 80, radius: 0, nMax: 65536, nInit: 16384)
         #expect(box.worldText == "320\u{2009}\u{00D7}\u{2009}320\u{2009}\u{00D7}\u{2009}80 high")
         let planet = PresetFacts(shape: .planet, size: 1024, height: 40, radius: 90, nMax: 65536, nInit: 16384)
@@ -220,7 +220,7 @@ import Testing
         let entry = PresetGuideEntry(preset: .k64, facts: PresetFacts.preset(.k64, repo: Repo.root), snapshot: manifest.entry(for: .k64),
                                      imageURL: URL(fileURLWithPath: "/nonexistent.jpg"))
         let caption = try #require(entry.snapshotCaption())
-        #expect(caption == "A real run (seed 1) at step 30\u{2009}000: 33\u{2009}400 organisms alive in the whole world. The picture shows a 512 \u{00D7} 320 window of the world, of typical density, with 3\u{2009}900 of them in it.")
+        #expect(caption == "A real run (seed 1) at step 30\u{202F}000: 33\u{202F}400 organisms alive in the whole world. The picture shows a 512 \u{00D7} 320 window of the world, of typical density, with 3\u{202F}900 of them in it.")
         #expect(entry.speedCaption(machine: manifest.machine) == "41 steps/s with this many organisms alive, measured on Apple M5 Pro.")
         #expect(entry.memoryCaption() == "Peak memory about 2.4 GB (approximate).")
         #expect(PresetGuideEntry.memoryText(250_000_000) == "250 MB" && PresetGuideEntry.memoryText(8_970_000_000) == "9.0 GB")

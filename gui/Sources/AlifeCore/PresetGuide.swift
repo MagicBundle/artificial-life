@@ -262,7 +262,7 @@ package struct PresetFacts: Equatable, Sendable {
         let digits = String(abs(n))
         var out = ""
         for (i, c) in digits.reversed().enumerated() {
-            if i > 0, i % 3 == 0 { out.append("\u{2009}") }
+            if i > 0, i % 3 == 0 { out.append("\u{202F}") }  // a narrow no-break space: a number is never split over two lines
             out.append(c)
         }
         return (n < 0 ? "-" : "") + String(out.reversed())
@@ -289,7 +289,7 @@ package struct PresetFacts: Equatable, Sendable {
     package static func nameNote(_ preset: Preset, nMax: Int) -> String? {
         let name = preset.rawValue
         guard let k = Int(name.prefix(while: \.isNumber)), name.dropFirst(String(k).count).first == "k", nMax == k * 1024 else { return nil }
-        return "\u{201C}\(String(k))k\u{201D} means room for \(count(nMax)) organisms (\(k) \u{00D7} 1\u{2009}024)."
+        return "\u{201C}\(String(k))k\u{201D} means room for \(count(nMax)) organisms (\(k) \u{00D7} 1\u{202F}024)."
     }
 
     package var shapeName: String {

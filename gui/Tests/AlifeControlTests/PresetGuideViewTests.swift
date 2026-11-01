@@ -56,7 +56,7 @@ struct PresetGuideViewTests {
         let content = content
         for entry in content.entries {
             let rep = try draw(PresetCard(entry: entry, machine: content.machine) {}.padding(12).frame(width: 380).background(Color(nsColor: .windowBackgroundColor)),
-                               width: 380, height: 300, dark: dark, name: "card-\(entry.preset.rawValue)")
+                               width: 380, height: 520, dark: dark, name: "card-\(entry.preset.rawValue)")
             #expect(colours(rep) > 30, "\(entry.preset.rawValue): the card is blank")
         }
     }
@@ -66,7 +66,7 @@ struct PresetGuideViewTests {
         let entry = PresetGuideEntry(preset: .mini3s, facts: PresetFacts.preset(.mini3s, repo: Repo.root), snapshot: nil,
                                      imageURL: URL(fileURLWithPath: "/nonexistent/mini3s.jpg"))
         let rep = try draw(PresetCard(entry: entry, machine: "") {}.padding(12).frame(width: 380).background(Color(nsColor: .windowBackgroundColor)),
-                           width: 380, height: 300, dark: dark, name: "card-no-snapshot")
+                           width: 380, height: 520, dark: dark, name: "card-no-snapshot")
         #expect(colours(rep) > 10)
         #expect(PresetSnapshotImages.image(at: entry.imageURL) == nil)
     }

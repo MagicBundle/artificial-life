@@ -14,7 +14,7 @@ import UniformTypeIdentifiers
 /// Its input is, per preset, `$ALIFE_PRESET_SNAPSHOT_WORK/<preset>.stream.bin`: what `alife stream RUN --checkpoint latest --steps 0` writes
 /// for the run of that plain preset, the header and one frame, which is what the Lab's viewer would receive. The view is the Lab's: the
 /// stream's own home camera (the face-on square for a flat world, the whole box from the south for a 3D one, the whole planet for a sphere),
-/// with the agents, bonds and frame on and the field slice off (the viewer's defaults; a 3D box is drawn a little closer, `boxZoom`). Output: `$ALIFE_PRESET_SNAPSHOT_WORK/render/<preset>.png`
+/// with the agents, bonds and frame on and the field slice off (the viewer's defaults; a 3D box is drawn as near as keeps its eight corners in the frame, `boxFit`). Output: `$ALIFE_PRESET_SNAPSHOT_WORK/render/<preset>.png`
 /// (the 1280 x 800 render), `<preset>.json` (the step and the population of the frame shown) and the JPEG at
 /// `$ALIFE_PRESET_SNAPSHOT_OUT` (default `gui/PresetSnapshots`). `$ALIFE_PRESET_SNAPSHOT_ONLY` is a comma-separated list of presets.
 @MainActor
@@ -30,8 +30,26 @@ struct PresetSnapshotTool {
     static let imageSize = (width: 640, height: 400)
     /// The JPEG must stay under this (the brief: about 120 KB).
     static let byteLimit = 115_000
-    /// The fraction of the home distance at which a 3D box is drawn.
-    static let boxZoom: Float = 0.72
+    /// The part of the frame (half-width in clip coordinates) the corners of a 3D box may reach.
+    static let boxMargin: Float = 0.96
+
+    /// The factor on the home distance at which all eight corners of the box are inside the frame, as near as 0.5 and in steps of 0.01.
+    static func boxFit(_ home: Camera, header: StreamHeader, aspect: Float) -> Float {
+        let (size, height) = (Float(header.size), Float(header.height))
+        let corners = (0..<8).map { SIMD3<Float>($0 & 1 == 0 ? 0 : size, $0 & 2 == 0 ? 0 : size, $0 & 4 == 0 ? 0 : height) }
+        var factor: Float = 1
+        while factor > 0.5 {
+            var camera = home
+            camera.distance = home.distance * (factor - 0.01)
+            let inside = corners.allSatisfy { corner in
+                guard let p = camera.ndc(of: corner, aspect: aspect) else { return false }
+                return abs(p.x) <= boxMargin && abs(p.y) <= boxMargin
+            }
+            if !inside { break }
+            factor -= 0.01
+        }
+        return factor
+    }
 
     private let environment = ProcessInfo.processInfo.environment
 
@@ -81,10 +99,10 @@ struct PresetSnapshotTool {
             renderer.configure(header: header, aspect: aspect)
             renderer.show(frame: frame)
             renderer.display = ViewerDisplay()
-            // The home pose of a 3D box fits the whole box in a margin of dark; the snapshot is a small picture, so the eye comes in a
-            // little (the same pose, 0.72 of the distance: the box still fits the 8:5 frame whole).
+            // The home pose of a 3D box leaves a wide margin of dark; the snapshot is a small picture, so the eye comes in as far as keeps all
+            // eight corners of the box in the frame (`boxFit`: the same pose, a shorter distance).
             if header.dims == 3 {
-                renderer.camera.distance *= Self.boxZoom
+                renderer.camera.distance *= Self.boxFit(renderer.camera, header: header, aspect: aspect)
                 view = "the whole box"
             }
             // A flat world is drawn whole while it is small; a large one is a dust of sub-pixel organisms, so the eye comes down to a
