@@ -178,6 +178,19 @@ import Testing
         for text in texts { #expect(!text.contains("-grow"), "\"\(text)\"") }
     }
 
+    @Test func aPlanThatWaitsAfterAStopIsNotCalledFinished() {
+        var q = grow()
+        _ = q.apply(.progress(step: 7_097, stepsPerSecond: 300), in: Self.here)
+        _ = q.apply(.stopPressed, in: Self.here)
+        _ = q.apply(exit(130, stop: true), in: Self.here)
+        _ = q.apply(.makePlanetPressed, in: .init(visible: true, nameTaken: true))
+        #expect(q.state == .parked(.nameTaken, step: 7_097))
+        #expect(q.banner(elapsed: 0)?.title == "Growing stopped at step 7,097", "it did not finish: the person stopped it")
+        var p = grow()
+        _ = p.apply(exit(0), in: .init(visible: true, nameTaken: true))
+        #expect(p.banner(elapsed: 0)?.title == "planet-1 has finished growing")
+    }
+
     @Test func aMissingEngineParksInsteadOfFailingSilently() {
         var p = grow()
         _ = p.apply(exit(0), in: .init(visible: true, engineReady: false))

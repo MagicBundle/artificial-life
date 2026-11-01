@@ -913,6 +913,9 @@ unit (§37.4).
       *Open in window* (toolbar) opens the same page in its own window; compose there beside a Watch.
   10b. **Branch with a changed setting** from a research world: Advanced > *Mutation rate floor*; Branch runs one research world that continues from the newest
       save point. A value the saved world cannot take (a floor above its animals' rates) is refused by the engine: the bar says so in plain words and no world is made.
+  10c. **A world that dies out.** Advanced > *Buoyancy upkeep* 5000 on a Small planet: the bar says *The population died out at step N* (a few seconds in), no planet is made,
+      and the library does not offer Make planet for it. **Make again with a new name** after a name was taken meanwhile closes the bar and opens the form with a free name.
+      **Open in window** while a Branch form is half filled: both windows show it, and it is still there after Worlds and back. A card's buttons are grey while a world is being made.
   11. The Lab is gone from the window. Where its parts went is §3.8 and APP.md §7.3: numbers and autopilot of a run that grows are on Activity;
       a card's **More** menu has *Watch in 3D viewer*, *Open Classic 2D Viewer* (flat worlds) and *Check world*. **No home until PR-F:** the numbers and the
       autopilot journal of a run that is not growing.

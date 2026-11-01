@@ -29,10 +29,16 @@ package enum SetupIntent: Equatable, Sendable {
     package var title: String {
         switch self {
         case .create: return "New world"
-        case .branch(let w): return "Branch from \(w)"
-        case .keepGrowing(let w): return "Keep growing \(w)"
-        case .makePlanet(let w): return "Make a planet from \(w)"
+        case .branch(let w): return "Branch from \(Self.shown(w))"
+        case .keepGrowing(let w): return "Keep growing \(Self.shown(w))"
+        case .makePlanet(let w): return "Make a planet from \(Self.shown(w))"
         }
+    }
+
+    /// A world's name in a title: the world a planet was grown from is "the grown world of planet-1", not its directory `planet-1-grow`.
+    package static func shown(_ world: String) -> String {
+        guard world.hasSuffix(SetupPlan.growSuffix), world.count > SetupPlan.growSuffix.count else { return world }
+        return "the grown world of " + String(world.dropLast(SetupPlan.growSuffix.count))
     }
 
     /// The button that starts it (§2.5: one word per action).

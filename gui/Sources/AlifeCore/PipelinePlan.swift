@@ -102,6 +102,8 @@ package struct PipelinePlan: Equatable, Sendable {
     package private(set) var wroteNothing = false
     /// True when the stage that failed had made more than the save point it started from (so a planet, or more growing, can go on from it).
     package private(set) var leftProgress = false
+    /// True when stage 1 ran to the end by itself (the person did not stop it), so that "finished growing" is what happened.
+    package private(set) var grewToEnd = false
 
     /// How the banner speaks of the world stage 1 writes: for "grow, then play" it is "the grown world" (the directory `NAME-grow` is an
     /// implementation detail), else its own name. `Sentence` is the same for the start of a sentence.
@@ -316,6 +318,7 @@ package struct PipelinePlan: Equatable, Sendable {
         }
         // (a run that ended by itself reached its target: the last numbers read were up to two seconds old)
         step = max(step, targetSteps ?? step)
+        grewToEnd = true
         guard mode == .growThenPlay else {
             state = .finished(stopped: false)
             return []
@@ -366,6 +369,11 @@ package struct PipelinePlan: Equatable, Sendable {
         package var buttons: [Button]
     }
 
+    /// The title of a plan that waits after a stage 1 that ended: "finished growing" only when it ran to its end, else where it was stopped.
+    private func parkedTitle(at step: Int) -> String {
+        grewToEnd ? "\(titleName) has finished growing" : "Growing stopped at step \(WorldsGuide.grouped(step))"
+    }
+
     /// The banner for the state. `elapsed` is the seconds since the current stage started (for "about N s left" and the clock).
     package func banner(elapsed: Double) -> Banner? {
         let planet = name
@@ -403,22 +411,22 @@ package struct PipelinePlan: Equatable, Sendable {
                     fraction: nil, next: nil, buttons: [.makePlanetFromHere, .keepGrowing, .done])
             case .notVisible:
                 return Banner(
-                    tone: .attention, title: "\(titleName) has finished growing",
+                    tone: .attention, title: parkedTitle(at: parkedStep),
                     detail: "It finished while the window was not in front, so the planet was not started behind your back.",
                     fraction: nil, next: nil, buttons: [.makePlanet, .keepGrowing, .done])
             case .worldOpen(let open):
                 return Banner(
-                    tone: .attention, title: "\(titleName) has finished growing",
+                    tone: .attention, title: parkedTitle(at: parkedStep),
                     detail: "\(open) is open, and a new planet replaces the open world. Close \(open), then make the planet.",
                     fraction: nil, next: nil, buttons: [.makePlanet, .done])
             case .nameTaken:
                 return Banner(
-                    tone: .attention, title: "\(titleName) has finished growing",
+                    tone: .attention, title: parkedTitle(at: parkedStep),
                     detail: "A world called \(planet) appeared while it grew. Make the planet under a new name.",
                     fraction: nil, next: nil, buttons: [.makeAgainNewName, .done])
             case .engineMissing:
                 return Banner(
-                    tone: .attention, title: "\(titleName) has finished growing",
+                    tone: .attention, title: parkedTitle(at: parkedStep),
                     detail: "The engine cannot be found. Set it up in Settings, then make the planet.",
                     fraction: nil, next: nil, buttons: [.makePlanet, .done])
             }

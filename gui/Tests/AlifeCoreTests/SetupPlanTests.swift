@@ -190,6 +190,7 @@ import Testing
         #expect(SetupIntent.create.buttonLabel == "Create" && SetupIntent.branch(from: "a").buttonLabel == "Branch")
         #expect(SetupIntent.keepGrowing(world: "a").buttonLabel == "Keep growing" && SetupIntent.makePlanet(from: "a").buttonLabel == "Make planet")
         #expect(SetupIntent.create.title == "New world" && SetupIntent.branch(from: "a").title == "Branch from a")
+        #expect(SetupIntent.makePlanet(from: "planet-1-grow").title == "Make a planet from the grown world of planet-1")
         #expect(SetupIntent.create.world == nil && SetupIntent.keepGrowing(world: "w").world == "w")
         let labels = [SetupIntent.create, .branch(from: "a"), .keepGrowing(world: "a"), .makePlanet(from: "a")].map(\.buttonLabel)
         #expect(Set(labels).count == 4, "four actions, four words")
