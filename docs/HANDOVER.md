@@ -911,6 +911,8 @@ unit (§37.4).
      its row and the button is grey with the reason.
   10. **Branch...**, **Keep growing...** and **Make planet...** on a card open the page on that world; Make planet keeps the Save point picker.
       *Open in window* (toolbar) opens the same page in its own window; compose there beside a Watch.
+  10b. **Branch with a changed setting** from a research world: Advanced > *Mutation rate floor*; Branch runs one research world that continues from the newest
+      save point. A value the saved world cannot take (a floor above its animals' rates) is refused by the engine: the bar says so in plain words and no world is made.
   11. The Lab is gone from the window. Where its parts went is §3.8 and APP.md §7.3: numbers and autopilot of a run that grows are on Activity;
       a card's **More** menu has *Watch in 3D viewer*, *Open Classic 2D Viewer* (flat worlds) and *Check world*. **No home until PR-F:** the numbers and the
       autopilot journal of a run that is not growing.
