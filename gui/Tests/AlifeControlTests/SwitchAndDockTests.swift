@@ -185,6 +185,28 @@ struct SwitchAndDockTests {
         #expect(await rig.waitForState { $0 == .live })
     }
 
+    @Test func nothingElseIsStartedFromTheFormWhileASwitchIsWaitingForAnswerOrSaving() async throws {
+        let rig = try PipelineRig(mode: "ok:ok")
+        defer { rig.finish() }
+        let switcher = WorldSwitcher.forApp(controller: rig.controller, play: rig.play)
+        switcher.isQuitting = { false }
+        rig.setup.switcher = switcher
+        try LibraryTestFolders.played(rig.runs, "mini3s_a")
+        await rig.scan()
+        rig.play.start(.resume(PlayResume(run: "mini3s_a")), executable: rig.controller.alifeURL, directory: rig.repo)
+        #expect(await patiently { rig.play.phase == .live })
+        #expect(switcher.ask(.play("planet_b")) {})
+        await rig.scan()
+        rig.setup.openCreate(.recipe(Recipes.smallPlanet.id))
+        rig.setup.name = "planet-x"
+        rig.setup.start()
+        #expect(rig.coordinator.plan == nil && rig.controller.job == nil, "the sheet is waiting for an answer: nothing else starts behind it")
+        switcher.keepPlaying()
+        rig.setup.start()
+        #expect(rig.coordinator.plan != nil, "and when it is answered the form works again")
+        _ = await rig.waitForState { if case .parked = $0 { return true } else { return $0 == .live } }
+    }
+
     @Test func aParkedPlanetPressedWhileAWorldIsOpenAsksToStopItAndThenMakesThePlanet() async throws {
         let rig = try PipelineRig(mode: "ok:ok")
         defer { rig.finish() }
@@ -312,6 +334,34 @@ struct SwitchAndDockTests {
         #expect(dock.badges.last == "Failed")
         tile.ended(exit(serial: 5, status: 0, signalled: true))
         #expect(dock.badges.last == "Failed")
+    }
+
+    @Test func theStopAfterTimerEndsARunThatTheDockTellsAbout() async throws {
+        let rig = try PipelineRig(mode: "long:ok")
+        defer { rig.finish() }
+        await rig.scan()
+        rig.setup.openCreate(.recipe(Recipes.smallPlanet.id))
+        rig.setup.goal = .research
+        rig.setup.name = "timed"
+        rig.controller.settings.timerEnabled = true
+        rig.controller.settings.timerHours = 0
+        rig.controller.settings.timerMinutes = 1
+        rig.setup.start()
+        #expect(await rig.waitForGrowing("timed"))
+        rig.controller.tick(at: Date().addingTimeInterval(3600))  // an hour on: the minute is long gone
+        #expect(await patiently { rig.controller.job == nil })
+        let exit = try #require(rig.controller.lastRunExit)
+        #expect(exit.stopRequested && exit.byTimer, "the timer's stop is not the person's")
+        // a run the person stopped is not the timer's
+        rig.controller.settings.timerEnabled = false
+        rig.setup.openCreate(.recipe(Recipes.smallPlanet.id))
+        rig.setup.goal = .research
+        rig.setup.name = "by-hand"
+        rig.setup.start()
+        #expect(await rig.waitForGrowing("by-hand"))
+        rig.controller.stop()
+        #expect(await patiently { rig.controller.job == nil })
+        #expect(rig.controller.lastRunExit?.byTimer == false && rig.controller.lastRunExit?.stopRequested == true)
     }
 
     @Test func theRunsTargetIsReadFromItsOwnConfig() throws {

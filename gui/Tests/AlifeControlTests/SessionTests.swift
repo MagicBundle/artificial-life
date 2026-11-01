@@ -229,6 +229,29 @@ struct SessionTests {
         #expect(await rig.settled { rig.lines("run") == 1 })
     }
 
+    @Test func aPauseThatCouldNotBeWrittenIsNotHeldAndTheWorldIsNotRunOnTheWayBack() async throws {
+        let rig = try WorldRig()
+        defer { rig.finish() }
+        #expect(await rig.start())
+        rig.clock(rate: 1, reason: .running)
+        rig.play.stopForQuit()  // the process is being stopped: nothing can be written to it, whatever the phase still says
+        rig.shell.select(.worlds)
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(rig.model.awayHold == .none, "no pause was made, so none is held")
+        #expect(rig.lines("pause") == 0)
+    }
+
+    @Test func theClockSaysThePauseIsTheAppsWhileAwayToo() async throws {
+        let rig = try WorldRig()
+        defer { rig.finish() }
+        #expect(await rig.start())
+        rig.clock(rate: 1, reason: .running)
+        rig.shell.select(.worlds)
+        #expect(await rig.settled { rig.model.awayHold.isAway })
+        rig.clock(rate: 0, reason: .userPause)
+        #expect(rig.model.clockStrip.readout == "paused while you are away")
+    }
+
     @Test func aPauseThatCouldNotBeSentIsNotHeld() {
         // no live world to write to: nothing is held that could be given back
         var model = AwayPause()
@@ -410,10 +433,13 @@ struct SessionTests {
         d.askClose = { asked.append($0); return (.keepRunning, false) }
         var told: [String?] = []
         d.onKeptRunning = { told.append($0) }
+        var streams = 0
+        d.stopStream = { streams += 1 }
         #expect(d.mainWindowShouldClose())
         #expect(asked[0].detail.contains("The open world \u{2018}mini3s_a\u{2019} is saved and closed when the window closes."))
         d.mainWindowClosed(windows: { [] })
         #expect(told == ["mini3s_a"], "the shell is told which world was closed")
+        #expect(streams == 1, "the 3D viewer's stream goes with the window")
         #expect(rig.play.phase == .idle, "the world was asked to stop through its ladder")
         #expect(await patiently { !rig.play.hasProcess }, "it saved and went")
         #expect(rig.controller.job == .run, "and the run never noticed")
@@ -431,6 +457,38 @@ struct SessionTests {
         defer { other.finish() }
         other.shell.windowClosedWithRun(world: nil)
         #expect(other.shell.page == .setup && other.shell.closedNote == nil, "the page the player was on stays")
+    }
+
+    @Test func aRememberedKeepRunningAloneKeepsTheAppAlive() async throws {
+        let rig = try PipelineRig(mode: "long:ok")
+        defer { rig.finish() }
+        try await growing(rig)
+        let d = delegate(rig.controller, rig.play)
+        d.closePreference = { .keep }
+        d.askClose = { _ in Issue.record("remembered"); return (.cancel, false) }
+        #expect(d.mainWindowShouldClose())
+        #expect(!d.applicationShouldTerminateAfterLastWindowClosed(NSApp), "a fresh delegate: only the remembered answer says to stay")
+    }
+
+    @Test func aWorldThatIsNoLongerOpenIsNotMentionedAndNotToldAbout() async throws {
+        let rig = try PipelineRig(mode: "long:ok")
+        defer { rig.finish() }
+        try LibraryTestFolders.played(rig.runs, "mini3s_a")
+        await rig.scan()
+        rig.play.start(.resume(PlayResume(run: "mini3s_a")), executable: rig.controller.alifeURL, directory: rig.repo)
+        #expect(await patiently { rig.play.phase == .live })
+        rig.play.stop()  // its name stays on the controller; it is not open
+        try await growing(rig)
+        let d = delegate(rig.controller, rig.play)
+        var asked: [CloseQuestion] = []
+        d.askClose = { asked.append($0); return (.keepRunning, false) }
+        var told: [String?] = []
+        d.onKeptRunning = { told.append($0) }
+        #expect(d.closeFacts.world == nil)
+        #expect(d.mainWindowShouldClose())
+        #expect(!asked[0].detail.contains("mini3s_a"))
+        d.mainWindowClosed(windows: { [] })
+        #expect(told.count == 1 && told[0] == nil)
     }
 
     // MARK: Reopening

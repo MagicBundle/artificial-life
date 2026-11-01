@@ -842,10 +842,11 @@ final class RunController: ObservableObject {
 
     // MARK: Ticker (1 s): timer, elapsed time; every 2 s: metrics and run list
 
-    func tick() {
+    /// `at` is the time it is (the tests move it past a timer's deadline).
+    func tick(at time: Date = Date()) {
         tickCount += 1
         if job == .run, let started = startedAt {
-            let now = Date()
+            let now = time
             elapsed = now.timeIntervalSince(started)
             if let deadline {
                 remaining = max(0, deadline.timeIntervalSince(now))
