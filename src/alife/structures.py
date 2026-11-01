@@ -32,7 +32,7 @@ from typing import Any, NamedTuple
 import mlx.core as mx
 import numpy as np
 
-from alife import actions, fields, ops, physics, weather
+from alife import actions, fields, fields_sph, geom, physics, sphere, weather
 from alife.config import Config, dims
 
 COUNTERS: tuple[str, ...] = (
@@ -227,14 +227,14 @@ def update(
 ) -> tuple[mx.array, StructFlows]:
     """S17: deposit the masked units at the start-of-step cells, cap, gate (R2), decay; the new grid and the
     counters' inputs. ``dmult`` is the barrier used by the physics (None when ``barrier_gain`` is 0)."""
-    d = dims(cfg)
-    dep = ops.scatter_add_i32(d.n_cells, fcell, dec.units).reshape(d.field_shape)
+    dep = sphere.geometry(cfg).deposit(fcell, dec.units)
     upd = fields.update_mat(mat, dep, step, cfg)
 
     def count(x: mx.array) -> mx.array:
         return x.astype(_I32).sum()
 
     k = fields.mat_k(cfg)
+    kmap = fields.mat_kmap(cfg)  # the constant k in a box, the per-cell map on a sphere
     zero = mx.array(0, dtype=_I32)
     return upd.mat, StructFlows(
         units=dec.units,
@@ -244,7 +244,7 @@ def update(
         total=upd.mat.sum(),
         cells=count(upd.mat > 0),
         closed=count(upd.mat >= fields.mat_thr(cfg)),
-        violations=count(upd.nopen < k) if k > 0 else zero,
+        violations=count(upd.nopen < kmap) if k > 0 else zero,
         trapped=count(alive0 & (upd.nopen.reshape(-1)[fcell] < 1)),
         slowed=count(alive0 & (dmult > 2.0)) if dmult is not None else zero,
     )
@@ -274,10 +274,14 @@ def count(s_new: Any, alive0: mx.array, flows: Any, cfg: Config) -> dict[str, mx
 
 def nopen_np(mat: np.ndarray, cfg: Config) -> np.ndarray:
     """Numpy ``nopen`` by explicit neighbour offsets (x and y periodic, z clamped, missing cells not open):
-    the reference of the tests and the host check. Independent of the separable box sums of the engine."""
+    the reference of the tests and the host check. Independent of the separable box sums of the engine. On a
+    sphere the neighbours are the touching pixels (``geom.tables``) of the layer and of the two adjacent
+    layers."""
     d = dims(cfg)
     thr = fields.mat_thr(cfg)
     op = (np.asarray(mat) < thr).astype(np.int64)
+    if d.sph:
+        return _nopen_sph_np(op, cfg.world.nside)
     n = np.zeros(op.shape, np.int64)
     axes = range(op.ndim)
     for off in np.ndindex(*(3,) * op.ndim):
@@ -297,6 +301,23 @@ def nopen_np(mat: np.ndarray, cfg: Config) -> np.ndarray:
     return n
 
 
+def _nopen_sph_np(op: np.ndarray, nside: int) -> np.ndarray:
+    """``nopen`` of the shell: the open cells among the touching pixels of the same layer and the pixel and
+    touching pixels of the layers above and below (a missing layer or pixel adds nothing)."""
+    touch = geom.tables(nside).touch  # (Npix, 8), -1 padded
+    layers = op.shape[0]
+    n = np.zeros(op.shape, np.int64)
+    for dk in (-1, 0, 1):
+        ks = np.arange(layers) + dk
+        src = np.where(((ks >= 0) & (ks < layers))[:, None], op[np.clip(ks, 0, layers - 1)], 0)
+        if dk != 0:
+            n += src  # the same pixel in the layer above or below
+        for j in range(touch.shape[1]):
+            nb = touch[:, j]
+            n += np.where((nb >= 0)[None, :], src[:, np.clip(nb, 0, None)], 0)
+    return n
+
+
 def check(arrays: Any, cfg: Config) -> list[str]:
     """Host check of the numpy ``mat``: in ``[0, cap]`` and every cell keeps ``k`` open neighbours."""
     m = np.asarray(arrays["mat"])
@@ -305,7 +326,13 @@ def check(arrays: Any, cfg: Config) -> list[str]:
         problems.append(f"mat: values outside [0, {cfg.structures.cap}] (min {m.min()}, max {m.max()})")
     k = fields.mat_k(cfg)
     if k > 0:
-        bad = int((nopen_np(m, cfg) < k).sum())
+        if dims(cfg).sph:
+            need = fields_sph.aperture_k(
+                cfg.structures.aperture, fields_sph.n_neighbours(cfg.world.nside, cfg.world.layers)
+            )
+        else:
+            need = k
+        bad = int((nopen_np(m, cfg) < need).sum())
         if bad:
             problems.append(f"mat: {bad} cell(s) with fewer than {k} open neighbours (R2 aperture)")
     return problems

@@ -19,7 +19,7 @@ from structures_helpers import builders, cfg_for
 STEPS = 60
 
 
-def _final(cfg, s, steps, compile=True):
+def _final(cfg, s, steps, compile=None):  # None: the config's own (an eager sphere, a compiled box)
     fn = make_step(cfg, compile=compile)
     outs = []
     for _ in range(steps):
@@ -29,8 +29,8 @@ def _final(cfg, s, steps, compile=True):
     return s, outs
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_the_same_seed_gives_the_same_digest(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_the_same_seed_gives_the_same_digest(nd: int | str) -> None:
     cfg = cfg_for(nd)
     a, oa = _final(cfg, builders(cfg), STEPS)
     b, ob = _final(cfg, builders(cfg), STEPS)
@@ -76,8 +76,8 @@ def test_the_structures_functions_compiled_equal_eager(nd: int) -> None:
                 assert np.array_equal(np.asarray(got), np.asarray(want))
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_resuming_from_a_checkpoint_equals_the_uninterrupted_run(nd: int, tmp_path: Path) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_resuming_from_a_checkpoint_equals_the_uninterrupted_run(nd: int | str, tmp_path: Path) -> None:
     cfg = cfg_for(nd)
     s0 = builders(cfg)
     straight, _ = _final(cfg, s0, 2 * STEPS)

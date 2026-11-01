@@ -12,7 +12,7 @@ from alife.state import counter_index, init_state, to_numpy
 from alife.step import make_step
 from helpers import set_output_bias
 
-PRESET = {2: "tiny", 3: "tiny3d"}
+PRESET = {2: "tiny", 3: "tiny3d", "s": "tiny3s"}  # "s": the sphere world, run eager (spec 10.1 fallback)
 NAMES = (
     "BUILD_UNITS",
     "MAT_WASTED",
@@ -28,12 +28,14 @@ NAMES = (
 )
 
 
-def cfg_for(nd: int, *extra: str, compile: bool = True) -> Config:
-    """tiny / tiny3d, float32 weights, structures on; ``extra`` are ``--set`` overrides."""
+def cfg_for(nd: int | str, *extra: str, compile: bool = True) -> Config:
+    """tiny / tiny3d / tiny3s ("s"), float32 weights, structures on; ``extra`` are ``--set`` overrides. A
+    sphere is never compiled in the test process (MLX's compile cache can collide on the constants of the
+    cell lookups, docs/SPHERE.md 10.1): its compiled step is in ``test_sphere_features_compiled``."""
     cfg = load_config(
         preset=PRESET[nd], overrides=["brain.weight_dtype=float32", "structures.enabled=true", *extra]
     )
-    return cfg if compile else replace(cfg, run=replace(cfg.run, compile=False))
+    return cfg if compile and nd != "s" else replace(cfg, run=replace(cfg.run, compile=False))
 
 
 def builders(cfg: Config, bias: float = 4.0, *, zero_weights: bool = False):

@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-CURRENT_PR = 2  # the sphere series' PR this tree is: S2. Bump it in each PR (S3 sets 3, ...)
+CURRENT_PR = 3  # the sphere series' PR this tree is: S3. Bump it in each PR (S4 sets 4, ...)
 REASONS = ("pair", "box-only tool", "box branch", "converted")
 
 
@@ -119,6 +119,10 @@ NO_RAW_USE_TODAY = frozenset(
         "game/kinthreads.py",
         "game/housefile.py",
         "migrate.py",
+        "ext/structures.py",  # S3: the lattice shape and the aperture bounds come from config / the accessors
+        "ext/niche.py",
+        "structures.py",
+        "niche.py",
     }
 )
 # Listed files that the spec's audit table does not name (the lint finds them; the spec's grep counts differ).
@@ -210,19 +214,9 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("director/prompt.py", "world.height", 2, "converted", 5),
     # director/yoked.py: ditto
     Allow("director/yoked.py", "world.size", 1, "converted", 5),
-    # ext/niche.py: lattice shape and neighbourhood of the farming layer (S3)
-    Allow("ext/niche.py", "world.size", 1, "converted", 3),
-    Allow("ext/niche.py", "world.height", 1, "converted", 3),
-    Allow("ext/niche.py", "world.field_cell", 2, "converted", 3),
-    Allow("ext/niche.py", "lattice", 2, "converted", 3),
-    # ext/structures.py: lattice shape, neighbourhood and colouring of the structures layer (S3)
-    Allow("ext/structures.py", "world.size", 1, "converted", 3),
-    Allow("ext/structures.py", "world.height", 1, "converted", 3),
-    Allow("ext/structures.py", "world.field_cell", 2, "converted", 3),
-    Allow("ext/structures.py", "lattice", 2, "converted", 3),
-    # fields.py: S1 converted it: every function the sphere replaces dispatches on `dims(cfg).sph` to
-    # `fields_sph` and keeps its box half (the counts are those box halves). 3 of the 21 lattice reads are
-    # in `mat_colour` / `update_mat` (the built material, converted in S3 with `structures`)
+    # fields.py: S1 and S3 converted it: every function the sphere replaces dispatches on `dims(cfg).sph`
+    # to `fields_sph` (the resource, the chemicals, the built material) and keeps its box half (the counts
+    # are those box halves)
     Allow("fields.py", "z_index", 3, "box branch"),
     Allow("fields.py", "xy_slice", 1, "box branch"),
     Allow("fields.py", "wrap", 4, "box branch"),
@@ -277,8 +271,6 @@ ALLOWLIST: tuple[Allow, ...] = (
     # metrics.py: observers (S5)
     Allow("metrics.py", "world.height", 1, "converted", 5),
     Allow("metrics.py", "lattice", 6, "converted", 5),
-    # niche.py: farming (S3)
-    Allow("niche.py", "lattice", 4, "converted", 3),
     # physics.py: the box forces and integrators; the sphere has `forces_s` / `integrate_s` (S2)
     Allow("physics.py", "z_index", 7, "box branch"),
     Allow("physics.py", "xy_slice", 3, "box branch"),
@@ -326,8 +318,6 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("stream.py", "world.height", 1, "converted", 5),
     Allow("stream.py", "world.field_cell", 1, "converted", 5),
     Allow("stream.py", "lattice", 4, "converted", 5),
-    # structures.py: structures (S3)
-    Allow("structures.py", "lattice", 2, "converted", 3),
     # tracking.py: generic tracking and circular_mean (S5: the Nomad track, kin groups on the sphere)
     Allow("tracking.py", "z_index", 1, "converted", 5),
     Allow("tracking.py", "wrap", 1, "converted", 5),

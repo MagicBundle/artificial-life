@@ -3,9 +3,9 @@
 # same volume, 0.39 M, and the same floor area to 1 %): HEALPix Nside 8 (768 angular cells) and 8 equal-volume
 # layers (6 144 field cells of about 64 units^3), a hash of Nside 8 with 5 radial layers, gravity pulling towards
 # the centre, a floor at radius 36 + r and a hard lid at 52 - r. Everything else is tiny3d's. The values are
-# provisional until the calibration (docs/SPHERE.md S7). Weather and the five feature layers are refused on a
-# sphere until PRs S4 and S3 (config.SPHERE_READY); `world.size` is only the image length of min_image and must
-# exceed 4 (radius + height) = 208.
+# provisional until the calibration (docs/SPHERE.md S7). The five feature layers (structures, niche, comm,
+# bonds with roles, arms) run on it since PR S3; the weather is refused until PR S4 (config.SPHERE_READY);
+# `world.size` is only the image length of min_image and must exceed 4 (radius + height) = 208.
 [population]
 n_max = 1024
 n_init = 256

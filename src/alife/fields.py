@@ -428,9 +428,14 @@ def mat_colour(cfg: Config) -> mx.array:
     """The R2 colour of every cell, ``field_shape`` int32.
 
     ``cx mod px + px·(cy mod px) + px²·(cz mod 3)`` (no z term in 2D); a constant of the trace, built on
-    the host from the config.
+    the host from the config. On a sphere it is the closing phase ``colour[pix] + n_colours·(layer mod 3)``
+    of ``fields_sph.MatTables`` (needs ``structures.aperture > 0``).
     """
     d = dims(cfg)
+    if d.sph:  # static
+        phase = fields_sph.mat_tabs(cfg).phase
+        assert phase is not None, "the closing phases exist only with structures.aperture > 0"
+        return phase
     px, _ = mat_phases(d.fg, d.nd)
     c = np.indices(d.field_shape)
     code = c[-1] % px + px * (c[-2] % px)
@@ -447,12 +452,23 @@ def mat_thr(cfg: Config) -> int:
 def mat_k(cfg: Config) -> int:
     """R2's required open neighbours ``ceil(aperture·n_nbr)`` (8 or 26); 0 when ``aperture`` is 0.
 
-    A 1e-9 guard keeps a product that is exact in decimal (0.25 · 8) from rounding up.
+    A 1e-9 guard keeps a product that is exact in decimal (0.25 · 8) from rounding up. On a sphere the
+    requirement depends on the cell (7 touching neighbours at 24 pixels, a floor or lid layer); this is the
+    largest one, an interior cell's (``mat_kmap`` is the per-cell map).
     """
     sc = cfg.structures
     if sc.aperture <= 0:
         return 0
     return math.ceil(sc.aperture * (26 if dims(cfg).d3 else 8) - 1e-9)
+
+
+def mat_kmap(cfg: Config) -> int | mx.array:
+    """The required open neighbours as ``nopen < kmap`` compares them: the box's constant ``mat_k``, the
+    sphere's ``(FZ, Npix)`` map (``fields_sph.MatTables.kmap``; 0 with aperture 0 is a constant 0)."""
+    if dims(cfg).sph:  # static
+        kmap = fields_sph.mat_tabs(cfg).kmap
+        return 0 if kmap is None else kmap
+    return mat_k(cfg)
 
 
 def _face_neighbours(a: mx.array, d3: bool) -> tuple[mx.array, ...]:
@@ -494,6 +510,8 @@ def mat_table(m: mx.array, cfg: Config) -> mx.array:
     """
     sc, d = cfg.structures, dims(cfg)
     cols = mat_columns(cfg)
+    if d.sph:  # static: the sphere's neighbour tables (§46.5)
+        return fields_sph.mat_table(m, cols, cfg)
     inv = 1.0 / sc.cap
 
     def flat(a: mx.array) -> mx.array:
@@ -548,6 +566,8 @@ def mat_nopen(m: mx.array, cfg: Config) -> mx.array:
     The full neighbourhood has 8 cells (26 in 3D; a floor or surface cell has 17); only cells that
     exist are counted.
     """
+    if dims(cfg).sph:  # static
+        return fields_sph.mat_nopen(m, mat_thr(cfg), fields_sph.mat_tabs(cfg))
     op = (m < mat_thr(cfg)).astype(mx.int32)
     return _box_sum(op, dims(cfg).d3) - op
 
@@ -570,6 +590,8 @@ def update_mat(m: mx.array, dep: mx.array, step: mx.array, cfg: Config) -> MatUp
     the identity ``Σm' = Σm + Σdep - wasted - decayed``.
     """
     sc, d = cfg.structures, dims(cfg)
+    if d.sph:  # static: the same rule on the sphere's neighbour tables and colouring (§46.5)
+        return MatUpdate(*fields_sph.update_mat(m, dep, step, cfg))
     thr, k = mat_thr(cfg), mat_k(cfg)
     nopen = mat_nopen(m, cfg)
     pre = m + dep

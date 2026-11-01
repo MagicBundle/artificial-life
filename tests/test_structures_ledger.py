@@ -16,14 +16,15 @@ from alife.step import make_step
 from structures_helpers import builders, cfg_for, np_mat, run, units_for
 
 STEPS = 1500
+STEPS_SPHERE = 80  # an eager sphere step costs about 0.1 s
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_the_ledger_and_the_material_identity_close_every_step(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_the_ledger_and_the_material_identity_close_every_step(nd: int | str) -> None:
     cfg = cfg_for(nd)
     cap = cfg.structures.cap
     peak = 0
-    for t, (prev, s, out, row) in enumerate(run(cfg, builders(cfg), STEPS)):
+    for t, (prev, s, out, row) in enumerate(run(cfg, builders(cfg), STEPS_SPHERE if nd == "s" else STEPS)):
         led = to_numpy(out.ledger)
         assert helpers.ledger_net(led, cfg) == int(to_numpy(s.total) - to_numpy(prev.total)), t
         assert led[LedgerIdx.FLOW_STOLEN] == led[LedgerIdx.FLOW_ATTACK_GAIN] + led[LedgerIdx.FLOW_SPILL]
@@ -33,14 +34,14 @@ def test_the_ledger_and_the_material_identity_close_every_step(nd: int) -> None:
         assert m1.min() >= 0 and m1.max() <= cap, t
         assert row["APERTURE_VIOLATIONS"] == 0 and row["TRAPPED"] == 0, t
         assert int(to_numpy(s.diag)) & 0xFFFF == 0, (t, Diag(int(to_numpy(s.diag))))
-        if t % 100 == 0:
+        if t % 40 == 0:
             assert invariants.full_check(s, cfg, prev, out) == [], t
         peak = max(peak, row["MAT_TOTAL"])
     assert peak > 0  # material appeared
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_the_build_cost_is_booked_in_heat_action(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_the_build_cost_is_booked_in_heat_action(nd: int | str) -> None:
     """The same state, one step, ``build_cost`` 2 against 0: the actions are the same (the brain does not see
     the cost), so ``HEAT_ACTION`` differs by exactly ``2·BUILD_UNITS`` when everyone is solvent."""
     on, off = cfg_for(nd), cfg_for(nd, "structures.build_cost=0")

@@ -49,15 +49,17 @@ def _out_blocks(cfg: Any, nd: int) -> tuple[Block, ...]:
 
 
 def _rest(cfg: Any) -> mx.array:
-    from alife.config import dims
+    from alife.config import cell_grid_shape, dims
 
-    return mx.zeros(dims(cfg).field_shape, dtype=mx.int32)
+    return mx.zeros(cell_grid_shape(dims(cfg)), dtype=mx.int32)
 
 
 def _state_fields(cfg: Any, nd: int) -> tuple[FieldSpec, ...]:
     # conserved=False: the soil holds no energy (DESIGN 41.3), so a forced removal by `alife migrate` cannot
     # leak TOTAL
-    return (FieldSpec("soil", False, lambda d: d.field_shape, mx.int32, _rest, conserved=False),)
+    from alife.config import cell_grid_shape
+
+    return (FieldSpec("soil", False, cell_grid_shape, mx.int32, _rest, conserved=False),)
 
 
 def _enable(cfg: Any) -> Any:
@@ -108,7 +110,7 @@ def _check(arrays: Any, cfg: Any) -> list[str]:
 def _validate(cfg: Any) -> None:
     import dataclasses
 
-    from alife.config import ConfigError, NicheConfig
+    from alife.config import ConfigError, NicheConfig, field_cells
 
     nc, dflt, bad = cfg.niche, NicheConfig(), []
     if not nc.farm:  # inert: every key must keep its default, so no config changes its hash without effect
@@ -118,9 +120,7 @@ def _validate(cfg: Any) -> None:
             if f.name != "farm" and getattr(nc, f.name) != getattr(dflt, f.name)
         ]
     else:
-        nd = cfg.world.dims
-        fg = round(cfg.world.size / cfg.world.field_cell)
-        n_cells = fg * fg * (round(cfg.world.height / cfg.world.field_cell) if nd == 3 else 1)
+        n_cells = field_cells(cfg)
         if not 1 <= nc.farm_rate <= RATE_MAX:
             bad.append(f"niche.farm_rate {nc.farm_rate} must be in [1, {RATE_MAX}]")
         if not 1 <= nc.farm_cap <= CAP_MAX:

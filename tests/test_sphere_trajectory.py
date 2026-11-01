@@ -47,6 +47,20 @@ def platform_key() -> str:
     return f"{platform.system()}-{platform.machine()}-{dev}"
 
 
+# The digest of ``tiny3s`` with structures on (overlay ``build``, float32 weights; founders build from their
+# random brains, the aperture rule closes cells) after 50 compiled steps, per platform like the dry one. It
+# contains the closing schedule, hence the colouring (``test_sphere_structures.COLOURING_PINS``): a changed
+# colouring changes it, and so does any change of the structures code. Re-pin deliberately (S3 review M1).
+GOLDEN_SPHERE_STRUCTURES = {
+    "mlx": "0.32.3",
+    "digests": {
+        "Darwin-arm64-cpu": "05453bc9bd3446df998d034a36db443c5231585055e9ea46aa6e74577e915cd4",
+        "Darwin-arm64-gpu": "601edf573a60881039d4f0d6d6835e9b66e40790d01b1fd093ec3223c215d389",
+        "Linux-x86_64-cpu": "",
+    },
+}
+
+
 @pytest.fixture(scope="module")
 def trajectory(tmp_path_factory) -> dict:
     """300 compiled steps of ``tiny3s`` in a cold child: the full host check against the previous state and
@@ -100,3 +114,17 @@ def test_twenty_thousand_steps_never_overflow_a_hash_cell(tmp_path) -> None:
     r = sphere_run.spawn("trajectory", tiny3s(), tmp_path / "cold", 20000, 2000, "", timeout=20000)
     assert r["problems"] == [] and r["diag"] == 0 and r["overflow"] == 0
     assert r["max_occupancy"] < 32
+
+
+def test_the_structures_on_digest_of_tiny3s_is_pinned(tmp_path) -> None:
+    cfg = load_config(preset="tiny3s", overlays=["build"], overrides=["brain.weight_dtype=float32"])
+    r = sphere_run.spawn("trajectory", cfg, tmp_path / "cold", PIN_STEPS, PIN_STEPS, str(PIN_STEPS))
+    assert r["problems"] == [] and r["diag"] == 0
+    got = r["digests"][str(PIN_STEPS)]
+    g = GOLDEN_SPHERE_STRUCTURES
+    if mx.__version__ != g["mlx"] or platform_key() not in g["digests"]:
+        pytest.skip(f"structures digest pinned for MLX {g['mlx']} on {sorted(g['digests'])}")
+    want = g["digests"][platform_key()]
+    if not want:
+        pytest.skip(f"structures digest not pinned yet for {platform_key()}: record {got}")
+    assert got == want

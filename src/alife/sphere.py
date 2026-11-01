@@ -229,7 +229,26 @@ def bearing(hdg: mx.array, pos: mx.array) -> mx.array:
 # --- the accessors (DESIGN §46.12) ------------------------------------------------------------------------
 
 
-class Box:
+class _Cells:
+    """The cell-grid accessors both worlds share (``cfg`` is set by the subclass): a per-cell integer field
+    is a flat index ``cell_of(pos)`` into an array of shape ``dims(cfg).field_shape`` (z-major cubes in a box,
+    ``(FZ, Npix)`` on a sphere). Written once, so a feature that deposits into or reads a per-cell field
+    (the built material, the soil) names no lattice shape."""
+
+    cfg: Config
+
+    def deposit(self, fcell: mx.array, vals: mx.array | int) -> mx.array:
+        """``vals`` (per row) summed into each row's cell, ``field_shape`` int32 (one ``scatter_add_i32``)."""
+        d = dims(self.cfg)
+        return ops.scatter_add_i32(d.n_cells, fcell, vals).reshape(d.field_shape)
+
+    def cell_ids(self) -> mx.array:
+        """The flat index of every cell, ``field_shape`` int32."""
+        d = dims(self.cfg)
+        return mx.arange(d.n_cells, dtype=mx.int32).reshape(d.field_shape)
+
+
+class Box(_Cells):
     """The torus-and-floor world: today's expressions, written once (device). Converting a consumer to these
     methods changes no bit (the identity matrix proves it)."""
 
@@ -270,7 +289,7 @@ class Box:
         return mx.arctan2(vec[..., 1], vec[..., 0])
 
 
-class Sphere:
+class Sphere(_Cells):
     """The sphere world (device): constants from the config and ``geom``, methods on float32 positions."""
 
     name = "sphere"
@@ -278,6 +297,7 @@ class Sphere:
     def __init__(self, cfg: Config):
         from alife import geom  # host derivations (Nh, layers)
 
+        self.cfg = cfg
         d = dims(cfg)
         w = cfg.world
         self.radius, self.height_max = w.radius, w.height

@@ -4,6 +4,7 @@ dithered cost and the ledger (E17), the controls (E19), the hash salts (E18), th
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import re
 from pathlib import Path
@@ -30,37 +31,46 @@ from alife.state import (
 )
 from alife.step import ActFlag, make_step
 
-PRESET = {2: "tiny", 3: "tiny3d"}
+PRESET = {2: "tiny", 3: "tiny3d", "s": "tiny3s"}  # "s": the sphere world, run eager (spec 10.1 fallback)
 F32 = "brain.weight_dtype=float32"
 
 
-def cfg_for(nd: int, *extra: str, width: int = 4):
-    return load_config(preset=PRESET[nd], overrides=[F32, "comm.enabled=true", f"comm.width={width}", *extra])
+def ndi(nd: int | str) -> int:
+    """The width of a body-frame vector: 2 in 2D, 3 in a 3D box and on a shell."""
+    return 3 if nd == "s" else nd
 
 
-def micro(nd: int, *extra: str, width: int = 4):
+def cfg_for(nd: int | str, *extra: str, width: int = 4):
+    cfg = load_config(preset=PRESET[nd], overrides=[F32, "comm.enabled=true", f"comm.width={width}", *extra])
+    # a sphere is never compiled in the test process (docs/SPHERE.md 10.1): its compiled step is in
+    # ``test_sphere_features_compiled``
+    return cfg if nd != "s" else dataclasses.replace(cfg, run=dataclasses.replace(cfg.run, compile=False))
+
+
+def micro(nd: int | str, *extra: str, width: int = 4):
     base = (
         "population.n_max=64",
         "population.max_births_per_step=8",
         "population.n_init=8",
-        "world.size=48",
+        *(() if nd == "s" else ("world.size=48",)),  # the shell's size is the image length of min_image
         F32,
         "comm.enabled=true",
         f"comm.width={width}",
     )
-    return load_config(preset=PRESET[nd], overrides=[*base, *extra])
+    cfg = load_config(preset=PRESET[nd], overrides=[*base, *extra])
+    return cfg if nd != "s" else dataclasses.replace(cfg, run=dataclasses.replace(cfg.run, compile=False))
 
 
 # --- layout, config, registry -----------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("nd", [2, 3])
+@pytest.mark.parametrize("nd", [2, 3, "s"])
 @pytest.mark.parametrize("width", [1, 4, 8])
-def test_the_footprint_is_w_plus_nd_inputs_and_w_outputs(nd: int, width: int) -> None:
+def test_the_footprint_is_w_plus_nd_inputs_and_w_outputs(nd: int | str, width: int) -> None:
     base = dims(load_config(preset=PRESET[nd])).lay
     d = dims(cfg_for(nd, width=width))
     lay = d.lay
-    assert (base.D_IN + width + nd, base.D_OUT + width) == (lay.D_IN, lay.D_OUT)
+    assert (base.D_IN + width + ndi(nd), base.D_OUT + width) == (lay.D_IN, lay.D_OUT)
     assert (
         base.D_IN,
         base.D_IN + width,
@@ -191,9 +201,10 @@ def off_(nd: int, *xyz: float) -> tuple[float, ...]:
     return (*xyz, 0.0, 0.0, 0.0)[:nd]
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_hear_range_validity_and_the_linear_falloff(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_hear_range_validity_and_the_linear_falloff(nd: int | str) -> None:
     cfg = micro(nd)
+    nd = ndi(nd)
     R = cfg.sensing.radius
     nbr, desc, _ = scene(
         cfg,
@@ -244,9 +255,10 @@ def test_hear_atten_pow() -> None:
         assert np.isclose(h[0, 0], 0.5**p)
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_hear_bearing_sign_ahead_left_above(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_hear_bearing_sign_ahead_left_above(nd: int | str) -> None:
     cfg = micro(nd)
+    nd = ndi(nd)
     R = cfg.sensing.radius
     nbr, desc, _ = scene(
         cfg,
@@ -270,9 +282,10 @@ def test_hear_bearing_sign_ahead_left_above(nd: int) -> None:
     assert np.isclose(h[0, w], (1.0 * 0.5 * 0.5 + 0.25 * 0.5 * -0.5) / (0.5 + 0.125))
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_hear_bounds_silence_and_row_equivariance(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_hear_bounds_silence_and_row_equivariance(nd: int | str) -> None:
     cfg = micro(nd)
+    nd = ndi(nd)
     d = dims(cfg)
     R = cfg.sensing.radius
     rs = np.random.default_rng(5)
@@ -313,8 +326,8 @@ def test_hear_is_a_saturating_superposition(kin_exp: float) -> None:
 # --- decode, mask, controls -------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_decode_range_zero_and_masks(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_decode_range_zero_and_masks(nd: int | str) -> None:
     cfg = micro(nd)
     d, lay = dims(cfg), dims(cfg).lay
     y = np.zeros((d.n, lay.D_OUT), np.float32)
@@ -405,15 +418,15 @@ def _run(cfg, steps, s=None, *, observe=False):
         yield prev, s, out
 
 
-@pytest.mark.parametrize("nd", [2, 3])
+@pytest.mark.parametrize("nd", [2, 3, "s"])
 @pytest.mark.parametrize("cost", [0.0, 4.0, 64.0])
-def test_the_ledger_closes_and_the_counters_are_sound(nd: int, cost: float) -> None:
+def test_the_ledger_closes_and_the_counters_are_sound(nd: int | str, cost: float) -> None:
     """No 17th term: the voice is HEAT_ACTION. 200 steps conserve TOTAL; COMM_DUE <= HEAT_ACTION."""
     cfg = cfg_for(nd, f"comm.cost={cost}")
     ci = counter_index(cfg, "COMM_DUE")
     cs = counter_index(cfg, "COMM_SPEAKERS")
     spk = due = 0
-    for t, (prev, s, out) in enumerate(_run(cfg, 200)):
+    for t, (prev, s, out) in enumerate(_run(cfg, 60 if nd == "s" else 200)):
         led, c = to_numpy(out.ledger), to_numpy(out.counters)
         assert led.shape == (16,) and helpers.ledger_net(led, cfg) == int(
             to_numpy(s.total) - to_numpy(prev.total)
@@ -421,7 +434,7 @@ def test_the_ledger_closes_and_the_counters_are_sound(nd: int, cost: float) -> N
         assert c[ci] <= led[LedgerIdx.HEAT_ACTION] and 0 <= c[cs] <= int(to_numpy(s.alive).sum()) + 64
         assert int(to_numpy(s.diag)) & 0xFFFF == 0, (t, Diag(int(to_numpy(s.diag))))
         spk, due = spk + int(c[cs]), due + int(c[ci])
-        if t % 50 == 0:
+        if t % 20 == 0:
             assert invariants.full_check(s, cfg, prev, out) == [], t
     assert spk > 0  # the channel is alive at the founders' random call
     assert (due == 0) == (cost == 0.0)  # cost 0 pays nothing; otherwise the speakers pay
@@ -505,9 +518,9 @@ def test_the_invariant_checks_the_voice_columns() -> None:
     assert any("msg: outside" in p for p in invariants.full_check(s._replace(msg=mx.array(msg)), cfg))
 
 
-@pytest.mark.parametrize("nd", [2, 3])
+@pytest.mark.parametrize("nd", [2, 3, "s"])
 @pytest.mark.parametrize("control", ["none", "deaf", "decoy"])
-def test_determinism_resume_and_observer_purity(nd: int, control: str, tmp_path: Path) -> None:
+def test_determinism_resume_and_observer_purity(nd: int | str, control: str, tmp_path: Path) -> None:
     cfg = cfg_for(nd, f"comm.control={control}")
     last = lambda g: list(g)[-1][1]  # noqa: E731
     a = last(_run(cfg, 40, init_state(cfg)))
@@ -594,8 +607,8 @@ def test_e19_decoy_hears_as_loud_as_none_when_alive_is_much_less_than_n() -> Non
     assert means["none"] > 0 and abs(means["decoy"] - means["none"]) < 0.35 * means["none"], means
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_e19_deaf_and_decoy_change_only_the_heard_inputs(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_e19_deaf_and_decoy_change_only_the_heard_inputs(nd: int | str) -> None:
     """Zero the W1 rows of the voice inputs: the brain then ignores what it hears, so the three controls run
     bit-identical steps (same costs, same calls, same motion): the controls act only through the inputs."""
     base = cfg_for(nd, "repro.min_age=100000")  # no births: a child's mutated rows would wake the inputs
@@ -603,7 +616,7 @@ def test_e19_deaf_and_decoy_change_only_the_heard_inputs(nd: int) -> None:
     s = init_state(base)
     w1 = np.array(s.W1)
     lo = d.lay.IN_VOICE
-    w1[:, lo : lo + d.voice_w + nd] = 0.0
+    w1[:, lo : lo + d.voice_w + ndi(nd)] = 0.0
     s = s._replace(W1=mx.array(w1).astype(s.W1.dtype))
     s = s._replace(brain_cost=__import__("alife.brain", fromlist=["brain"]).l1_cost(s.W1, s.W2, base))
     mx.eval(s)
@@ -612,7 +625,7 @@ def test_e19_deaf_and_decoy_change_only_the_heard_inputs(nd: int) -> None:
         cfg = cfg_for(nd, "repro.min_age=100000", f"comm.control={control}")
         cur, hist = s, []
         fn = make_step(cfg)
-        for _ in range(25):
+        for _ in range(12 if nd == "s" else 25):
             cur, out = fn(cur)
             mx.eval(cur, out)
             hist.append(to_numpy(out.counters).tobytes() + to_numpy(out.ledger).tobytes())
@@ -620,8 +633,8 @@ def test_e19_deaf_and_decoy_change_only_the_heard_inputs(nd: int) -> None:
     assert digests["none"] == digests["deaf"] == digests["decoy"]
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_e19_the_controls_differ_when_the_brain_listens(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_e19_the_controls_differ_when_the_brain_listens(nd: int | str) -> None:
     out = {}
     for control in ("none", "deaf", "decoy"):
         cfg = cfg_for(nd, f"comm.control={control}")
@@ -634,7 +647,7 @@ def test_e19_the_controls_differ_when_the_brain_listens(nd: int) -> None:
     ctx = ext.ExtCtx(nbr, desc, None, None)
     heard, bearing = comm.ext_inputs(s, cfg, ctx)
     assert not to_numpy(heard).any() and not to_numpy(bearing).any()
-    assert heard.shape == (dims(cfg).n, 4) and bearing.shape == (dims(cfg).n, nd)
+    assert heard.shape == (dims(cfg).n, 4) and bearing.shape == (dims(cfg).n, ndi(nd))
 
 
 # --- E18: the hash salt -----------------------------------------------------------------------------------
@@ -683,9 +696,9 @@ def test_e10_counters_and_metrics() -> None:
     assert worst < 2**31
 
 
-@pytest.mark.parametrize("nd", [2, 3])
+@pytest.mark.parametrize("nd", [2, 3, "s"])
 @pytest.mark.parametrize("control", ["none", "decoy"])
-def test_the_staged_pipeline_equals_the_step_with_comm_on(nd: int, control: str) -> None:
+def test_the_staged_pipeline_equals_the_step_with_comm_on(nd: int | str, control: str) -> None:
     from dataclasses import replace
 
     from mlx.utils import tree_flatten

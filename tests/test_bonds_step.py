@@ -30,23 +30,26 @@ from alife.state import (
 )
 from alife.step import ActFlag, ExtActs, make_step
 
-PRESET = {2: "tiny", 3: "tiny3d"}
+PRESET = {2: "tiny", 3: "tiny3d", "s": "tiny3s"}  # "s": the sphere world, run eager (spec 10.1 fallback)
 NAMES = ("ROLE_SWITCHES", "N_FORAGERS", "N_GUARDS", "SHIELDED_BY_GUARD", "SHARE_SLOTS_ACTIVE")
 
 
-def cfg_for(nd: int, mode: int = 2, *extra: str, roles: bool = True):
+def cfg_for(nd: int | str, mode: int = 2, *extra: str, roles: bool = True):
     over = ["brain.weight_dtype=float32", f"bonds.share_mode={mode}", *extra]
     if roles:
         over.append("roles.enabled=true")
-    return load_config(preset=PRESET[nd], overrides=over)
+    cfg = load_config(preset=PRESET[nd], overrides=over)
+    # a sphere is never compiled in the test process (docs/SPHERE.md 10.1): its compiled step is in
+    # ``test_sphere_features_compiled``
+    return cfg if nd != "s" else replace(cfg, run=replace(cfg.run, compile=False))
 
 
 # --- layout, config, registry -----------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(("nd", "d_in", "d_out"), [(2, 82, 37), (3, 97, 41)])
+@pytest.mark.parametrize(("nd", "d_in", "d_out"), [(2, 82, 37), (3, 97, 41), ("s", 97, 41)])
 @pytest.mark.parametrize("which", ["roles", "mode1", "mode2"])
-def test_the_footprint_is_13_inputs_and_2_outputs(nd: int, d_in: int, d_out: int, which: str) -> None:
+def test_the_footprint_is_13_inputs_and_2_outputs(nd: int | str, d_in: int, d_out: int, which: str) -> None:
     cfg = {
         "roles": cfg_for(nd, 0),
         "mode1": cfg_for(nd, 1, roles=False),
@@ -64,7 +67,7 @@ def test_the_footprint_is_13_inputs_and_2_outputs(nd: int, d_in: int, d_out: int
     )
     assert (lay.OUT_ROLE_A, lay.OUT_ROLE_B) == (d0.lay.D_OUT, d0.lay.D_OUT + 1)
     assert ext.layout_features(cfg) == "bonds@1" and ext.mask(cfg) == 1 << 2
-    assert layout.genome_layout_version(nd, ext.mask(cfg)) == (1 if nd == 2 else 2) + 4 * 4
+    assert layout.genome_layout_version(2 if nd == 2 else 3, ext.mask(cfg)) == (1 if nd == 2 else 2) + 4 * 4
     assert (d0.lay.IN_ROLE, d0.lay.OUT_ROLE_A) == (None, None)
     assert {"role", "role_dwell", "bond_flow"} <= set(state_cls(cfg)._fields)
     assert counter_blocks(cfg) == (("bonds", NAMES),)
@@ -130,13 +133,13 @@ def _run(cfg, steps, s=None, *, observe=False):
         yield prev, s, out
 
 
-@pytest.mark.parametrize("nd", [2, 3])
+@pytest.mark.parametrize("nd", [2, 3, "s"])
 @pytest.mark.parametrize("mode", [1, 2])
-def test_the_ledger_closes_and_sharing_is_active(nd: int, mode: int) -> None:
+def test_the_ledger_closes_and_sharing_is_active(nd: int | str, mode: int) -> None:
     """No 17th term: sharing is FLOW_SHARED and HEAT_SHARE and the 16-term ledger closes every step."""
     cfg = cfg_for(nd, mode, "bonds.share_kin_floor=0.5")
     active = shared = heat = 0
-    for t, (prev, s, out) in enumerate(_run(cfg, 120)):
+    for t, (prev, s, out) in enumerate(_run(cfg, 60 if nd == "s" else 120)):
         led = to_numpy(out.ledger)
         assert led.shape == (16,)
         assert helpers.ledger_net(led, cfg) == int(to_numpy(s.total) - to_numpy(prev.total)), t
@@ -146,18 +149,18 @@ def test_the_ledger_closes_and_sharing_is_active(nd: int, mode: int) -> None:
         active += int(c[counter_index(cfg, "SHARE_SLOTS_ACTIVE")])
         shared += int(led[LedgerIdx.FLOW_SHARED])
         heat += int(led[LedgerIdx.HEAT_SHARE])
-        if t % 40 == 0:
+        if t % 20 == 0:
             assert invariants.full_check(s, cfg, prev, out) == [], t
     assert active > 0 and shared > 0 and 0 < heat < shared  # sharing runs and loses some as heat
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_bond_flow_is_the_net_transfer_of_the_slot(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_bond_flow_is_the_net_transfer_of_the_slot(nd: int | str) -> None:
     """``bond_flow`` = received − sent per slot at S12; over a bond the two ends sum to minus the heat, and
     only the richer end is a net giver; empty slots and dead rows hold 0."""
     cfg = cfg_for(nd, 2)
     seen = 0
-    for _, s, _ in _run(cfg, 80):
+    for _, s, _ in _run(cfg, 40 if nd == "s" else 80):
         flow, partner, rev = (to_numpy(a).astype(np.int64) for a in (s.bond_flow, s.partner, s.rev))
         alive = to_numpy(s.alive)
         assert (flow[partner < 0] == 0).all() and (flow[~alive] == 0).all()
@@ -170,8 +173,8 @@ def test_bond_flow_is_the_net_transfer_of_the_slot(nd: int) -> None:
     assert seen > 0
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_same_seed_same_digest_and_resume_equals_the_uninterrupted_run(nd: int, tmp_path: Path) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_same_seed_same_digest_and_resume_equals_the_uninterrupted_run(nd: int | str, tmp_path: Path) -> None:
     cfg = cfg_for(nd, 1, "bonds.share_kin_floor=0.5")
     s0 = init_state(cfg)
     last = lambda g: list(g)[-1][1]  # noqa: E731
@@ -185,8 +188,8 @@ def test_same_seed_same_digest_and_resume_equals_the_uninterrupted_run(nd: int, 
     assert to_numpy(a.bond_flow).any()
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_observing_changes_nothing_and_the_channel_carries_the_bonds_tuple(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_observing_changes_nothing_and_the_channel_carries_the_bonds_tuple(nd: int | str) -> None:
     cfg = cfg_for(nd, 2)
     plain = list(_run(cfg, 20))
     obs = list(_run(cfg, 20, observe=True))
@@ -347,9 +350,9 @@ def test_e10_the_interval_sums_are_int64() -> None:
 # --- the staged mirror of bench.py equals step() ----------------------------------------------------------
 
 
-@pytest.mark.parametrize("nd", [2, 3])
+@pytest.mark.parametrize("nd", [2, 3, "s"])
 @pytest.mark.parametrize("kin_floor", ["1.0", "0.5"])
-def test_the_staged_pipeline_equals_the_step_with_bonds_on(nd: int, kin_floor: str) -> None:
+def test_the_staged_pipeline_equals_the_step_with_bonds_on(nd: int | str, kin_floor: str) -> None:
     from mlx.utils import tree_flatten
 
     from alife import bench

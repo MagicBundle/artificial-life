@@ -551,6 +551,46 @@ def _field_fg(cfg: Config) -> int:
     return round(cfg.world.size / cfg.world.field_cell)
 
 
+def field_cells(cfg: Config) -> int:
+    """The number of field cells (``Dims.n_cells``) from the world keys alone: the feature validators run
+    before ``dims(cfg)`` is safe to call (on a sphere it derives the hash)."""
+    w = cfg.world
+    if w.geometry == "sphere":
+        return w.layers * geom.npix(w.nside)
+    fg = _field_fg(cfg)
+    return fg * fg * (round(w.height / w.field_cell) if w.dims == 3 else 1)
+
+
+def cell_grid_shape(d: Dims) -> tuple[int, ...]:
+    """The shape of a per-cell field of the world: ``(FZ, FG, FG)`` in a 3D box, ``(FG, FG)`` in 2D,
+    ``(FZ, Npix)`` on a shell (``Dims.field_shape``). The extension fields on the cell grid (the built
+    material, the soil) declare their shape through this one function."""
+    return d.field_shape
+
+
+def aperture_neighbours(cfg: Config) -> tuple[int, int]:
+    """``(n_nbr, n_min)`` of the structures' aperture rule R2: the neighbours of an interior cell (8, or 26 in
+    3D and on a shell) and the fewest a cell of the boundary layer has (8, 17). ``ceil(aperture·n_nbr)`` must
+    not exceed ``n_min`` in either geometry (a sphere's requirement is per cell, ``ceil(aperture·n_cell)``,
+    so it is satisfiable wherever the box's is)."""
+    return (26, 17) if cfg.world.dims == 3 else (8, 8)
+
+
+def mat_colouring_error(cfg: Config) -> str | None:
+    """Why the aperture rule's closing cycle does not exist for this world, or None. A box needs a field
+    lattice side that is composite and at least 4 (``fields.mat_phases``); a shell always has the colouring of
+    its pixel graph."""
+    if cfg.world.geometry == "sphere":
+        return None
+    from alife import fields  # deferred: fields imports this module
+
+    try:
+        fields.mat_phases(_field_fg(cfg), cfg.world.dims)
+    except ValueError as e:
+        return str(e)
+    return None
+
+
 def _f32_at_least(x: float) -> float:
     """The smallest float32 ≥ ``x``, as a Python float (MLX casts Python bounds to float32)."""
     f = np.float32(x)  # nearest; compared in float64 (NumPy would compare a Python float in float32)
@@ -1034,7 +1074,7 @@ SPHERE_FEATURE_PR: Final[Mapping[str, str]] = {
     "director": "S5",
     "observers": "S5",
 }
-SPHERE_READY: frozenset[str] = frozenset()
+SPHERE_READY: frozenset[str] = frozenset({"structures", "niche", "comm", "bonds", "roles", "arms"})
 
 
 def sphere_wanted(cfg: Config) -> list[str]:

@@ -130,7 +130,7 @@ DESIGN §33.1.15 (and the GUI contract of the PR); the registry rows carry `dump
 stamps of farming (a state field and a hashed key, so not observer-only), the colour modes `arms`, `lock`, `voice`, `soil`, the inspector
 rows, the GUI, the `FARS` record. Next: the GUI PRs (S3, B3 overlay, C2 panel, A6, F3), then the analysis modules and the runs.
 
-## The true sphere: S0 geometry and guards, S1 fields, S2 agents (DESIGN §46, row I77)
+## The true sphere: S0 geometry and guards, S1 fields, S2 agents, S3 features (DESIGN §46, row I77)
 
 The owner asked for a true sphere (`world.geometry = "sphere"`: HEALPix cells on a planet, radial gravity, Cartesian agents), built in PRs S0 to S7. S0 is merged-ready and runs nothing:
 `src/alife/geom.py` (host: the HEALPix scheme, the exact neighbour tables, the exact coverage of the hash stencils and the `Nh`/`C` derivations, the equal-volume layers, the host accessors),
@@ -143,7 +143,10 @@ rotate about a stored angular velocity, and `fields.py` dispatches to the sphere
 `knn_metal.scan_select_sph`), `physics.forces_s`/`integrate_s` (radial gravity, floor, hard lid, optional soft band), sensing in the body frame of `hdg` and the local up, births a chord `D` behind the parent, the
 catastrophe cap, `invariants` (norm, tangent, radius), `tiny3s`, the readiness gates (`config.SPHERE_READY`: weather S4, the five features S3, director/observers S5 are refused with their PR), the rotation-equivariance
 harness (`tests/sphere_rotation.py`) and `sphere_check` (the compile-collision self-check of a compiled sphere step; the guard branch `fix/mlx-compile-collision` is still unmerged). The S2 stop rule
-(search per alive agent over 2x `mini3d`'s) is exceeded by the literal metric at the volume-matched `mini3s` (2.09x, §46.10) and not elsewhere; it is the owner's call. Next: S3 (the five features on the sphere), S4 (weather).
+(search per alive agent over 2x `mini3d`'s) is exceeded by the literal metric at the volume-matched `mini3s` (2.09x, §46.10) and not elsewhere; it is the owner's call.
+**S3 (the five features on the shell, DESIGN §46.5 "The five features on the shell") widens `SPHERE_READY` to structures, niche, comm, bonds, roles and arms**: only the structures needed sphere code (`fields_sph.MatTables`, `mat_nopen`,
+`update_mat` with a per-cell aperture requirement, `mat_table`; `geom.min_colouring`, 11 colours at the presets so the closing cycle is 33 phases); niche, comm, bonds and arms run unchanged. The box suites of every feature run on `tiny3s` through the parameter `"s"` of
+their helpers (eager; the compiled step is in `tests/test_sphere_features_compiled.py`, cold children). Next: S4 (weather), S5 (observers; the sphere's grid dumps are `(FZ, Npix)` int32 arrays whose decoders and the `STRC`/`FSOL` records are S5).
 
 ## How to run
 

@@ -60,15 +60,17 @@ def _out_blocks(cfg: Any, nd: int) -> tuple[Block, ...]:
 
 
 def _rest(cfg: Any) -> mx.array:
-    from alife.config import dims
+    from alife.config import cell_grid_shape, dims
 
-    return mx.zeros(dims(cfg).field_shape, dtype=mx.int32)
+    return mx.zeros(cell_grid_shape(dims(cfg)), dtype=mx.int32)
 
 
 def _state_fields(cfg: Any, nd: int) -> tuple[FieldSpec, ...]:
     # conserved=False: the material holds no energy (DESIGN 38.7), so a forced removal by `alife migrate`
     # cannot leak TOTAL
-    return (FieldSpec("mat", False, lambda d: d.field_shape, mx.int32, _rest, conserved=False),)
+    from alife.config import cell_grid_shape
+
+    return (FieldSpec("mat", False, cell_grid_shape, mx.int32, _rest, conserved=False),)
 
 
 def _enable(cfg: Any) -> Any:
@@ -119,7 +121,7 @@ def _validate(cfg: Any) -> None:
     import dataclasses
     import math
 
-    from alife import fields
+    from alife import config
     from alife.config import ConfigError, StructuresConfig
 
     sc, dflt, bad = cfg.structures, StructuresConfig(), []
@@ -130,9 +132,7 @@ def _validate(cfg: Any) -> None:
             if f.name != "enabled" and getattr(sc, f.name) != getattr(dflt, f.name)
         ]
     else:
-        nd = cfg.world.dims
-        fg = round(cfg.world.size / cfg.world.field_cell)
-        n_cells = fg * fg * (round(cfg.world.height / cfg.world.field_cell) if nd == 3 else 1)
+        n_cells = config.field_cells(cfg)
         if not 256 <= sc.cap <= 32767:
             bad.append(f"structures.cap {sc.cap} must be in [256, 32767]")
         elif sc.cap * n_cells > 2**31 - 1:
@@ -162,16 +162,15 @@ def _validate(cfg: Any) -> None:
         if not 0.0 <= sc.aperture <= 1.0:
             bad.append(f"structures.aperture {sc.aperture} must be in [0, 1]")
         elif sc.aperture > 0:
-            k = math.ceil(sc.aperture * (26 if nd == 3 else 8) - 1e-9)
-            if k > (17 if nd == 3 else 8):
+            n_nbr, n_min = config.aperture_neighbours(cfg)
+            k = math.ceil(sc.aperture * n_nbr - 1e-9)
+            if k > n_min:
                 bad.append(
                     f"structures.aperture {sc.aperture} needs {k} open neighbours; at most "
-                    f"{17 if nd == 3 else 8} exist (a boundary cell has 17 in 3D)"
+                    f"{n_min} exist (a boundary cell has 17 in 3D)"
                 )
-            try:
-                fields.mat_phases(fg, nd)
-            except ValueError as e:
-                bad.append(f"structures.aperture > 0: {e}")
+            if (err := config.mat_colouring_error(cfg)) is not None:
+                bad.append(f"structures.aperture > 0: {err}")
     if sc.enabled and sc.aperture == 0.0 and sc.barrier_gain > 0.0:
         log.warning(
             "structures.aperture = 0 switches the aperture rule R2 off while barrier_gain = %s > 0: walls "
