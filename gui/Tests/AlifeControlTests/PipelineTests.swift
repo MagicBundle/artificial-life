@@ -657,7 +657,7 @@ struct PipelineTests {
         #expect(await rig.create("planet-1").isEmpty)
         #expect(await rig.waitForState { if case .failed(.making) = $0 { return true } else { return false } })
         let b = rig.coordinator.banner
-        #expect(b?.title == "planet-1 could not be made" && b?.detail.contains("ended by itself") == true, "\(b?.detail ?? "")")
+        #expect(b?.title == "planet-1 could not be made" && b?.detail == "The planet's engine ended by itself before the planet was ready.", "\(b?.detail ?? "")")
         #expect(!(b?.detail.contains("stopped") ?? false))
     }
 
@@ -782,6 +782,12 @@ struct PipelineTests {
         rig.coordinator.press(.done)
         rig.setup.openCreate(.recipe(Recipes.smallPlanet.id))
         #expect(rig.setup.rememberedShown.map(\.key) == ["physics.gravity"])
+        // what a Create remembered does not ride into a Branch: it starts from its source's own values
+        try rig.makeSource("src")
+        await rig.scan()
+        rig.setup.openBranch(from: "src")
+        #expect(rig.setup.rememberedShown.isEmpty && rig.setup.rememberedSkipped.isEmpty)
+        #expect(rig.controller.settings.levers.world3D.gravity == "0.03" && rig.setup.changes.isEmpty, "\(rig.controller.settings.levers.world3D.gravity)")
     }
 
     @Test func aLengthOfAnySizeStartsNothingThatCrashes() async throws {

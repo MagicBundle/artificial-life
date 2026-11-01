@@ -140,6 +140,9 @@ struct SetupViewTests {
         check(try await draw(rig, page: .setup, dark: dark, name: "setup-keep-growing"), "keep growing")
         m.openMakePlanet(from: "src")
         check(try await draw(rig, page: .setup, dark: dark, name: "setup-make-planet"), "make planet")
+        m.openBranch(from: "src")
+        m.name = "my-branch"
+        check(try await draw(rig, page: .setup, dark: dark, name: "setup-branch-in-window", inWindow: true), "branch in the window of its own")
         m.openCreate()
         check(try await draw(rig, page: .setup, dark: dark, name: "setup-in-window", inWindow: true), "window")
     }
@@ -192,6 +195,14 @@ struct SetupViewTests {
         #expect(await live.create("planet-1").isEmpty)
         _ = await live.waitForState { $0 == .live }
         check(try await draw(live, page: .setup, dark: dark, name: "pipeline-live"), "live")
+        // a world that died out
+        let died = try PipelineRig(mode: "extinct:ok")
+        defer { died.finish() }
+        #expect(await died.create("planet-1").isEmpty)
+        _ = await died.waitForState { if case .diedOut = $0 { return true } else { return false } }
+        await died.scan()
+        check(try await draw(died, page: .setup, dark: dark, name: "pipeline-died-out"), "died out")
+        check(try await draw(died, page: .worlds, dark: dark, name: "pipeline-died-out-worlds"), "died out, worlds page")
         // waiting while nobody looked
         let away = try PipelineRig(mode: "ok:ok")
         defer { away.finish() }

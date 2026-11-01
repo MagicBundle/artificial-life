@@ -156,6 +156,14 @@ import Testing
         #expect(PipelineWords.planetEnded("The world ended before it sent anything").hasPrefix("The planet's engine ended by itself"))
     }
 
+    @Test func theLastThingAPlanetsEngineSaidIsNotOneOfItsProgressLines() {
+        let progress = ["houses: rebuilding the exact houses of runs/x at step 30000", "run runs/x: N=1024 | steps 30000 → 60000", "weather spin-up: 5040/10000 steps"]
+        #expect(PipelineWords.lastSaid(in: progress) == nil)
+        #expect(PipelineWords.lastSaid(in: ["houses: x", "run runs/x: y", "boom", "  "]) == "boom")
+        #expect(PipelineWords.lastSaid(in: ["houses: x", "run runs/x: y"]) == nil)
+        #expect(PipelineWords.lastSaid(in: []) == nil)
+    }
+
     @Test func aFailureThatLeftNoSavePointOffersNoPlanetAndNoKeepGrowing() {
         var p = grow()
         _ = p.apply(.growExited(.init(status: 4, problem: "boom", savePoint: false)), in: Self.here)
