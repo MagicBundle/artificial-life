@@ -22,7 +22,7 @@ package enum WorldsGuide {
         package var openWorldIsStarting: Bool
         /// Directory names that were asked to stop and are still saving.
         package var saving: Set<String>
-        /// The directory the Lab's run is writing (`alife run` or `alife resume`), nil when none is: a world is never played over it.
+        /// The directory the run of this window is writing (`alife run` or `alife resume`), nil when none is: a world is never played over it.
         package var growing: String?
 
         package init(folderExists: Bool, folderProblem: String? = nil, engineReady: Bool, catalog: PlayCatalog = PlayCatalog(),
@@ -44,7 +44,7 @@ package enum WorldsGuide {
         case chooseFolder(problem: String)
         /// A folder without an engine: set it up.
         case setUpEngine
-        /// An engine, and nothing to make a planet from: a research run is made in the Lab.
+        /// An engine, and nothing to make a planet from: a first world is created.
         case makeFirstRun
         /// An engine and a run to make a planet from, and no world yet.
         case makePlanet(from: String)
@@ -72,7 +72,7 @@ package enum WorldsGuide {
     package static func reason(forPlaying world: PlayWorld, in facts: Facts) -> String? {
         if let open = facts.openWorld { return open == world.name ? "Open now" : "Close \(open) first" }
         if facts.saving.contains(world.name) { return "Saving..." }
-        if facts.growing == world.name { return "Growing in the Lab" }
+        if facts.growing == world.name { return "Still growing" }
         if world.locked { return WorldState.inUseElsewhere.title }
         if world.newestStep == nil { return "No save point" }
         return nil
@@ -107,7 +107,7 @@ package enum WorldsGuide {
         if !facts.folderExists { return facts.folderProblem ?? "The alife folder was not found." }
         if !facts.engineReady { return "Set up the engine first." }
         if facts.catalog.sources.isEmpty {
-            return "A planet is made from a research run with a save point, and there is none yet. Make one in the Lab."
+            return "A planet is made from a world with a save point, and there is none yet. Create a world first."
         }
         return nil
     }
@@ -180,8 +180,8 @@ package enum WorldsGuide {
         if !q.isEmpty { return "No \(filter == .all ? "world" : filter.title.lowercased() + " world") matches \u{201C}\(q)\u{201D}. Check the spelling, or clear the search." }
         switch filter {
         case .all: return "There is no world in this folder yet."
-        case .played: return "No played worlds yet. Choose a research world and press Make planet… to make one."
-        case .research: return "No research worlds yet. A research world is grown in the Lab."
+        case .played: return "No played worlds yet. Press New world, or choose a research world and press Make planet…."
+        case .research: return "No research worlds yet. Press New world and choose a research world."
         case .unfinished: return counts.unfinished == 0 ? "No unfinished builds found." : ""
         }
     }

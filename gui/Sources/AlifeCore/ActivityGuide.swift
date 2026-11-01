@@ -103,5 +103,5 @@ package enum ActivityGuide {
     }
 
     /// What the page says when there is nothing to list: where to go next.
-    package static let emptyAdvice = "Nothing is running. Start a world from Worlds, or a research run in the Lab."
+    package static let emptyAdvice = "Nothing is running. Play a world from Worlds, or make a new one."
 }

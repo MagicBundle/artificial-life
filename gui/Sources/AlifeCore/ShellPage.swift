@@ -1,13 +1,13 @@
 import Foundation
 
 /// The pages of the `alife` window (docs/APP.md §2.4, PR-B). Names follow §2.5: *Watch* is the live picture of a world, *Worlds*
-/// is where a world is chosen or made, *Activity* shows what is running. *Lab* is today's research form, kept as a page until the
-/// set-up page replaces it (PR-D); it keeps its own labels until then.
+/// is where a world is chosen, *Activity* shows what is running, and *New world* is the set-up page (PR-D): Create, Branch, Keep growing
+/// and Make planet. It replaced the Lab and the launcher's planet form.
 package enum ShellPage: String, CaseIterable, Identifiable, Sendable {
     case worlds
     case watch
     case activity
-    case lab
+    case setup
 
     package var id: String { rawValue }
 
@@ -16,7 +16,7 @@ package enum ShellPage: String, CaseIterable, Identifiable, Sendable {
         case .worlds: return "Worlds"
         case .watch: return "Watch"
         case .activity: return "Activity"
-        case .lab: return "Lab"
+        case .setup: return "New world"
         }
     }
 
@@ -26,18 +26,18 @@ package enum ShellPage: String, CaseIterable, Identifiable, Sendable {
         case .worlds: return "globe"
         case .watch: return "eye"
         case .activity: return "list.bullet.rectangle"
-        case .lab: return "flask"
+        case .setup: return "plus.circle"
         }
     }
 
-    /// The Command key of the Window-menu item that opens the page: in the order of the sidebar (Worlds 1, Watch 2, Activity 3, Lab 4;
-    /// the spec's §2.4 had Activity on 2, before Watch and the Lab were pages).
+    /// The Command key of the Window-menu item that opens the page: in the order of the sidebar (Worlds 1, Watch 2, Activity 3, New world 4;
+    /// the spec's §2.4 had Activity on 2, before Watch was a page).
     package var key: Character {
         switch self {
         case .worlds: return "1"
         case .watch: return "2"
         case .activity: return "3"
-        case .lab: return "4"
+        case .setup: return "4"
         }
     }
 
@@ -47,7 +47,7 @@ package enum ShellPage: String, CaseIterable, Identifiable, Sendable {
         case .worlds: return "Choose a world to play, or make a new planet."
         case .watch: return "The live picture of the world that is open."
         case .activity: return "What is running now, and the log."
-        case .lab: return "Research runs: every setting, the numbers, the log."
+        case .setup: return "Make a new world, branch one, keep one growing, or make a planet."
         }
     }
 
@@ -62,6 +62,8 @@ package enum ShellPage: String, CaseIterable, Identifiable, Sendable {
 /// Names the one window of `alife` (a `Window` scene), outside `AppWindow`, which belongs to the two old modes.
 package enum AppShell {
     package static let mainWindowID = "main"
+    /// The set-up page in a window of its own (docs/APP.md §3.7), so that a form can be composed beside a Watch.
+    package static let setupWindowID = "setup"
     /// The preference that remembers the page between launches (`ShellPage.restored`).
     package static let pageKey = "shell.page"
     /// The minimum size of the window for every page (docs/APP.md M12), so that entering Watch never resizes it.

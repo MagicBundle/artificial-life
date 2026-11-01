@@ -66,6 +66,9 @@ package struct LibraryRecord: Equatable, Sendable, Identifiable {
     /// `run.metrics_every` of `config.json` (100 when unreadable): how many steps lie between two rows of `metrics.jsonl`, which sets how long
     /// a world may be quiet and still be running (`LibraryScanner.signWindow`).
     package var metricsEvery: Int = 100
+    /// `run.steps` of `config.json`: the step a research run was asked to grow to, nil when unreadable. A run that stopped before it is
+    /// told so on its card, with the next action (docs/APP.md §3.2).
+    package var targetSteps: Int?
 
     package var id: String { name }
     package var isPlayed: Bool { play != nil }
@@ -392,7 +395,8 @@ package final class LibraryScanner: @unchecked Sendable {
             hasContent: !contents.subtracting([PlayLockProbe.lockFile]).isEmpty,
             looksUnfinished: play == nil && PlayCatalogScanner.isUnfinishedBuild(url, meta: meta, fileManager: fm),
             buildMark: (meta?[PlayBuildMarker.metaKey] as? String).flatMap { PlayBuildMarker.kinds.contains($0) ? $0 : nil },
-            metricsEvery: (run?["metrics_every"] as? Int).flatMap { $0 >= 1 ? $0 : nil } ?? play?.cadence.metricsEvery ?? 100)
+            metricsEvery: (run?["metrics_every"] as? Int).flatMap { $0 >= 1 ? $0 : nil } ?? play?.cadence.metricsEvery ?? 100,
+            targetSteps: (run?["steps"] as? Int).flatMap { $0 >= 1 ? $0 : nil })
     }
 
     /// Whether `directory` has an entry that is not hidden, without listing it (an `events/` of a long run has thousands).

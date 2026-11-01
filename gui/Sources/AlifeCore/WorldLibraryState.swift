@@ -79,12 +79,35 @@ package struct LiveFacts: Equatable, Sendable {
     package var growing: String?
     /// Worlds that were asked to stop and are still saving.
     package var saving: Set<String> = []
+    /// Planets a pipeline is making (docs/APP.md §3.2): the played world does not exist yet while its seed grows, but one click is one
+    /// world, so the library lists it, being made, with the seed nested under it.
+    package var pending: [PendingPlanet] = []
 
-    package init(openWorld: String? = nil, openPhase: OpenPhase = .live, growing: String? = nil, saving: Set<String> = []) {
+    package init(openWorld: String? = nil, openPhase: OpenPhase = .live, growing: String? = nil, saving: Set<String> = [],
+                 pending: [PendingPlanet] = []) {
         self.openWorld = openWorld
         self.openPhase = openPhase
         self.growing = growing
         self.saving = saving
+        self.pending = pending
+    }
+}
+
+/// A planet that a pipeline has promised and not yet made.
+package struct PendingPlanet: Equatable, Sendable {
+    package enum Stage: Equatable, Sendable { case growing, making }
+    package var name: String
+    /// The research world it is made from (`NAME-grow`).
+    package var seed: String
+    package var stage: Stage
+    /// When the pipeline started (a stable date, so that the library does not look changed at every look).
+    package var since: Date
+
+    package init(name: String, seed: String, stage: Stage, since: Date = Date()) {
+        self.name = name
+        self.seed = seed
+        self.stage = stage
+        self.since = since
     }
 }
 
@@ -101,6 +124,12 @@ package struct LibraryRow: Equatable, Identifiable, Sendable {
     package var lastSaved: Date
     /// The run a Played world was made from.
     package var madeFrom: SourceRef?
+    /// The step a research run was asked to grow to (`run.steps`), nil when unknown.
+    package var targetSteps: Int?
+    /// A planet a pipeline is making: listed before its directory is a world, with its seed nested under it. It has no folder to open.
+    package var isPlaceholder = false
+    /// For a seed (`NAME-grow`) whose planet `NAME` was never made: the name it was meant for. The next action is *Make planet*.
+    package var unmadePlanet: String?
 
     package var id: String { name }
     package var hasSavePoint: Bool { step != nil }
@@ -109,7 +138,7 @@ package struct LibraryRow: Equatable, Identifiable, Sendable {
     package var facts: String {
         var parts = [kind.title]
         if let shape { parts.append(shape.title) }
-        if let step { parts.append("step " + WorldsGuide.grouped(step)) } else { parts.append("no save point yet") }
+        if let step { parts.append("step " + WorldsGuide.grouped(step)) } else if !isPlaceholder { parts.append("no save point yet") }
         return parts.joined(separator: " · ")
     }
 
@@ -123,7 +152,8 @@ package struct LibraryRow: Equatable, Identifiable, Sendable {
     package func sidebarLine(now: Date) -> String {
         guard state == .saved else { return state.title }
         let when = WorldsGuide.relative(lastSaved, now: now)
-        return when == "just now" ? "Saved just now" : "Saved " + when
+        let saved = when == "just now" ? "Saved just now" : "Saved " + when
+        return unmadePlanet == nil ? saved : "Planet not made yet"
     }
 }
 
@@ -260,6 +290,23 @@ package struct LibraryState: Equatable, Sendable {
         state.others = state.catalog.other
         // Names that are taken without being worlds: links to a drive that is not connected, entries that cannot be read, entries that are slow.
         state.catalog.other = Array(Set(state.catalog.other).union(snapshot.problems.keys).union(snapshot.slow)).sorted()
+        // A planet a pipeline is making is listed before it is a world: one click is one world, with the seed nested under it.
+        let existing = Set(rows.map { NameFolding.fold($0.name) })
+        for p in live.pending where !existing.contains(NameFolding.fold(p.name)) {
+            rows.append(LibraryRow(
+                name: p.name, kind: .played, shape: .planet, state: p.stage == .growing ? .growing : .starting,
+                note: p.stage == .growing ? "Growing first, then it becomes a planet." : "Being made.", step: nil, lastSaved: p.since,
+                madeFrom: SourceRef(name: p.seed, step: nil), isPlaceholder: true))
+        }
+        let promised = Set(live.pending.map { NameFolding.fold($0.name) })
+        state.unfinished.removeAll { promised.contains(NameFolding.fold($0.name)) }
+        // A seed whose planet was never made (the pipeline was stopped, or the app was closed): the next action is Make planet.
+        let known = Set(snapshot.records.map { NameFolding.fold($0.name) }).union(snapshot.problems.keys.map(NameFolding.fold)).union(promised)
+        for i in rows.indices where rows[i].kind == .research && rows[i].shape == .planet && rows[i].hasSavePoint && !rows[i].isPlaceholder {
+            guard rows[i].name.hasSuffix(SetupPlan.growSuffix) else { continue }
+            let base = String(rows[i].name.dropLast(SetupPlan.growSuffix.count))
+            if !base.isEmpty, !known.contains(NameFolding.fold(base)) { rows[i].unmadePlanet = base }
+        }
         state.rows = order(rows)
         state.unfinished.sort { ($0.lastTouched, $1.name) > ($1.lastTouched, $0.name) }
         return state
@@ -268,8 +315,8 @@ package struct LibraryState: Equatable, Sendable {
     private static func row(_ r: LibraryRecord, kind: WorldKind, state: WorldState, cutOff: Bool) -> LibraryRow {
         LibraryRow(
             name: r.name, kind: kind, shape: WorldShape.of(dims: r.dims, geometry: r.geometry), state: state,
-            note: kind == .research && state == .saved ? endNote(r.status, cutOff: cutOff) : nil, step: r.steps.last, lastSaved: r.lastSaved,
-            madeFrom: SourceRef.parse(r.play?.planet?.source))
+            note: kind == .research && state == .saved ? endNote(r.status, cutOff: cutOff) ?? stoppedNote(r) : nil, step: r.steps.last,
+            lastSaved: r.lastSaved, madeFrom: SourceRef.parse(r.play?.planet?.source), targetSteps: r.targetSteps)
     }
 
     /// The state of a world: what this app does with it first, then what another process does.
@@ -285,6 +332,12 @@ package struct LibraryState: Equatable, Sendable {
         if live.growing == r.name { return .growing }
         if held || writtenElsewhere { return .inUseElsewhere }
         return .saved
+    }
+
+    /// A run that was stopped before the step it was asked to reach says where it stopped.
+    static func stoppedNote(_ r: LibraryRecord) -> String? {
+        guard r.status == "interrupted", let target = r.targetSteps, let step = r.steps.last, step < target else { return nil }
+        return "Stopped at step \(WorldsGuide.grouped(step)) of \(WorldsGuide.grouped(target))."
     }
 
     /// How a research run ended, when that is worth a line; nil for a normal end.
