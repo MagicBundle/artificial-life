@@ -8,6 +8,10 @@ struct ContentView: View {
     @Environment(\.dismissWindow) private var dismissWindow
 
     private let plan = LaunchMode.current().plan
+    /// A page of the `alife` window (docs/APP.md PR-B), not a window of its own: it does not watch for its window closing, and the
+    /// button that opened the World window goes to the Worlds page. `openPage` is how it asks the shell to show a page.
+    private let embedded: Bool
+    private let openPage: ((ShellPage) -> Void)?
 
     private var busy: Bool { controller.job != nil }
 
@@ -16,8 +20,11 @@ struct ContentView: View {
     @State private var showPresetCompare = false
 
     /// `presetGuide` is what the guide shows until the repository's own has loaded (a test gives it the loaded one).
-    init(controller: RunController, presetGuide: PresetGuideContent = .empty) {
+    init(controller: RunController, presetGuide: PresetGuideContent = .empty, embedded: Bool = false,
+         openPage: ((ShellPage) -> Void)? = nil) {
         self.controller = controller
+        self.embedded = embedded
+        self.openPage = openPage
         _presetGuide = State(initialValue: presetGuide)
     }
 
@@ -59,9 +66,13 @@ struct ContentView: View {
         // it did when this was the only window (`applicationShouldTerminateAfterLastWindowClosed`). Another main window
         // (File > New Window) keeps the app and the viewer. In Storm Worlds the Lab is a tool window: it takes only the
         // viewer with it and is not reopened at the next launch (`LaunchPlan`).
-        .background(WindowCloseObserver(restorable: plan.labIsMainWindow, group: "main") {
-            for window in plan.windowsClosedWithLab { dismissWindow(id: window.rawValue) }
-        })
+        .background {
+            if !embedded {
+                WindowCloseObserver(restorable: plan.labIsMainWindow, group: "main") {
+                    for window in plan.windowsClosedWithLab { dismissWindow(id: window.rawValue) }
+                }
+            }
+        }
         .onAppear {
             // Storm Worlds starts `--world RUN` in its own World window (`WorldWindowRoot`).
             guard plan.labIsMainWindow else { return }
@@ -521,38 +532,63 @@ struct ContentView: View {
     }
 
     private var toolSection: some View {
-        HStack {
-            if controller.viewerRunning {
-                Button("Close viewer") { controller.closeViewer() }
+        // In the alife window the page is narrower than the old Lab window, so the buttons go in two rows and keep their words.
+        Group {
+            if embedded {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack { viewerButtons }
+                    HStack { actionButtons; Spacer() }
+                    toolHint
+                }
             } else {
-                Button("Open viewer") { controller.openViewer() }
-                    .disabled(!controller.targetRunExists || controller.job == .setup || !controller.pygameViewerAvailable)
-                    .help(controller.pygameViewerAvailable
-                          ? "Opens the pygame viewer on the run's latest checkpoint. It shares the GPU with a running simulation and will slow it down."
-                          : "The pygame viewer draws a 2D plane. Use Open 3D viewer for a 3D run.")
+                HStack {
+                    viewerButtons
+                    actionButtons
+                    Spacer()
+                    toolHint
+                }
             }
-            Button("Open 3D viewer") {
-                controller.openViewer3D()
-                openWindow(id: "viewer3d")
-            }
-            .disabled(controller.viewer3DSource == nil)
-            .help(viewer3DHelp)
-            Button("Open World") {
-                openWindow(id: "world")
-            }
-            .help("The game window: the planet's weather map and organisms with a control center. Choose a world there.")
-            Button("Inspect") { controller.inspect() }
-                .disabled(busy || !controller.targetRunExists)
-                .help("Runs `alife inspect --check` and prints the result in the log.")
-            Button("Reveal in Finder") { controller.revealInFinder() }
-            Spacer()
-            if controller.targetRunExists, !controller.pygameViewerAvailable {
-                Text("3D run: the pygame viewer is 2D only; use Open 3D viewer.")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else if controller.job == .run {
-                Text("Viewer shares the GPU with the run.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+        }
+    }
+
+    @ViewBuilder private var viewerButtons: some View {
+        if controller.viewerRunning {
+            Button("Close viewer") { controller.closeViewer() }
+        } else {
+            Button("Open viewer") { controller.openViewer() }
+                .disabled(!controller.targetRunExists || controller.job == .setup || !controller.pygameViewerAvailable)
+                .help(controller.pygameViewerAvailable
+                      ? "Opens the pygame viewer on the run's latest checkpoint. It shares the GPU with a running simulation and will slow it down."
+                      : "The pygame viewer draws a 2D plane. Use Open 3D viewer for a 3D run.")
+        }
+        Button("Open 3D viewer") {
+            controller.openViewer3D()
+            openWindow(id: "viewer3d")
+        }
+        .disabled(controller.viewer3DSource == nil)
+        .help(viewer3DHelp)
+        Button(embedded ? "Go to Worlds" : "Open World") {
+            if embedded { openPage?(.worlds) } else { openWindow(id: "world") }
+        }
+        .help(embedded
+              ? "The Worlds page: play a world, or make a planet from a run."
+              : "The game window: the planet's weather map and organisms with a control center. Choose a world there.")
+    }
+
+    @ViewBuilder private var actionButtons: some View {
+        Button("Inspect") { controller.inspect() }
+            .disabled(busy || !controller.targetRunExists)
+            .help("Runs `alife inspect --check` and prints the result in the log.")
+        Button("Reveal in Finder") { controller.revealInFinder() }
+    }
+
+    @ViewBuilder private var toolHint: some View {
+        if controller.targetRunExists, !controller.pygameViewerAvailable {
+            Text("3D run: the pygame viewer is 2D only; use Open 3D viewer.")
+                .font(.caption).foregroundStyle(.secondary)
+        } else if controller.job == .run {
+            Text("Viewer shares the GPU with the run.")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -588,6 +624,12 @@ struct LogView: View {
                         .padding(6)
                     }
                     .background(Color(nsColor: .textBackgroundColor))
+                    .overlay {
+                        if controller.logLines.isEmpty {
+                            Text("Nothing logged yet. What runs, setups and checks print appears here.")
+                                .font(.callout).foregroundStyle(.secondary).padding()
+                        }
+                    }
                     .onChange(of: controller.logLines.last?.id) { _, lastID in
                         if let lastID { proxy.scrollTo(lastID, anchor: .bottom) }
                     }

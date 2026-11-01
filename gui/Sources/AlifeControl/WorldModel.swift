@@ -191,6 +191,16 @@ final class WorldModel: ObservableObject {
     let defaults: UserDefaults
     /// Whether the World window is the one in front; the dock icon is only called when it is not. Tests inject theirs.
     var windowIsKey: () -> Bool = { true }
+    /// Whether the Watch page is the one on screen (docs/APP.md §2.4 item 2). The two old modes show the world in a window of its
+    /// own and never change it; in the `alife` window it is false while another page is selected, and then the world's keys do
+    /// nothing (they fall through to the page's own controls), the Metal views draw and animate nothing and take no focus, and
+    /// the player does not count as looking.
+    internal(set) var watchActive = true
+    /// Whether the player is looking at the world: Watch is shown, in the key window of the active app. The attention rules
+    /// (the dock badge and bounce) read this, not `windowIsKey` alone: in one window "another page" would count as looking.
+    var viewerIsLooking: Bool { watchActive && windowIsKey() }
+    /// Whether a World key is acted on. A key event reaches the monitor only when it is for the key window, so this is `watchActive`.
+    var keysEnabled: Bool { watchActive }
     var requestAttention: () -> Void = {}
     var setBadge: (String?) -> Void = { _ in }
     static let autopauseKey = "world.autopause"

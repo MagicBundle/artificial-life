@@ -53,7 +53,7 @@ extension WorldModel {
         ticker.show(alerts: raised, at: now())
         tickerLine = ticker.line
         let stacked = raised.filter { $0.surface == .alert && $0.alertClass != "chapter" }.count
-        attention.raised(stacked, windowIsKey: windowIsKey())
+        attention.raised(stacked, windowIsKey: viewerIsLooking)
         setBadge(attention.badge)
         scheduleTimers()
     }
@@ -168,7 +168,7 @@ extension WorldModel {
             }
         }
         if (clock.reason == .chapter || clock.reason == .alert), clock.rate == 0, !clock.saving,
-           attention.paused(atStep: currentStep, windowIsKey: windowIsKey()) {
+           attention.paused(atStep: currentStep, windowIsKey: viewerIsLooking) {
             requestAttention()
         }
     }
@@ -223,7 +223,8 @@ extension WorldModel {
             windowObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 // (the notification's object is the window, or the app)
                 let isThis = (note.object as? NSWindow).map { $0 === window } ?? true
-                MainActor.assumeIsolated { if isThis { self?.windowBecameKey() } }
+                // (Only with Watch shown: the Lab or Activity page coming forward is not the player looking at the world.)
+                MainActor.assumeIsolated { if isThis, self?.watchActive == true { self?.windowBecameKey() } }
             })
         }
     }
@@ -231,6 +232,35 @@ extension WorldModel {
     func windowBecameKey() {
         attention.windowBecameKey()
         setBadge(nil)
+    }
+
+    /// What the sidebar's Watch row says (docs/APP.md §2.4, review M1): the state, and off Watch whether the world waits for the player.
+    func watchCue(startFailed: Bool) -> WatchCue.Cue {
+        let phase: WatchCue.Phase
+        switch play.phase {
+        case .idle: phase = .none
+        case .starting: phase = .starting
+        case .live: phase = .live
+        case .ended: phase = .ended
+        case .failed: phase = startFailed ? .failedToStart : .failed
+        }
+        var stop: WatchCue.Stop?
+        var chapter = 0
+        if let clock = play.store.clock {
+            chapter = Int(clock.chapter)
+            if clock.rate == 0 { stop = clock.reason == .chapter ? .chapter : (clock.reason == .alert ? .alert : nil) }
+        }
+        return WatchCue.cue(phase: phase, world: play.world, stop: stop, chapter: chapter, unread: attention.unread, looking: viewerIsLooking)
+    }
+
+    /// The Watch page appeared or went (`ShellModel`). Showing it clears the unread alerts and the badge when the window is the one in
+    /// front, as a window becoming key does.
+    func setWatchActive(_ active: Bool) {
+        guard active != watchActive else { return }
+        watchActive = active
+        view?.canvasVisibilityChanged()
+        sphere.view?.canvasVisibilityChanged()
+        if active, windowIsKey() { windowBecameKey() }
     }
 
     // MARK: Powers

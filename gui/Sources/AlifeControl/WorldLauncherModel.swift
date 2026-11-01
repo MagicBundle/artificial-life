@@ -138,3 +138,13 @@ final class WorldLauncherModel: ObservableObject {
         launch(.planet(planet))
     }
 }
+
+extension WorldLauncherModel {
+    /// The launcher for the alife folder a `RunController` is set to: its `runs/` directory, and a request starts in `play`.
+    @MainActor
+    static func forApp(run: RunController, play: PlayController) -> WorldLauncherModel {
+        WorldLauncherModel(
+            runsDirectory: { run.repoReady ? run.repoURL.appendingPathComponent("runs") : nil },
+            launch: { request in play.start(request, executable: run.alifeURL, directory: run.repoURL) })
+    }
+}

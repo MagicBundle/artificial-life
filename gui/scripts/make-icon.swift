@@ -1,7 +1,7 @@
 // Generates an app icon as an .iconset directory: the AlifeControl icon (cells and bonds) or, with `storm`, the Storm
 // Worlds icon (a storm cloud and a lightning bolt over a small world with a few cells).
 //
-//   swift gui/scripts/make-icon.swift <out.iconset dir> [lab|storm]
+//   swift gui/scripts/make-icon.swift <out.iconset dir> [lab|storm|alife]
 //   iconutil -c icns <out.iconset dir> -o AppIcon.icns
 //
 // Self-contained (CoreGraphics + ImageIO only), deterministic (hard-coded geometry), no text.
@@ -91,6 +91,8 @@ func render(pixels: Int, variant: String) -> CGImage {
 
     if variant == "storm" {
         drawStorm(ctx, k: k)
+    } else if variant == "alife" {
+        drawAlife(ctx, k: k)
     } else {
         drawCells(ctx, k: k)
     }
@@ -159,9 +161,8 @@ func drawCells(_ ctx: CGContext, k: CGFloat) {
     }
 }
 
-/// The Storm Worlds art, drawn inside the clipped shape: a night sky, the rim of a small world with a few cells, a storm
-/// cloud and a lightning bolt. Shapes stay bold so that it reads at 16 px.
-func drawStorm(_ ctx: CGContext, k: CGFloat) {
+/// The night sky, the rim of a small world and a few cells on it: the part of the Storm Worlds art that is also the alife art.
+func drawWorldScene(_ ctx: CGContext, k: CGFloat) {
     // Sky: indigo (top) to deep teal (bottom).
     let sky = CGGradient(colorsSpace: space,
                          colors: [RGB(r: 0.12, g: 0.10, b: 0.34).cg(), RGB(r: 0.02, g: 0.20, b: 0.28).cg()] as CFArray,
@@ -199,6 +200,21 @@ func drawStorm(_ ctx: CGContext, k: CGFloat) {
                focus: CGPoint(x: c.x - c.r * 0.35, y: c.y + c.r * 0.4))
         ctx.restoreGState()
     }
+}
+
+/// The alife art (the one app): the storm icon's world without the cloud and the bolt, with a few faint stars above it.
+func drawAlife(_ ctx: CGContext, k: CGFloat) {
+    drawWorldScene(ctx, k: k)
+    ctx.setFillColor(white.cg(0.55))
+    for (x, y, r) in [(210.0, 760.0, 7.0), (330.0, 870.0, 5.0), (520.0, 820.0, 8.0), (700.0, 880.0, 5.0), (820.0, 740.0, 7.0), (610.0, 650.0, 5.0)] {
+        ctx.fillEllipse(in: CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2))
+    }
+}
+
+/// The Storm Worlds art, drawn inside the clipped shape: a night sky, the rim of a small world with a few cells, a storm
+/// cloud and a lightning bolt. Shapes stay bold so that it reads at 16 px.
+func drawStorm(_ ctx: CGContext, k: CGFloat) {
+    drawWorldScene(ctx, k: k)
 
     // Rain, behind the bolt.
     ctx.setLineCap(.round)
@@ -273,8 +289,8 @@ func writePNG(_ image: CGImage, to url: URL) {
 }
 
 let variant = CommandLine.arguments.count == 3 ? CommandLine.arguments[2] : "lab"
-guard CommandLine.arguments.count == 2 || CommandLine.arguments.count == 3, ["lab", "storm"].contains(variant) else {
-    FileHandle.standardError.write(Data("usage: swift make-icon.swift <out.iconset dir> [lab|storm]\n".utf8))
+guard CommandLine.arguments.count == 2 || CommandLine.arguments.count == 3, ["lab", "storm"].contains(variant) || variant == "alife" else {
+    FileHandle.standardError.write(Data("usage: swift make-icon.swift <out.iconset dir> [lab|storm|alife]\n".utf8))
     exit(2)
 }
 let outDir = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)

@@ -9,13 +9,15 @@ package enum AppWindow: String, CaseIterable, Sendable {
     case viewer3d
 }
 
-/// Which app the executable is. One binary is bundled twice (`gui/scripts/make-app.sh`): as the research Lab
-/// (`AlifeControl.app`, the default and what `swift run` gives) and as Storm Worlds, which opens straight into the game.
-/// The bundle says which: `Info.plist` key `AlifeLaunchMode`, "world" or "lab". A missing key, an empty or an unknown
-/// value is the Lab, so a bundle from before the key and an unbundled `swift run` behave as they always did.
+/// Which app the executable is. One binary is bundled as the research Lab (`AlifeControl.app`, the default and what
+/// `swift run` gives), as Storm Worlds, which opens straight into the game, and, since PR-B of the one-app program
+/// (`docs/APP.md`), as `alife`: one window with a sidebar (`alife Preview.app` until the old apps are retired).
+/// The bundle says which: `Info.plist` key `AlifeLaunchMode`, "alife", "world" or "lab". A missing key, an empty or an
+/// unknown value is the Lab, so a bundle from before the key and an unbundled `swift run` behave as they always did.
 package enum LaunchMode: String, CaseIterable, Sendable {
     case lab
     case world
+    case alife
 
     /// The `Info.plist` key.
     package static let infoKey = "AlifeLaunchMode"
@@ -73,24 +75,35 @@ package struct LaunchPlan: Equatable, Sendable {
     package init(mode: LaunchMode) { self.mode = mode }
 
     /// The name in the menu bar and the About box (the bundle's `CFBundleName` says the same).
-    package var appName: String { mode == .world ? "Storm Worlds" : "Alife Control" }
+    package var appName: String {
+        switch mode {
+        case .lab: return "Alife Control"
+        case .world: return "Storm Worlds"
+        case .alife: return "alife"
+        }
+    }
 
     /// The windows open at launch. Storm Worlds opens only the World window (on its launcher); the Lab is one menu item away.
     /// `--world RUN` adds no window, it starts RUN in the one that opens (the Lab, whose first scene is its main window,
-    /// opens the World window for it too).
+    /// opens the World window for it too). `alife` has one window, `AppShell.mainWindowID`, which is not an `AppWindow` (that
+    /// names the windows of the two old modes, which PR-H removes): nothing here, and `--world RUN` starts RUN in the shell.
     package func windowsAtLaunch(worldArgument: String? = nil) -> [AppWindow] {
         switch mode {
         case .lab: return worldArgument == nil ? [.lab] : [.lab, .world]
         case .world: return [.world]
+        case .alife: return []
         }
     }
 
-    /// The first scene is the one SwiftUI opens at launch.
+    /// The first scene is the one SwiftUI opens at launch. (`alife` has its own entry point, `AlifeApp`: this is not read for it.)
     package var firstScene: AppWindow { mode == .world ? .world : .lab }
 
     /// Whether the Lab is the main window: closing the last of them closes the others and ends the app. In Storm Worlds the
     /// Lab is a tool window: closing it closes the 3D viewer it opened and nothing else.
     package var labIsMainWindow: Bool { mode == .lab }
+
+    /// `alife` is one window with a sidebar; the Lab is a page of it, and the World window is its Watch page.
+    package var isShell: Bool { mode == .alife }
 
     /// The windows that go when the last Lab window closes.
     package var windowsClosedWithLab: [AppWindow] { labIsMainWindow ? [.viewer3d, .world] : [.viewer3d] }

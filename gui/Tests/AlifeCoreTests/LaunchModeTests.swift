@@ -41,7 +41,7 @@ import Testing
     @Test func theKeyAndTheArgumentAreWhatTheScriptWrites() {
         #expect(LaunchMode.infoKey == "AlifeLaunchMode")
         #expect(LaunchMode.argumentName == "--launch-mode")
-        #expect(LaunchMode.allCases.map(\.rawValue) == ["lab", "world"])
+        #expect(LaunchMode.allCases.map(\.rawValue) == ["lab", "world", "alife"])
     }
 
     /// A bundle on disk with an Info.plist, as `make-app.sh` writes it.

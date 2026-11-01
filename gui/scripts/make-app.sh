@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build, bundle and sign the AlifeControl apps (the research Lab and Storm Worlds), and optionally install them.
+# Build, bundle and sign the AlifeControl apps (the research Lab, Storm Worlds and the alife preview), and optionally install them.
 # Run from any directory. See `make-app.sh --help`.
 set -euo pipefail
 
@@ -7,26 +7,34 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GUI_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LAB_BUNDLE_ID="${BUNDLE_ID:-io.github.magicbundle.alifecontrol}"
 STORM_BUNDLE_ID="${STORM_BUNDLE_ID:-io.github.magicbundle.stormworlds}"
+# The preview of the one-app program (docs/APP.md, PR-B): its own preferences, installed beside the two old apps. The final id (the
+# shared preferences domain) replaces it when the old apps are retired.
+ALIFE_PREVIEW_BUNDLE_ID="${ALIFE_PREVIEW_BUNDLE_ID:-io.github.magicbundle.alife.preview}"
 VERSION="${VERSION:-0.1.0}"
 
 SIGN_ARG=""
 INSTALL=0
 INSTALL_DIR="/Applications"
+PREVIEW=0
 WHICH="lab"
 OUT_DIR=""
 
 usage() {
   cat <<USAGE
-Usage: make-app.sh [--app lab|storm|both] [--sign IDENTITY] [--out DIR] [--install] [--install-dir DIR] [--help]
+Usage: make-app.sh [--app lab|storm|both|alife --preview] [--sign IDENTITY] [--out DIR] [--install] [--install-dir DIR] [--help]
 
 Builds the release binary once, generates the icons, assembles and signs
   AlifeControl.app   the research Lab (the run controls, the log, the director panel)
   Storm Worlds.app   the game: opens straight into the World window; the Lab is Window > Lab
+  alife Preview.app  the one-app program's preview (docs/APP.md): one window with a sidebar (--app alife --preview)
 in DIR (default $GUI_DIR/.build).
 
 Options:
-  --app WHICH         lab (default: what this script always built), storm, or both (recommended
-                      with --install: the game and the Lab share the repository folder setting).
+  --app WHICH         lab (default: what this script always built), storm, both (recommended
+                      with --install: the game and the Lab share the repository folder setting), or alife.
+  --preview           With --app alife: build the preview, id io.github.magicbundle.alife.preview, with its own preferences. It
+                      installs beside the old apps and changes neither: it reads the shared alife folder setting and never writes it. (alife.app,
+                      the final one, comes when they are retired.)
   --sign IDENTITY     Signing identity (name or hash). Default: the first
                       "Developer ID Application" identity, else the first
                       "Apple Development" identity, else ad-hoc ("-"). "--sign -" is ad-hoc and
@@ -40,6 +48,7 @@ Options:
 Environment:
   BUNDLE_ID           Bundle identifier of the Lab (default io.github.magicbundle.alifecontrol)
   STORM_BUNDLE_ID     Bundle identifier of Storm Worlds (default io.github.magicbundle.stormworlds)
+  ALIFE_PREVIEW_BUNDLE_ID  Bundle identifier of alife Preview (default io.github.magicbundle.alife.preview)
   VERSION             CFBundleShortVersionString of both (default 0.1.0)
 
 Never uses sudo. Not notarized: sharing an app needs a Developer ID identity plus notarization.
@@ -53,6 +62,7 @@ while [[ $# -gt 0 ]]; do
     --app) [[ $# -ge 2 ]] || die "--app needs an argument"; WHICH="$2"; shift 2 ;;
     --sign) [[ $# -ge 2 ]] || die "--sign needs an argument"; SIGN_ARG="$2"; shift 2 ;;
     --out) [[ $# -ge 2 ]] || die "--out needs an argument"; OUT_DIR="$2"; shift 2 ;;
+    --preview) PREVIEW=1; shift ;;
     --install) INSTALL=1; shift ;;
     --install-dir) [[ $# -ge 2 ]] || die "--install-dir needs an argument"; INSTALL_DIR="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -64,8 +74,11 @@ case "$WHICH" in
   lab) APPS="lab" ;;
   storm) APPS="storm" ;;
   both) APPS="lab storm" ;;
-  *) usage >&2; die "--app must be lab, storm or both (got: $WHICH)" ;;
+  alife) APPS="alife"
+    [[ $PREVIEW -eq 1 ]] || die "--app alife builds the preview for now: add --preview (alife.app arrives when the old apps are retired)" ;;
+  *) usage >&2; die "--app must be lab, storm, both or alife (got: $WHICH)" ;;
 esac
+[[ $PREVIEW -eq 0 || "$WHICH" == "alife" ]] || die "--preview goes with --app alife"
 
 BUILD_DIR="${OUT_DIR:-$GUI_DIR/.build}"
 BUILD_DIR="${BUILD_DIR/#\~/$HOME}"
@@ -74,7 +87,7 @@ mkdir -p "$BUILD_DIR"
 BUILD_DIR="$(cd "$BUILD_DIR" && pwd -P)"
 
 # What differs between the apps. $1 = lab|storm; sets A_* variables.
-app_vars() {
+app_vars() {  # $1 = lab|storm|alife
   case "$1" in
     lab)
       A_MODE="lab"; A_NAME="AlifeControl"; A_EXEC="AlifeControl"; A_DIR="AlifeControl.app"
@@ -82,6 +95,9 @@ app_vars() {
     storm)
       A_MODE="world"; A_NAME="Storm Worlds"; A_EXEC="StormWorlds"; A_DIR="Storm Worlds.app"
       A_ID="$STORM_BUNDLE_ID"; A_ICON="storm"; A_CATEGORY="public.app-category.simulation-games" ;;
+    alife)
+      A_MODE="alife"; A_NAME="alife Preview"; A_EXEC="alife"; A_DIR="alife Preview.app"
+      A_ID="$ALIFE_PREVIEW_BUNDLE_ID"; A_ICON="alife"; A_CATEGORY="public.app-category.simulation-games" ;;
   esac
 }
 
@@ -137,7 +153,7 @@ else
   fi
 fi
 
-build_app() {  # $1 = lab|storm
+build_app() {  # $1 = lab|storm|alife
   app_vars "$1"
   local bundle="$BUILD_DIR/$A_DIR"
 
@@ -189,7 +205,7 @@ PLIST
   codesign --verify --strict --verbose=2 "$bundle"
 }
 
-install_app() {  # $1 = lab|storm
+install_app() {  # $1 = lab|storm|alife
   app_vars "$1"
   local bundle="$BUILD_DIR/$A_DIR" dest="$INSTALL_DIR/$A_DIR"
   echo "==> installing to $dest"

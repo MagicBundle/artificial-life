@@ -37,9 +37,10 @@ def test_the_launch_mode_key_and_values_are_the_ones_the_script_writes() -> None
     script = text(SCRIPTS / "make-app.sh")
     key = swift_constant(mode, "infoKey")
     assert f"<key>{key}</key><string>$A_MODE</string>" in script
-    # The values: `case lab` / `case world` in LaunchMode, A_MODE="lab" / "world" in the script.
-    assert re.findall(r"^    case (\w+)$", mode, re.M)[:2] == ["lab", "world"]
-    assert re.findall(r'A_MODE="(\w+)"', script) == ["lab", "world"]
+    # The values: the cases lab, world, alife of LaunchMode, and A_MODE in the script.
+    launch_mode = mode[mode.index("enum LaunchMode") :]  # (AppWindow, above it, has cases too)
+    assert re.findall(r"^    case (\w+)$", launch_mode, re.M)[:3] == ["lab", "world", "alife"]
+    assert re.findall(r'A_MODE="(\w+)"', script) == ["lab", "world", "alife"]
 
 
 def test_the_lab_bundle_id_is_the_domain_the_repo_path_is_migrated_from() -> None:
@@ -49,6 +50,9 @@ def test_the_lab_bundle_id_is_the_domain_the_repo_path_is_migrated_from() -> Non
     # The shared suite is not a bundle ID of either app (a bundle cannot open its own domain as a suite).
     suite = swift_constant(text(CORE / "RepoPathStore.swift"), "sharedSuite")
     assert not re.search(rf"{re.escape(suite)}(?![\w.])", script)  # not merely a prefix of the Lab's ID
+    # The preview (docs/APP.md PR-B) has its own id, the suite's name and ".preview": its own preferences.
+    preview = f"{suite}.preview"
+    assert f'ALIFE_PREVIEW_BUNDLE_ID="${{ALIFE_PREVIEW_BUNDLE_ID:-{preview}}}"' in script
 
 
 def test_the_storm_bundle_has_its_own_identity() -> None:
@@ -77,6 +81,18 @@ def test_the_icon_script_has_a_storm_variant_and_the_script_asks_for_it() -> Non
     assert '"$SCRIPT_DIR/make-icon.swift" "$WORK/$A_ICON.iconset" "$A_ICON"' in script
 
 
+def test_the_preview_is_built_only_as_a_preview_and_has_its_own_icon_variant() -> None:
+    script = text(SCRIPTS / "make-app.sh")
+    assert 'alife) APPS="alife"' in script and "--preview" in script
+    assert 'A_NAME="alife Preview"' in script and 'A_DIR="alife Preview.app"' in script
+    assert 'A_EXEC="alife"' in script
+    assert 'A_ICON="alife"' in script
+    icon = text(SCRIPTS / "make-icon.swift")
+    assert 'variant == "alife"' in icon
+    check = text(SCRIPTS / "check-apps.sh")
+    assert "--app alife --preview --sign -" in check and "alife Preview.app" in check
+
+
 def test_the_readme_documents_both_apps() -> None:
     readme = text(GUI / "README.md")
     assert "--app both" in readme
@@ -97,3 +113,4 @@ def test_both_bundles_build_and_verify(tmp_path: Path) -> None:
     assert done.returncode == 0, done.stdout[-3000:] + done.stderr[-3000:]
     assert (out / "Storm Worlds.app" / "Contents" / "Info.plist").is_file()
     assert (out / "AlifeControl.app" / "Contents" / "Info.plist").is_file()
+    assert (out / "alife Preview.app" / "Contents" / "Info.plist").is_file()
