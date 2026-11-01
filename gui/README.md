@@ -48,8 +48,8 @@ and quit Apple-event handler end the sheets first (after the question, so that C
 
 The one-app program (`docs/APP.md`) merges the two apps into one window, **alife**: a sidebar of *Worlds* (choose or make a world),
 *Watch* (the live picture), *Activity* (what runs, and the log) and *Lab* (the research form, for now). Until the old apps are retired
-it is built as a **preview** that installs beside them and touches neither (own bundle id `io.github.magicbundle.alife.preview`, own
-preferences; the dock and display settings of Storm Worlds, or the Lab, are copied in once on the first launch):
+it is built as a **preview** that installs beside them and changes neither (own bundle id `io.github.magicbundle.alife.preview`, own
+preferences; it reads the shared folder setting and the old apps' preferences and never writes them; the dock and display settings of Storm Worlds, or the Lab, are copied in once on the first launch):
 
 ```bash
 gui/scripts/make-app.sh --app alife --preview --install   # "alife Preview.app" in /Applications
@@ -58,7 +58,7 @@ swift run AlifeControl --launch-mode alife               # unbundled (keeps its 
 ```
 
 `--world RUN` works (`open -a "alife Preview" --args --world RUN` on a fresh launch). The world's keys (Space, `.`, `g`, ...) act only on
-the Watch page. The Lab and Storm Worlds are unchanged.
+the Watch page (Cmd-1 Worlds, Cmd-2 Watch, Cmd-3 Activity, Cmd-4 Lab). `ALIFE_PREFS_SUITE=name` (with `open --env ALIFE_PREFS_SUITE=name -a "alife Preview"`, or the executable run directly) reads and writes only that domain for the folder, and skips the migration. The Lab and Storm Worlds are unchanged.
 
 ## Install as an app
 
