@@ -26,6 +26,7 @@ def test_the_five_features_and_the_roles_are_ready_on_a_sphere() -> None:
         "bonds",
         "roles",
         "arms",
+        "calls",
         "weather",
         "observers",
         "director",

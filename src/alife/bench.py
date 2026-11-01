@@ -39,6 +39,10 @@ bool, None, lists and dicts only); ``format_report`` renders it for a terminal.
 - **Comm** (``comm_arm``, C1, DESIGN §39): the step with the voice channel on (the hear pass, the wider brain,
   the voice due) against the same config with it off, the same (off, on, on, off) blocks; the trajectories
   differ by construction. The gate of the comm spec (§5): within 8 % of the fused step on 64k3d.
+- **Calls** (``calls_arm``, K1, DESIGN §47): the step with the event windows and the gate on (the window
+  update at the survivor stage, the gated voice) against the same config with ``calls`` off but the same
+  ``comm``, the same (off, on, on, off) blocks; the trajectories differ by construction (a closed channel is
+  silent). The spec's estimate (§47.7): a few tenths of a millisecond at most; K2 adds the far-hearing pass.
 - **Niche** (``niche_arm``, F1, DESIGN §41): the step with farming on (the soil bonus inside the regrowth
   clip, the dithered soil update, the farm sensor and output) against the same config with it off, the same
   (off, on, on, off) blocks; the trajectories differ by construction.
@@ -72,6 +76,7 @@ from alife import (
     arms,
     bonds,
     brain,
+    calls,
     ext,
     fields,
     invariants,
@@ -92,6 +97,7 @@ from alife.config import (
     BRAIN_IMPLS,
     WEIGHT_DTYPES,
     ArmsConfig,
+    CallsConfig,
     CommConfig,
     Config,
     ConfigError,
@@ -182,6 +188,7 @@ def run_bench(
     bonds_arm: bool = False,
     comm_arm: bool = False,
     niche_arm: bool = False,
+    calls_arm: bool = False,
 ) -> dict[str, Any]:
     """Run the benchmark suite and return a JSON-compatible report.
 
@@ -213,6 +220,10 @@ def run_bench(
         raise ConfigError("bench --comm needs comm.enabled = true (for example --overlay comm)")
     if niche_arm and not cfg.niche.farm:
         raise ConfigError("bench --niche needs niche.farm = true (for example --overlay niche)")
+    if calls_arm and not cfg.calls.enabled:
+        raise ConfigError(
+            "bench --calls needs calls.enabled = true (for example --overlay comm --overlay calls)"
+        )
     if structures and not cfg.structures.enabled:
         raise ConfigError("bench --structures needs structures.enabled = true (for example --overlay build)")
     if weather_pairs < 1:
@@ -259,6 +270,11 @@ def run_bench(
         report["comm"] = {
             **_bench_weather(cfg, steps, warmup, weather_pairs, off=replace(cfg, comm=CommConfig())),
             "comm_config": dataclasses.asdict(cfg.comm),
+        }
+    if calls_arm:
+        report["calls"] = {
+            **_bench_weather(cfg, steps, warmup, weather_pairs, off=replace(cfg, calls=CallsConfig())),
+            "calls_config": dataclasses.asdict(cfg.calls),
         }
     return report
 
@@ -1013,7 +1029,13 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         return out if dm is None else (out, dm)
 
     def reproduce(
-        s: State, it: _Interact, h_new: mx.array, moved: tuple[mx.array, ...], a: mx.array, ks: mx.array
+        s: State,
+        it: _Interact,
+        h_new: mx.array,
+        moved: tuple[mx.array, ...],
+        a: mx.array,
+        ks: mx.array,
+        wind: wthr.AgentForce | None,
     ) -> tuple[tuple[mx.array, ...], lifecycle.Repro]:
         dt, sv, act = it.dt, it.dt.survivor, it.act
         pos, vel, h3 = moved[:3]  # IntegratedS has hdg third and heading fourth
@@ -1040,6 +1062,8 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
             s1 = s1._replace(hdg=moved.hdg)
         if it.bupd is not None:  # static: bonds on
             s1 = s1._replace(**it.bupd)
+        if cfg.calls.trigger:  # static: the event windows on the survivor stage (mirror of step.step)
+            s1 = s1._replace(evt=calls.windows(s, s1, sv, wind, cfg))
         req = sv & act.reproduce & (dt.energy >= cfg.repro.min_energy) & (a >= cfg.repro.min_age)
         imm_request = s.env_imm_request if cfg.director.enabled else None  # static
         lanes = lifecycle.allocate_lanes(req, sv, ks[Stream.BIRTH_PRIO], cfg, s.step, imm_request=imm_request)
@@ -1154,7 +1178,7 @@ class _StagedStep:
         st_on = self.cfg.structures.enabled  # static
         moved = self._run("physics", s, it.act, nbr, it.dt, it.mo, se.grounded, wind, se.sn)
         moved, dm = moved if st_on else (moved, None)
-        (parent, slot, kind, counts), rp = self._run("reproduce", s, it, h_new, moved, se.age, ks)
+        (parent, slot, kind, counts), rp = self._run("reproduce", s, it, h_new, moved, se.age, ks, wind)
         lanes = lifecycle.Lanes(parent, slot, kind, counts[0], counts[1], counts[2])
         wx2, rain, weather_bad = self._run("weather", s, ks, wind) if wthr_on else (None, None, None)
         chem, resource, regen_inc, patch_pos, *mat_out = self._run(

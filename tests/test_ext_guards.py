@@ -71,6 +71,15 @@ FROZEN_OMITTED_DEFAULTS = {
     ("comm", "kin_exp"): 0.0,
     ("comm", "cost"): 4.0,
     ("comm", "control"): "none",
+    ("calls", "enabled"): False,  # event-triggered calls (DESIGN §47, step K1)
+    ("calls", "trigger"): False,
+    ("calls", "events"): 15,
+    ("calls", "hold"): 4,
+    ("calls", "food_q"): 200,
+    ("calls", "storm_frac"): 1.0,
+    ("calls", "far_range"): 0.0,
+    ("calls", "far_xref"): 1.0,
+    ("calls", "control"): "none",
     (
         "arms",
         "dump_n",

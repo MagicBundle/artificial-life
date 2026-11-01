@@ -77,6 +77,14 @@ SPECS: dict[str, Spec] = {
         feature="bonds",
     ),
     "arms": Spec(overrides=ARMS, counter="ARMS_YIELD_SUM", field="arms", feature="arms"),
+    "calls": Spec(  # event-triggered calls (DESIGN §47, step K1): two channels, hurt and food, no weather
+        overlays=("comm",),
+        overrides=("comm.width=2", "calls.enabled=true", "calls.trigger=true", "calls.events=3"),
+        bias=(("OUT_ATTACK", 1.0), ("OUT_HARVEST", 2.0), ("OUT_VOICE", 2.0)),
+        counter="CALLS_OPEN_HURT",
+        field="evt",
+        feature="calls",
+    ),
     "all": Spec(
         overlays=("build", "niche3d", "comm", "bonds"),
         overrides=(*ARMS, "structures.open_frac=0.02", "niche.silent_init=false"),

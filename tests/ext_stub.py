@@ -21,7 +21,10 @@ from alife.config import Config, dims
 from alife.ext.base import Block, ExtSpec, FieldSpec
 
 PREFIX = "stub:"
-ALL = ext.EXTENSIONS
+# The five features the stub mirrors, in ``EXTENSIONS`` order. The real registry has a sixth, ``calls``
+# (DESIGN §47), which has no brain footprint: its state field, counters, gate and migration are tested in
+# the ``test_calls_*`` files against the real row.
+ALL = ("arms", "structures", "bonds", "comm", "niche")
 WITHOUT_ARMS = ("structures", "bonds", "comm", "niche")  # arms' descriptor column is not wired into sensing
 
 

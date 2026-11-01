@@ -12,6 +12,9 @@ the action due through ``extra_due``, so it is booked in ``HEAT_ACTION`` and the
 new term. The two engine controls ``comm.control = deaf | decoy`` change only what the listeners hear (integer
 arithmetic and the comm hash salt, no RNG stream): costs, speaking and motion stay on the same code path.
 
+With ``calls.trigger`` (DESIGN §47) each channel belongs to one event and is gated by that event's window
+(``gate_of``): a closed channel is silent and costs nothing. Nothing else of this module changes.
+
 Only ``rng.HASH_SALTS["comm"]`` is used here (E18): the dither and the decoy shift are hashes of it.
 """
 
@@ -55,11 +58,20 @@ def dither(uid: mx.array, step: mx.array) -> mx.array:
     return mx.right_shift(h, mx.array(8, dtype=mx.uint32)).astype(_F32) * (1.0 / (1 << 24))
 
 
-def sig_of(y: mx.array, cfg: Config) -> mx.array:
-    """``max(tanh(y[OUT_VOICE:+W]), 0)`` clipped below 1: the call intensities (N, W), not masked."""
+def sig_of(y: mx.array, cfg: Config, gate: mx.array | None = None) -> mx.array:
+    """``max(tanh(y[OUT_VOICE:+W]), 0)`` clipped below 1: the call intensities (N, W), not masked. With a
+    ``gate`` ((N, W) bool, the open event windows of ``calls.trigger``, DESIGN §47.2) a closed channel is
+    exactly 0: silent and free (edge case K1)."""
     d = dims(cfg)
     o = d.lay.OUT_VOICE
-    return mx.clip(mx.tanh(y[:, o : o + d.voice_w]), 0.0, SIG_MAX)
+    sig = mx.clip(mx.tanh(y[:, o : o + d.voice_w]), 0.0, SIG_MAX)
+    return sig if gate is None else mx.where(gate, sig, 0.0)
+
+
+def gate_of(s: Any, cfg: Config) -> mx.array | None:
+    """The calls gate of the step that starts from ``s``: the open windows ``s.evt > 0`` (N, W) with
+    ``calls.trigger``, else None (the traced graph is then exactly the ungated one)."""
+    return (s.evt > 0) if cfg.calls.trigger else None  # static
 
 
 def due_of(uid: mx.array, step: mx.array, sig: mx.array, cfg: Config) -> mx.array:
@@ -72,7 +84,7 @@ def due_of(uid: mx.array, step: mx.array, sig: mx.array, cfg: Config) -> mx.arra
 def decode(s: Any, y: mx.array, ctx: Any, cfg: Config) -> Voice:
     """The registry ``decode`` hook (S7): the calls of the alive rows and their dues."""
     alive = s.alive
-    sig = mx.where(alive[:, None], sig_of(y, cfg), 0.0)
+    sig = mx.where(alive[:, None], sig_of(y, cfg, gate_of(s, cfg)), 0.0)
     due = mx.where(alive, due_of(s.uid, s.step, sig, cfg), 0).astype(_I32)
     return Voice(sig, due)
 
@@ -89,7 +101,7 @@ def due(s: Any, act: Any, y: mx.array, cfg: Config) -> mx.array | None:
     ``HEAT_ACTION`` with the other action costs."""
     if cfg.comm.cost == 0.0:  # static
         return None
-    sig = mx.where(s.alive[:, None], sig_of(y, cfg), 0.0)
+    sig = mx.where(s.alive[:, None], sig_of(y, cfg, gate_of(s, cfg)), 0.0)
     return mx.where(s.alive, due_of(s.uid, s.step, sig, cfg), 0).astype(_I32)
 
 

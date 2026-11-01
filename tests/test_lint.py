@@ -28,6 +28,7 @@ SIM_MODULES = {
     "brain",
     "actions",
     "bonds",
+    "calls",  # the event windows and the gate of the voice (§47): pure MLX
     "physics",
     "energy",
     "lifecycle",

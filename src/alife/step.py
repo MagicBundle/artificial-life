@@ -19,6 +19,7 @@ from alife import (
     arms,
     bonds,
     brain,
+    calls,
     comm,
     ext,
     fields,
@@ -108,6 +109,7 @@ class ExtActs(NamedTuple):
     bonds: NamedTuple | None = None
     comm: NamedTuple | None = None
     niche: NamedTuple | None = None
+    calls: NamedTuple | None = None
 
 
 class ExtFlows(NamedTuple):
@@ -119,6 +121,7 @@ class ExtFlows(NamedTuple):
     bonds: NamedTuple | None = None
     comm: NamedTuple | None = None
     niche: NamedTuple | None = None
+    calls: NamedTuple | None = None
 
 
 class Acts(NamedTuple):
@@ -389,6 +392,8 @@ def step(
         )
         s1 = s1._replace(**upd)
         xdec = {**xdec, "bonds": bflows}
+    if cfg.calls.trigger:  # static: the event windows of the next step, on the survivor stage (DESIGN §47.2)
+        s1 = s1._replace(evt=calls.windows(s, s1, sv, wind if wthr else None, cfg))
 
     req = sv & act.reproduce & (dt.energy >= cfg.repro.min_energy) & (a >= cfg.repro.min_age)  # S16
     imm_request = env.imm_request if env is not None else None
@@ -536,6 +541,7 @@ def _acts(
                     if isinstance(f.ext.comm, comm.Voice) and f.ext.comm.heard is not None
                     else None,
                 ),
+                ("calls", calls.acts_of(f.ext.calls) if isinstance(f.ext.calls, calls.CallFlows) else None),
             )
             if sub is not None
         }

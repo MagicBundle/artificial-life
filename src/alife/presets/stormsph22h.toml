@@ -1,0 +1,24 @@
+# stormsph22h overlay: `stormsph22` with a hazard dial for the calls experiment (DESIGN section 47.6; docs: the calls spec 5.2).
+# A WORLD overlay for the `mini3s` planet, like `stormsph22`, whose weather it repeats key for key (the pools, `f0`,
+# `seed_rate`, `rain_gain`, `storm_p`, `storm_span`): the weather, and so the S4c storm statistics (2.9 / 3.0 named storms,
+# lifetimes above 3 000), are unchanged. Only `storm_u0` differs, and `storm_u0` is read by nothing but the hazard
+# mask (`lifecycle.storm_mask`), the validators and the exposure metric, never by the weather itself.
+#
+# Why. At `stormsph22`'s `storm_u0` 0.095 the storm kills 0.07 to 0.4 % of what kills an agent (0.02 % measured), so no
+# warning could pay for itself. The experiment's world makes the storm a real hazard, on purpose and knowingly (about a
+# thousand times more lethal than the shipped sphere worlds and the box's `storm160`, whose agent exposure is 6e-6 to
+# 9e-6; the box is not a precedent). The value below is a PLACEHOLDER: the pilot (P1, a sweep over 0.095, 0.075, 0.06,
+# 0.05 and a hazard-off control with `storm_p = 0`) picks the dial inside the bound "storm deaths 3 to 10 % of all deaths
+# among evolved agents" and this file is edited to the chosen value (a recorded amendment of the pre-registration).
+#
+# A world overlay that names a planet: it fails validation on a planet other than `mini3s`, as `stormsph22` does.
+[weather]
+enabled = true
+cells = 22
+f0 = 0.025
+seed_rate = 0.04
+pools = [50.265482, 33.510322, 24.0, 16.0, 1.0, -0.0048, 0.0, 150.796447, 33.510322, 24.0, 16.0, 1.0, -0.0048, 0.0, 251.327412, 33.510322, 24.0, 16.0, 1.0, -0.0048, 0.0, 0.0, -33.510322, 24.0, 16.0, 1.0, -0.0048, 0.0, 100.530965, -33.510322, 24.0, 16.0, 1.0, -0.0048, 0.0, 201.06193, -33.510322, 24.0, 16.0, 1.0, -0.0048, 0.0]
+rain_gain = 26000.0
+storm_p = 0.002
+storm_u0 = 0.06  # PLACEHOLDER (pilot P1 chooses; stormsph22 has 0.095)
+storm_span = 0.03

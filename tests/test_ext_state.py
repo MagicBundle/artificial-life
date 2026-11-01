@@ -29,7 +29,7 @@ from alife.state import (
 from alife.step import make_step
 
 BASE = {2: State._fields, 3: State3._fields}
-SUBSETS = [c for r in range(6) for c in itertools.combinations(ext.EXTENSIONS, r)]
+SUBSETS = [c for r in range(6) for c in itertools.combinations(stub.ALL, r)]
 
 
 @pytest.fixture(autouse=True)
@@ -72,7 +72,7 @@ def test_state_type_for_every_subset(nd: int, names: tuple[str, ...]) -> None:
 
 @pytest.mark.parametrize("nd", [2, 3])
 def test_init_round_trip_and_fill(nd: int) -> None:
-    cfg = _cfg(nd, ext.EXTENSIONS)
+    cfg = _cfg(nd, stub.ALL)
     s = init_state(cfg)
     assert isinstance(s, tuple) and type(s) is state_cls(cfg) and is_3d_state(s) == (nd == 3)
     want = expected_layout(cfg)

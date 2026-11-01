@@ -176,6 +176,19 @@ their helpers (eager; the compiled step is in `tests/test_sphere_features_compil
 
 **S4c (the calibration of the weather, DESIGN §46.6) makes the storms of a planet meet the criteria of STORMS_W0**: `python -m alife.analysis.w0_sphere run|sweep|table` is the W0-style study of the sphere's weather alone (named-storm counts per hemisphere, Kaplan-Meier lifetimes, tracks, spin-up lengths, the exposure of the storms to the grid's vertices, seams and poles; `sweep` runs a JSON list of candidates in parallel workers, the GPU being the limit) and `alife.analysis.w0_sphere_wind` the wind-coupling experiment. **The overlays are calibrated** (named storms 2 to 6 per hemisphere at 90 % of the ticks or more, lifetime above 3 000; the numbers are in §46.6): `stormsph` three `40 x 20` pools per hemisphere with `seed_rate` 0.05 (living storms: 0.9 to 1.8 deaths per 10 000 steps; 0.02 was a frozen world), `stormsph22` the 24 x 16 pools with `seed_rate` 0.04, `stormsph16` `18 x 12` pools with `seed_rate` 0.0032; `rain_gain` 52 000 / 26 000 / 4 400 and `storm_u0` 0.09 / 0.095 / 0.06 are set against the box's early weather. The window of the small planets is narrow (the slow gates in `test_sphere_presets_slow.py` guard it). **The agents' wind is `α·dt·u`** (S4b had `α·u`: the drift of a free agent on a weather sphere is 21 % smaller at `Nw` 42; the CPU and Metal digests of `tiny3s` with the weather were re-pinned); **the launcher's spin-up is per planet** (`weather_spinup.SPHERE_SPINUP` and `PlanetSpec.sphereSpinups`: 15 000, 10 000, 8 000 steps) and a repeated launch reads a cached spun-up state (`~/.cache/alife/weather_spinup/`, off with `ALIFE_SPINUP_CACHE=0`). To reproduce a calibration run: `uv run python -m alife.analysis.w0_sphere run --preset 64k3s --overlay stormsph --steps 100000 --spinup 20000 --seed 0 --out /tmp/k3s_s0` (about 6 minutes on a quiet GPU; `--pools '{"per_hemisphere":3,"sx":40,"sy":20}'` replaces the overlay's pools, `--set weather.seed_rate=0.04` any key). Next: `docs/RESULTS_SPHERE.md` (the first long runs, S7b), the owner's look at the storms of a planet (the hazard values are the early-run calibration), the stability bound re-run if a damping key is ever touched.
 
+## Event-triggered calls (DESIGN §47, row I7y; K1 built)
+
+The `calls` extension (`ext/calls.py`, `src/alife/calls.py`) gates the voice of `comm` with per-event windows: with
+`calls.trigger`, voice channel c belongs to the c-th active event of `calls.events` (bits 1 hurt, 2 food, 4 storm, 8 lost;
+`comm.width` must equal their number) and a row can call on it only while `State.evt[:, c] > 0`. Levels are computed on the
+survivor stage (S15, `s1` with `& sv`), the window update is `where(evt > 0, evt - 1, 0)` (uint8 wraps). No brain footprint,
+no ledger term, cost through `comm.due`. The pilot world is `--preset mini3s --overlay stormsph22h --overlay comm --overlay
+calls` (the `stormsph22h` dial is a **placeholder 0.06**; the pilot chooses). `alife bench --calls`, `alife migrate RUN --enable
+calls [--set calls.trigger=true --set calls.events=5]`. **Built: K1. Next: K2** (the column voice grid `calltab.py`, `hear_far`,
+`voice_far`/`far_bearing` inputs, `calls.control` = `nofar`/`reflex`/`reflex_near`, `CALLS_FAR_HEARD`, `sphere_check` or runtime
+arrays for `fcell % Ncol`), then the pilot K5, M1, K3, K4. `far_range > 0` and `control != none` are refused until K2. Tests:
+`tests/test_calls_*.py`.
+
 ## How to run
 
 ```bash

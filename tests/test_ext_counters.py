@@ -43,9 +43,9 @@ def test_base_counter_indices_do_not_move() -> None:
 
 
 def test_blocks_follow_the_documented_order_and_names_are_unique() -> None:
-    cfg = _cfg(2, ext.EXTENSIONS, "weather.enabled=true", "world.size=320", "weather.u_max=0.2")
+    cfg = _cfg(2, stub.ALL, "weather.enabled=true", "world.size=320", "weather.u_max=0.2")
     blocks = counter_blocks(cfg)
-    assert [b for b, _ in blocks] == list(ext.EXTENSIONS)  # protect absent at floor 0
+    assert [b for b, _ in blocks] == list(stub.ALL)  # protect absent at floor 0
     cfg_p = apply_overrides(cfg, ["combat.protect_floor=0.1"])
     names = [n for _, ns in counter_blocks(cfg_p) for n in ns]
     assert (
@@ -116,5 +116,5 @@ def test_observer_channel_flags_are_uint16_and_inert(nd: int) -> None:
         assert acts.ext is None
         flags = np.array(acts.flags).astype(np.int64)
         assert flags.max() < 128  # no extension bit is set by PR 0a
-    assert ExtFlows()._fields == ExtActs()._fields == ext.EXTENSIONS
+    assert ExtFlows()._fields == ExtActs()._fields == ext.EXTENSIONS == (*stub.ALL, "calls")
     assert (ActFlag.KILLED | ActFlag.FARMING).value == 64 + 2048

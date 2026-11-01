@@ -428,6 +428,24 @@ class NicheConfig:  # niche construction, farming only (DESIGN §41); marks and 
 
 
 @dataclass(frozen=True)
+class CallsConfig:  # event-triggered calls and far hearing (DESIGN §47); post v0.1
+    """Every key changes the compiled step, so every key is hashed (``POST_V01_KEYS`` through
+    ``ext.calls.SPEC.lever_keys``) and is inert at its default while ``enabled`` is false (``validate``).
+    ``trigger`` gives each voice channel an event window that gates it (step K1); ``far_range`` is the far
+    hearing of step K2 (refused until it is built)."""
+
+    enabled: bool = False  # static: the calls feature (requires comm.enabled)
+    trigger: bool = False  # static: the event windows ``State.evt`` gate the voice (K1)
+    events: int = 15  # bit mask of the events: 1 hurt, 2 food, 4 storm, 8 lost; comm.width = popcount
+    hold: int = 4  # steps a window stays open after its level ends, [0, 64]
+    food_q: int = 200  # the `food` level: quanta harvested in one step, [1, energy.harvest_max]
+    storm_frac: float = 1.0  # the `storm` level: air speed >= storm_frac * weather.storm_u0, (0, 2]
+    far_range: float = 0.0  # far hearing reach (step K2); 0 = off
+    far_xref: float = 1.0  # gain of the far intensity 1 - exp(-x / far_xref) (step K2)
+    control: str = "none"  # start-of-run oracle/ablation: none | nofar | reflex | reflex_near (step K2)
+
+
+@dataclass(frozen=True)
 class Config:
     world: WorldConfig = field(default_factory=WorldConfig)
     population: PopulationConfig = field(default_factory=PopulationConfig)
@@ -448,6 +466,7 @@ class Config:
     roles: RolesConfig = field(default_factory=RolesConfig)
     comm: CommConfig = field(default_factory=CommConfig)
     niche: NicheConfig = field(default_factory=NicheConfig)
+    calls: CallsConfig = field(default_factory=CallsConfig)
     run: RunConfig = field(default_factory=RunConfig)
 
 
@@ -538,6 +557,7 @@ WORLD_OVERLAYS: tuple[str, ...] = (
     "stormsph",  # the weather layer of a sphere world (DESIGN §46.6), made for the 64k3s planet
     "stormsph16",  # the same for the tiny3s planet (Nw 16, narrower pools; DESIGN §46.8), provisional
     "stormsph22",  # the same for the mini3s planet (Nw 22; DESIGN §46.9), provisional
+    "stormsph22h",  # stormsph22 with a hazard dial for the calls experiment (DESIGN §47.6), provisional
 )
 ALL_OVERLAYS: tuple[str, ...] = OVERLAYS + WORLD_OVERLAYS  # what the loaders and the CLI accept
 DEFAULT_PRESET: Final = "64k"
@@ -1085,13 +1105,14 @@ SPHERE_FEATURE_PR: Final[Mapping[str, str]] = {
     "bonds": "S3",
     "comm": "S3",
     "niche": "S3",
+    "calls": "K1",
     "roles": "S3",
     "weather": "S4",
     "director": "S5",
     "observers": "S5",
 }
 SPHERE_READY: frozenset[str] = frozenset(
-    {"structures", "niche", "comm", "bonds", "roles", "arms", "weather", "observers", "director"}
+    {"structures", "niche", "comm", "bonds", "roles", "arms", "calls", "weather", "observers", "director"}
 )
 
 
