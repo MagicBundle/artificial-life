@@ -4,6 +4,13 @@ import Testing
 @testable import AlifeCore
 
 /// The scan behind the world library: what it reads, what it remembers, what it leaves alone (docs/APP.md §5.3).
+final class Asked: @unchecked Sendable {
+    private let lock = NSLock()
+    private var names: [String] = []
+    func add(_ name: String) { lock.lock(); names.append(name); lock.unlock() }
+    var all: [String] { lock.lock(); defer { lock.unlock() }; return names.sorted() }
+}
+
 @Suite struct LibraryScannerTests {
     private func runs(_ scratch: ScratchDirectory) throws -> URL {
         let runs = scratch.url.appendingPathComponent("runs")
@@ -16,7 +23,7 @@ import Testing
         defer { scratch.cleanup() }
         let runs = try runs(scratch)
         try LibraryFixture.many(runs, count: 40)
-        let scanner = LibraryScanner()
+        let scanner = LibraryScanner(settle: 0)
         let first = scanner.scan(runsDirectory: runs)
         #expect(scanner.lastStats.listed == 40 && scanner.lastStats.read == 40 && scanner.lastStats.reused == 0)
         let second = scanner.scan(runsDirectory: runs)
@@ -30,7 +37,7 @@ import Testing
         let runs = try runs(scratch)
         let dir = try LibraryFixture.research(runs, "r1", steps: [100])
         try LibraryFixture.research(runs, "r2", steps: [100])
-        let scanner = LibraryScanner()
+        let scanner = LibraryScanner(settle: 0)
         _ = scanner.scan(runsDirectory: runs)
         // a new save point (the run directory itself is not touched, its checkpoints/ is)
         try LibraryFixture.write("x", "checkpoints/step_0000000200.safetensors", in: dir)
@@ -49,7 +56,7 @@ import Testing
         let runs = try runs(scratch)
         let gone = try LibraryFixture.research(runs, "gone")
         try LibraryFixture.research(runs, "stays")
-        let scanner = LibraryScanner()
+        let scanner = LibraryScanner(settle: 0)
         #expect(scanner.scan(runsDirectory: runs).records.map(\.name) == ["gone", "stays"])
         try FileManager.default.removeItem(at: gone)
         let after = scanner.scan(runsDirectory: runs)
@@ -91,7 +98,7 @@ import Testing
         try LibraryFixture.write("x", "notes.txt", in: runs)
         try LibraryFixture.write("x", ".DS_Store", in: runs)
         try FileManager.default.createDirectory(at: runs.appendingPathComponent(".hidden"), withIntermediateDirectories: true)
-        let scanner = LibraryScanner()
+        let scanner = LibraryScanner(settle: 0)
         #expect(scanner.scan(runsDirectory: runs).records.isEmpty)
         #expect(scanner.scan(runsDirectory: scratch.url.appendingPathComponent("nope")).records.isEmpty)
     }
@@ -127,16 +134,34 @@ import Testing
         let runs = try runs(scratch)
         try LibraryFixture.played(runs, "w")
         try LibraryFixture.research(runs, "r")
-        let scanner = LibraryScanner()
+        let scanner = LibraryScanner(settle: 0)
         let scanned = scanner.scan(runsDirectory: runs)
         #expect(scanned.held.isEmpty)
-        var asked: [String] = []
+        let asked = Asked()
         let held = scanner.probe(scanned, runsDirectory: runs) { url in
-            asked.append(url.lastPathComponent)
+            asked.add(url.lastPathComponent)
             return url.lastPathComponent == "w"
         }
-        #expect(held.held == ["w"] && asked == ["w"], "only played worlds and builds are asked; a research run has no lock")
+        #expect(held.held == ["w"] && asked.all == ["w"], "only played worlds and builds are asked; a research run has no lock")
         #expect(scanner.probe(scanned, runsDirectory: runs, lockHeld: { _ in false }).held.isEmpty)
+    }
+
+    @Test func theLockOfABuildIsProbedSoThatABuildInProgressIsNotCalledUnfinished() throws {
+        let scratch = try ScratchDirectory()
+        defer { scratch.cleanup() }
+        let runs = try runs(scratch)
+        try LibraryFixture.unfinished(runs, "building", steps: [])
+        try LibraryFixture.unfinished(runs, "stopped", steps: [])
+        let asked = Asked()
+        let scanner = LibraryScanner(settle: 0)
+        let probed = scanner.probe(scanner.scan(runsDirectory: runs), runsDirectory: runs) { url in
+            asked.add(url.lastPathComponent)
+            return url.lastPathComponent == "building"
+        }
+        #expect(asked.all == ["building", "stopped"], "a directory that looks like a stopped build is asked whether `alife play` still holds it")
+        #expect(probed.held == ["building"])
+        let state = LibraryState.resolve(probed)
+        #expect(state.unfinished.map(\.name) == ["stopped"], "the held one is being made, not unfinished")
     }
 
     @Test func aResearchRunWrittenAMomentAgoByAnotherProcessIsInUse() throws {
@@ -150,8 +175,8 @@ import Testing
         let done = try LibraryFixture.research(runs, "done", status: "done")
         try LibraryFixture.write("{}", "metrics.jsonl", in: done)
         let now = Date()
-        try LibraryFixture.setModified(idle.appendingPathComponent("metrics.jsonl"), now.addingTimeInterval(-600))
-        let scanner = LibraryScanner()
+        try LibraryFixture.setAge(idle, all: 600, now: now)
+        let scanner = LibraryScanner(settle: 0)
         let probed = scanner.probe(scanner.scan(runsDirectory: runs), runsDirectory: runs, now: now, lockHeld: { _ in false })
         #expect(probed.writtenElsewhere == ["busy"], "a finished run, or one not written for minutes, is not in use")
     }

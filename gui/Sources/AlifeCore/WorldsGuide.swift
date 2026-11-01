@@ -22,9 +22,12 @@ package enum WorldsGuide {
         package var openWorldIsStarting: Bool
         /// Directory names that were asked to stop and are still saving.
         package var saving: Set<String>
+        /// The directory the Lab's run is writing (`alife run` or `alife resume`), nil when none is: a world is never played over it.
+        package var growing: String?
 
         package init(folderExists: Bool, folderProblem: String? = nil, engineReady: Bool, catalog: PlayCatalog = PlayCatalog(),
-                     openWorld: String? = nil, openWorldIsStarting: Bool = false, saving: Set<String> = []) {
+                     openWorld: String? = nil, openWorldIsStarting: Bool = false, saving: Set<String> = [], growing: String? = nil) {
+            self.growing = growing
             self.folderExists = folderExists
             self.folderProblem = folderProblem
             self.engineReady = engineReady
@@ -69,6 +72,7 @@ package enum WorldsGuide {
     package static func reason(forPlaying world: PlayWorld, in facts: Facts) -> String? {
         if let open = facts.openWorld { return open == world.name ? "Open now" : "Close \(open) first" }
         if facts.saving.contains(world.name) { return "Saving..." }
+        if facts.growing == world.name { return "Growing in the Lab" }
         if world.locked { return WorldState.inUseElsewhere.title }
         if world.newestStep == nil { return "No save point" }
         return nil
@@ -160,11 +164,13 @@ package enum WorldsGuide {
     }
 
     /// Why *Make again with a new name* is unavailable for an unfinished build; nil when it can be done. `source` is the world it was made
-    /// from (from `meta.json`, or from this session's own request) and `sourceHasSavePoint` says whether that world is still here with a save
-    /// point: the new planet is made from one.
-    package static func reasonToMakeAgain(source: String?, sourceHasSavePoint: Bool, in facts: Facts) -> String? {
+    /// from (from `meta.json`, or from this session's own request), `sourceStep` the save point it was made from when that is known, and
+    /// `sourceSteps` the save points that world has now (nil: it is not here). The new planet is made from that save point, never from another
+    /// one without saying so.
+    package static func reasonToMakeAgain(source: String?, sourceStep: Int? = nil, sourceSteps: [Int]?, in facts: Facts) -> String? {
         guard let source else { return "It does not say which world it was made from." }
-        if !sourceHasSavePoint { return "\(source) is no longer here with a save point." }
+        guard let sourceSteps, !sourceSteps.isEmpty else { return "\(source) is no longer here with a save point." }
+        if let sourceStep, !sourceSteps.contains(sourceStep) { return "Step \(grouped(sourceStep)) of \(source) is no longer there." }
         return reasonToMakePlanet(facts)
     }
 
@@ -176,7 +182,7 @@ package enum WorldsGuide {
         case .all: return "There is no world in this folder yet."
         case .played: return "No played worlds yet. Choose a research world and press Make planet… to make one."
         case .research: return "No research worlds yet. A research world is grown in the Lab."
-        case .unfinished: return counts.unfinished == 0 ? "No unfinished builds. Every planet that was started finished." : ""
+        case .unfinished: return counts.unfinished == 0 ? "No unfinished builds found." : ""
         }
     }
 }

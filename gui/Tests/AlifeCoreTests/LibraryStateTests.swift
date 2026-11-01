@@ -22,17 +22,18 @@ import Testing
             directoryModified: date, lastSaved: date, hasContent: content, looksUnfinished: unfinished, buildMark: mark)
     }
 
-    private func snapshot(_ records: [LibraryRecord], held: Set<String> = [], written: Set<String> = []) -> LibrarySnapshot {
+    private func snapshot(_ records: [LibraryRecord], held: Set<String> = [], written: Set<String> = [], cutOff: Set<String> = []) -> LibrarySnapshot {
         var s = LibrarySnapshot()
         s.records = records
         s.held = held
         s.writtenElsewhere = written
+        s.cutOff = cutOff
         return s
     }
 
     private func state(_ records: [LibraryRecord], live: LiveFacts = LiveFacts(), held: Set<String> = [], written: Set<String> = [],
-                       notes: [String: String] = [:]) -> LibraryState {
-        LibraryState.resolve(snapshot(records, held: held, written: written), live: live, notes: notes)
+                       cutOff: Set<String> = [], notes: [String: String] = [:]) -> LibraryState {
+        LibraryState.resolve(snapshot(records, held: held, written: written, cutOff: cutOff), live: live, notes: notes)
     }
 
     // MARK: Kind and shape
@@ -93,7 +94,8 @@ import Testing
                        record("e", status: "interrupted")])
         #expect(s.row(named: "a")?.note == "Every organism died out.")
         #expect(s.row(named: "b")?.note == "Stopped by an error check.")
-        #expect(s.row(named: "c")?.note == "Cut off without a clean stop.")
+        #expect(s.row(named: "c")?.note == nil, "running with no word of when it last moved is not called cut off")
+        #expect(state([record("c", status: "running")], cutOff: ["c"]).row(named: "c")?.note == "Cut off without a clean stop.")
         #expect(s.row(named: "d")?.note == nil && s.row(named: "e")?.note == nil)
         // only a world that is just saved has an ending to tell
         #expect(state([record("a", status: "extinct")], written: ["a"]).row(named: "a")?.note == nil)
@@ -236,9 +238,13 @@ import Testing
     @Test func makingABuildAgainSaysWhyNot() {
         let s = state([record("seed")])
         let facts = WorldsGuide.Facts(folderExists: true, engineReady: true, catalog: s.catalog)
-        #expect(WorldsGuide.reasonToMakeAgain(source: "seed", sourceHasSavePoint: true, in: facts) == nil)
-        #expect(WorldsGuide.reasonToMakeAgain(source: nil, sourceHasSavePoint: false, in: facts) == "It does not say which world it was made from.")
-        #expect(WorldsGuide.reasonToMakeAgain(source: "seed", sourceHasSavePoint: false, in: facts) == "seed is no longer here with a save point.")
+        #expect(WorldsGuide.reasonToMakeAgain(source: "seed", sourceSteps: [100], in: facts) == nil)
+        #expect(WorldsGuide.reasonToMakeAgain(source: "seed", sourceStep: 100, sourceSteps: [100], in: facts) == nil)
+        #expect(WorldsGuide.reasonToMakeAgain(source: nil, sourceSteps: nil, in: facts) == "It does not say which world it was made from.")
+        #expect(WorldsGuide.reasonToMakeAgain(source: "seed", sourceSteps: nil, in: facts) == "seed is no longer here with a save point.")
+        #expect(WorldsGuide.reasonToMakeAgain(source: "seed", sourceSteps: [], in: facts) == "seed is no longer here with a save point.")
+        #expect(WorldsGuide.reasonToMakeAgain(source: "seed", sourceStep: 600, sourceSteps: [100], in: facts) == "Step 600 of seed is no longer there.",
+                "a save point that is gone is not silently replaced by the newest")
     }
 
     @Test func theSidebarLineIsTheStateOrWhenItWasSaved() {

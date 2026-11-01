@@ -27,15 +27,27 @@ enum LibraryFixture {
         try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
     }
 
+    /// Makes every sign of life of a world (`metrics.jsonl`, `checkpoints/`, `meta.json`, the directory itself) `seconds` old, or the given
+    /// age for one of them (`ages["metrics.jsonl"]`); files that do not exist are skipped.
+    static func setAge(_ dir: URL, all seconds: TimeInterval, ages: [String: TimeInterval] = [:], now: Date = Date()) throws {
+        for name in ["metrics.jsonl", "checkpoints", "meta.json", "config.json", "play.json", "events"] {
+            let url = dir.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: url.path) { try setModified(url, now.addingTimeInterval(-(ages[name] ?? seconds))) }
+        }
+        try setModified(dir, now.addingTimeInterval(-(ages[""] ?? seconds)))
+    }
+
     /// A research run with save points.
     @discardableResult
     static func research(_ runs: URL, _ name: String, steps: [Int] = [30_000], status: String = "done", sphere: Bool = true,
-                         dims: Int = 3, parent: String? = nil, events: Bool = true) throws -> URL {
+                         dims: Int = 3, parent: String? = nil, events: Bool = true, metricsEvery: Int? = nil) throws -> URL {
         let dir = runs.appendingPathComponent(name)
         var meta = #"{"status": "\#(status)", "start_step": 0"#
         if let parent { meta += #", "parent": "\#(parent)""# }
         try write(meta + "}", "meta.json", in: dir)
-        try write(config(sphere: sphere, dims: dims), "config.json", in: dir)
+        var cfg = config(sphere: sphere, dims: dims)
+        if let metricsEvery { cfg = String(cfg.dropLast()) + #", "run": {"metrics_every": \#(metricsEvery)}}"# }
+        try write(cfg, "config.json", in: dir)
         for step in steps { try write("x", "checkpoints/step_\(String(format: "%010d", step)).safetensors", in: dir) }
         if events { try write("{}", "events/chunk_0.json", in: dir) }
         return dir

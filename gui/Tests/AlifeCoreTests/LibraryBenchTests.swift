@@ -10,7 +10,7 @@ import Testing
     private static func ms(_ s: Double) -> String { String(format: "%.2f ms", s * 1000) }
 
     private static func measure(_ label: String, runs: URL, probeLocks: Bool) {
-        let scanner = LibraryScanner()
+        let scanner = LibraryScanner(settle: 0)
         var out = "[library bench] \(label): "
         let cold = scanner.scan(runsDirectory: runs)
         let c = scanner.lastStats
@@ -23,7 +23,9 @@ import Testing
         warm.sort()
         out += "; warm scan median \(ms(warm[10])) max \(ms(warm[19])) (reread \(scanner.lastStats.read))"
         let t0 = DispatchTime.now().uptimeNanoseconds
-        let probed = scanner.probe(cold, runsDirectory: runs, lockHeld: probeLocks ? { PlayLockProbe.isHeld(directory: $0) } : { _ in false })
+        let lock: @Sendable (URL) -> Bool
+        if probeLocks { lock = { PlayLockProbe.isHeld(directory: $0) } } else { lock = { _ in false } }
+        let probed = scanner.probe(cold, runsDirectory: runs, lockHeld: lock)
         let t1 = DispatchTime.now().uptimeNanoseconds
         let state = LibraryState.resolve(probed)
         let t2 = DispatchTime.now().uptimeNanoseconds
@@ -40,7 +42,7 @@ import Testing
         let runs = scratch.url.appendingPathComponent("runs")
         try FileManager.default.createDirectory(at: runs, withIntermediateDirectories: true)
         try LibraryFixture.many(runs, count: 240)
-        let scanner = LibraryScanner()
+        let scanner = LibraryScanner(settle: 0)
         _ = scanner.scan(runsDirectory: runs)
         #expect(scanner.lastStats.read == 240)
         _ = scanner.scan(runsDirectory: runs)

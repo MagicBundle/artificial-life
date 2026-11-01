@@ -133,4 +133,23 @@ import Testing
             #expect(!text.localizedCaseInsensitiveContains("checkpoint"), "\(text)")
         }
     }
+
+    @Test func theMessagesOfThePlanetSheetAreInThePagesWords() {
+        // the sheet shows what `PlanetSpec.validate` and `weatherObstacle` say, through `WorldsGuide.plain`
+        var spec = PlanetSpec(source: "", name: "")
+        var texts: [String] = []
+        func take() { texts += spec.validate(existing: ["taken"]).map(WorldsGuide.plain) }
+        take()
+        spec.source = "x"; spec.name = "bad name"; take()
+        spec.name = "taken"; spec.sourceStep = -1; take()
+        spec.sourceStep = nil; spec.storm = true; spec.weatherSpinup = 0; spec.sourceDims = 2; take()
+        spec.sourceDims = 3; spec.storm = false; spec.weatherSpinup = 4; take()
+        spec.director = .rules; spec.directorEnabled = false; spec.seed = -1; take()
+        texts.append(WorldsGuide.plain(PlanetSpec.weatherObstacle(dims: 2) ?? ""))
+        texts.append(WorldsGuide.plain(PlanetSpec.weatherObstacle(dims: 3, geometry: "sphere", shape: nil) ?? ""))
+        #expect(texts.count >= 10 && !texts.contains(""))
+        for text in texts {
+            for word in Self.banned + ["source", "checkpoint", "spin-up", "runs/", "director"] { #expect(!text.contains(word), "'\(word)' in \"\(text)\"") }
+        }
+    }
 }

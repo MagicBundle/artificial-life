@@ -191,6 +191,12 @@ package struct LibraryState: Equatable, Sendable {
     /// Entries of `runs/` that are links to a drive that is not connected.
     package var offline: [String] = []
     package var offlineVolumes: [String] = []
+    /// Entries that could not be listed for another reason (a broken or looping link, no permission, an error), by name.
+    package var problems: [String: EntryProblem] = [:]
+    /// Entries whose check did not finish in time, by name.
+    package var slow: [String] = []
+    /// The listing of `runs/` did not finish in time: this is the last known library.
+    package var listingSlow = false
 
     package init() {}
 
@@ -204,33 +210,45 @@ package struct LibraryState: Equatable, Sendable {
     // MARK: Resolving
 
     /// Merges a scan and what the app is doing. `notes` are what this session knows about builds that stopped (by directory name).
-    package static func resolve(_ snapshot: LibrarySnapshot, live: LiveFacts = LiveFacts(), notes: [String: String] = [:]) -> LibraryState {
+    /// `notes` are what this session knows of builds that stopped, by name, with `noteTimes` when each was made: a note is dropped when the
+    /// directory was touched after it (a later, different stop).
+    package static func resolve(
+        _ snapshot: LibrarySnapshot, live: LiveFacts = LiveFacts(), notes: [String: String] = [:], noteTimes: [String: Date] = [:]
+    ) -> LibraryState {
         var state = LibraryState()
         state.offline = snapshot.offline
         state.offlineVolumes = snapshot.offlineVolumes
+        state.problems = snapshot.problems.filter { if case .driveNotConnected = $0.value { false } else { true } }
+        state.slow = snapshot.slow.sorted()
+        state.listingSlow = snapshot.listingSlow
         var rows: [LibraryRow] = []
         for r in snapshot.records {
             let held = snapshot.held.contains(r.name)
+            let written = snapshot.writtenElsewhere.contains(r.name)
+            let cutOff = snapshot.cutOff.contains(r.name)
             var listed = false
             if r.isPlayed {
-                rows.append(row(r, kind: .played, state: stateOf(r, held: held, writtenElsewhere: false, live: live)))
+                rows.append(row(r, kind: .played, state: stateOf(r, held: held, writtenElsewhere: written, live: live), cutOff: cutOff))
+                // (`locked` is "in use by another process": the lock is held, or `alife resume` is writing the directory. `modified` is the
+                // last-saved date, the list's.)
                 state.catalog.worlds.append(PlayWorld(
-                    name: r.name, file: r.play!, newestStep: r.steps.last, status: r.status, modified: r.directoryModified, locked: held,
+                    name: r.name, file: r.play!, newestStep: r.steps.last, status: r.status, modified: r.lastSaved, locked: held || written,
                     geometry: r.geometry, planetRadius: r.planetRadius))
                 listed = true
             } else if r.looksUnfinished, !held {
-                state.unfinished.append(unfinishedRow(r, note: notes[r.name]))
+                var note = notes[r.name]
+                if let when = noteTimes[r.name], r.lastSaved.timeIntervalSince(when) > 5 { note = nil }
+                state.unfinished.append(unfinishedRow(r, note: note))
                 listed = true
             } else if !r.steps.isEmpty || live.growing == r.name, !(r.looksUnfinished && held) {
                 // A research world has a save point; the run this app is growing is listed from its first moment.
-                rows.append(row(r, kind: .research, state: stateOf(
-                    r, held: held, writtenElsewhere: snapshot.writtenElsewhere.contains(r.name), live: live)))
+                rows.append(row(r, kind: .research, state: stateOf(r, held: held, writtenElsewhere: written, live: live), cutOff: cutOff))
             }
             if !r.steps.isEmpty {
                 state.catalog.sources.append(PlaySource(
                     name: r.name, checkpoints: r.steps, dims: r.dims, worldSize: r.worldSize, geometry: r.geometry,
                     planetRadius: r.planetRadius, planetShape: r.planetShape, weatherOn: r.weatherOn, hasEvents: r.hasEvents,
-                    modified: r.directoryModified))
+                    modified: r.lastSaved))
                 listed = true
             }
             if !listed, r.hasContent { state.catalog.other.append(r.name) }
@@ -240,15 +258,17 @@ package struct LibraryState: Equatable, Sendable {
         state.catalog.unfinished = state.unfinished.map(\.name).sorted()
         state.catalog.other.sort()
         state.others = state.catalog.other
+        // Names that are taken without being worlds: links to a drive that is not connected, entries that cannot be read, entries that are slow.
+        state.catalog.other = Array(Set(state.catalog.other).union(snapshot.problems.keys).union(snapshot.slow)).sorted()
         state.rows = order(rows)
         state.unfinished.sort { ($0.lastTouched, $1.name) > ($1.lastTouched, $0.name) }
         return state
     }
 
-    private static func row(_ r: LibraryRecord, kind: WorldKind, state: WorldState) -> LibraryRow {
+    private static func row(_ r: LibraryRecord, kind: WorldKind, state: WorldState, cutOff: Bool) -> LibraryRow {
         LibraryRow(
             name: r.name, kind: kind, shape: WorldShape.of(dims: r.dims, geometry: r.geometry), state: state,
-            note: kind == .research && state == .saved ? endNote(r.status) : nil, step: r.steps.last, lastSaved: r.lastSaved,
+            note: kind == .research && state == .saved ? endNote(r.status, cutOff: cutOff) : nil, step: r.steps.last, lastSaved: r.lastSaved,
             madeFrom: SourceRef.parse(r.play?.planet?.source))
     }
 
@@ -268,11 +288,13 @@ package struct LibraryState: Equatable, Sendable {
     }
 
     /// How a research run ended, when that is worth a line; nil for a normal end.
-    static func endNote(_ status: String?) -> String? {
+    /// A world whose status says `running` is cut off only when it has shown no sign of life for a long while (`cutOff`, from the probe): a
+    /// slow run, a long save or a resume that is still loading is not.
+    static func endNote(_ status: String?, cutOff: Bool = false) -> String? {
         switch status {
         case "extinct": return "Every organism died out."
         case "violation": return "Stopped by an error check."
-        case "running": return "Cut off without a clean stop."
+        case "running": return cutOff ? "Cut off without a clean stop." : nil
         default: return nil
         }
     }
@@ -309,16 +331,22 @@ package struct LibraryState: Equatable, Sendable {
 
     /// The one to look at first, first: the open world, then what grows, then what is in use or saving, then the rest by when it was last
     /// saved, newest first, with the name to break a tie.
-    package static func order(_ rows: [LibraryRow]) -> [LibraryRow] {
-        func rank(_ row: LibraryRow) -> Int {
-            switch row.state {
-            case .live, .paused, .starting: return 0
-            case .growing: return 1
-            case .saving, .inUseElsewhere: return 2
-            case .saved, .unfinished: return 3
-            }
+    static func rank(_ row: LibraryRow) -> Int {
+        switch row.state {
+        case .live, .paused, .starting: return 0
+        case .growing: return 1
+        case .saving, .inUseElsewhere: return 2
+        case .saved, .unfinished: return 3
         }
-        return rows.sorted { a, b in
+    }
+
+    /// **The order rule.** A row's rank is its state's class (open, growing, in use or saving, the rest); rows of one rank go newest saved first,
+    /// the name breaking a tie. In the sidebar a node (a played world and the research world nested under it) has the best rank and the newest
+    /// date among its rows, so a growing seed is never hidden under a quiet parent. Nothing else moves a row: not the clock, not the name, not a
+    /// filter or a search; a row jumps only when its own state's class changes or a world is saved, and a world that is saved moves up once, to
+    /// the top of its rank.
+    package static func order(_ rows: [LibraryRow]) -> [LibraryRow] {
+        rows.sorted { a, b in
             if rank(a) != rank(b) { return rank(a) < rank(b) }
             if a.lastSaved != b.lastSaved { return a.lastSaved > b.lastSaved }
             return a.name < b.name
@@ -374,6 +402,17 @@ package struct LibraryState: Equatable, Sendable {
             if let parent = named ?? newest { parentOf[child.name] = parent.name }
         }
         let byParent = Dictionary(grouping: rows.filter { parentOf[$0.name] != nil }, by: { parentOf[$0.name]! })
-        return rows.filter { parentOf[$0.name] == nil }.map { LibraryNode(row: $0, children: byParent[$0.name] ?? []) }
+        let nodes = rows.filter { parentOf[$0.name] == nil }.map { LibraryNode(row: $0, children: byParent[$0.name] ?? []) }
+        // A node is ranked by the best of its rows (see `order`).
+        func key(_ node: LibraryNode) -> (Int, Date) {
+            let all = [node.row] + node.children
+            return (all.map(rank).min() ?? 3, all.map(\.lastSaved).max() ?? .distantPast)
+        }
+        return nodes.sorted { a, b in
+            let (ka, kb) = (key(a), key(b))
+            if ka.0 != kb.0 { return ka.0 < kb.0 }
+            if ka.1 != kb.1 { return ka.1 > kb.1 }
+            return a.row.name < b.row.name
+        }
     }
 }
