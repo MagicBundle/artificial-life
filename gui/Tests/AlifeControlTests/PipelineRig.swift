@@ -7,9 +7,9 @@ import Testing
 
 /// A scratch alife folder with a stand-in engine, and the objects of the set-up page wired to it as the app wires them. The stand-in is a bash
 /// script that makes the files the real engine makes (config, meta, save points, metrics) and behaves as `.mode` says, `run:play`:
-/// - run: `ok` (finishes at once), `silent` (makes its directory and nothing else, and ends on SIGINT as a signal: the engine in its first seconds), `long` (runs until it gets SIGINT, then saves at step 12,000 and exits 130), `refuse` (prints a traceback, exit 2)
+/// - run: `ok` (finishes at once), `extinct` (ends at step 4,200 with status extinct and exit 0, as the engine does when nothing is alive), `silent` (makes its directory and nothing else, and ends on SIGINT as a signal: the engine in its first seconds), `long` (runs until it gets SIGINT, then saves at step 12,000 and exits 130), `refuse` (prints a traceback, exit 2)
 /// - play: `ok` (progress lines, then the committed play stream until `quit`), `slow` (progress lines, then waits for SIGINT: exit 130, leaves an
-///   unfinished build), `fail` (prints its reason, exit 4)
+///   unfinished build), `fail` (prints its reason, exit 4), `extinct` (says the world is extinct and exits 0 before any stream), `quits` (ends by itself before any stream)
 @MainActor
 final class PipelineRig {
     let scratch: Scratch
@@ -188,6 +188,10 @@ final class PipelineRig {
               echo "Traceback (most recent call last):" >&2
               echo "ValueError: refused by the stand-in" >&2
               exit 2;;
+            extinct)
+              mkworld "$out" extinct 4200
+              echo "extinct at step 4200" >&2
+              exit 0;;
             silent)
               mkdir -p "$out"
               exec sleep 30;;
@@ -206,6 +210,8 @@ final class PipelineRig {
         play)
           case "$playmode" in
             fail) echo "alife play found no usable checkpoint (exit code 4)" >&2; exit 4;;
+            extinct) echo "play: the world is extinct at step 4200" >&2; exit 0;;
+            quits) mkdir -p "$out"; echo "weather spin-up: 5000/10000 steps" >&2; exit 0;;
           esac
           mkdir -p "$out"
           echo '{"status": "running", "play_build": "planet", "parent": "'"$init"'"}' > "$out/meta.json"

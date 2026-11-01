@@ -52,7 +52,7 @@ import Testing
         let b = p.banner(elapsed: 0)
         #expect(b?.title == "Growing stopped at step 9,100")
         #expect(b?.buttons == [.makePlanetFromHere, .keepGrowing, .done])
-        #expect(b?.detail.contains("planet-1-grow is saved") == true)
+        #expect(b?.detail.contains("The grown world is saved") == true)
     }
 
     @Test func aPipelineThatWasToldToStopKnowsItWhateverTheExitSays() {
@@ -114,6 +114,70 @@ import Testing
         #expect(q.state == .parked(.nameTaken, step: 0))
     }
 
+    @Test func aWorldThatDiedOutIsNotAFinishedGrowthAndStartsNoPlanetInAnyMode() {
+        for mode in [Plan.Mode.growThenPlay, .growOnly, .keepGrowing] {
+            var p = Plan(mode: mode, name: "planet-1", growName: "planet-1-grow", targetSteps: 30_000, expectedPlanetSeconds: 11)
+            let effects = p.apply(.growExited(.init(status: 0, savedStep: 4_200, worldStatus: "extinct")), in: Self.here)
+            #expect(effects == [], "\(mode)")
+            #expect(p.state == .diedOut(step: 4_200), "\(mode): not the 30,000 it was asked to reach")
+            let b = p.banner(elapsed: 0)
+            #expect(b?.title == "The population died out at step 4,200" && b?.tone == .attention && p.isOver)
+            #expect(b?.buttons.contains(.makePlanet) == false && b?.buttons.contains(.makePlanetFromHere) == false)
+        }
+        // a Stop that arrives as the world dies out is still told as what happened
+        var q = grow()
+        _ = q.apply(.stopPressed, in: Self.here)
+        _ = q.apply(.growExited(.init(status: 0, stopRequested: true, savedStep: 4_200, worldStatus: "extinct")), in: Self.here)
+        #expect(q.state == .diedOut(step: 4_200))
+        // other statuses behave as before
+        var r = grow()
+        _ = r.apply(.growExited(.init(status: 0, worldStatus: "done")), in: Self.here)
+        #expect(r.state == .making(cancelling: false))
+        var done = r; _ = done.apply(.donePressed, in: Self.here); _ = done
+    }
+
+    @Test func aPlanetsEngineThatEndsByItselfIsToldWhyAndOnlyACancelIsCalledCancelled() {
+        var p = grow()
+        _ = p.apply(exit(0), in: Self.here)
+        _ = p.apply(.makeEnded("play: the world is extinct at step 4200"), in: Self.here)
+        #expect(p.state == .diedOut(step: 4_200))
+        var q = grow()
+        _ = q.apply(exit(0), in: Self.here)
+        _ = q.apply(.makeEnded("The planet's engine ended by itself before the planet was ready."), in: Self.here)
+        #expect(q.state == .failed(.making("The planet's engine ended by itself before the planet was ready.")))
+        #expect(q.banner(elapsed: 0)?.title == "planet-1 could not be made")
+        var c = grow()
+        _ = c.apply(exit(0), in: Self.here)
+        _ = c.apply(.cancelPressed, in: Self.here)
+        _ = c.apply(.makeEnded("anything the engine said while it was stopped"), in: Self.here)
+        #expect(c.state == .cancelled, "nobody stopped it in the other case; here somebody did")
+        #expect(PipelineWords.diedOutStep(in: "play: the world is extinct at step 4200") == 4_200 && PipelineWords.diedOutStep(in: "ended") == nil)
+        #expect(PipelineWords.planetEnded("The world ended before it sent anything: play: the world is extinct at step 77").contains("extinct at step 77"))
+        #expect(PipelineWords.planetEnded("The world ended before it sent anything").hasPrefix("The planet's engine ended by itself"))
+    }
+
+    @Test func aFailureThatLeftNoSavePointOffersNoPlanetAndNoKeepGrowing() {
+        var p = grow()
+        _ = p.apply(.growExited(.init(status: 4, problem: "boom", savePoint: false)), in: Self.here)
+        #expect(p.banner(elapsed: 0)?.buttons == [.showLog, .tryAgainNewName, .done])
+    }
+
+    @Test func nothingOfTheDefaultPathNamesTheGrowDirectoryOrAnExceptionClass() {
+        var p = grow()
+        _ = p.apply(.progress(step: 12_000, stepsPerSecond: 300), in: Self.here)
+        var texts: [String] = []
+        func add(_ b: Plan.Banner?) { if let b { texts += [b.title, b.detail, b.next ?? ""] } }
+        add(p.banner(elapsed: 1))
+        _ = p.apply(.stopPressed, in: Self.here); add(p.banner(elapsed: 1))
+        _ = p.apply(exit(130, stop: true), in: Self.here); add(p.banner(elapsed: 1))
+        for why in [Plan.Why.notVisible, .worldOpen("x"), .nameTaken, .engineMissing] { var q = p; q.state = .parked(why, step: 5); add(q.banner(elapsed: 0)) }
+        var f = grow(); _ = f.apply(.growExited(.init(status: 2, problem: "bad")), in: Self.here); add(f.banner(elapsed: 0))
+        var m = grow(); m.state = .failed(.making("x")); add(m.banner(elapsed: 0))
+        var c = grow(); c.state = .cancelled; add(c.banner(elapsed: 0))
+        var d = grow(); d.state = .diedOut(step: 5); add(d.banner(elapsed: 0))
+        for text in texts { #expect(!text.contains("-grow"), "\"\(text)\"") }
+    }
+
     @Test func aMissingEngineParksInsteadOfFailingSilently() {
         var p = grow()
         _ = p.apply(exit(0), in: .init(visible: true, engineReady: false))
@@ -124,13 +188,13 @@ import Testing
     @Test(arguments: [Int32(1), 2, 3, 4, 9])
     func anyOtherExitIsAFailureThatKeepsWhatWasWritten(status: Int32) {
         var p = grow()
-        let effects = p.apply(exit(status, problem: "ValueError: no"), in: Self.here)
+        let effects = p.apply(.growExited(.init(status: status, problem: "ValueError: no", savedStep: 12_000)), in: Self.here)
         #expect(effects == [])
         #expect(p.state == .failed(.growing("ValueError: no")))
         let b = p.banner(elapsed: 0)
         #expect(b?.tone == .failure && b?.title == "Growing failed" && b?.detail == "ValueError: no")
-        #expect(b?.buttons == [.showLog, .tryAgainNewName, .done])
-        #expect(b?.next == "planet-1-grow is kept as it was written.")
+        #expect(b?.buttons == [.showLog, .makePlanet, .keepGrowing, .tryAgainNewName, .done], "a save point is left: the planet can still be made from it")
+        #expect(b?.next == "The grown world is kept as it was written.")
         #expect(p.isOver)
     }
 
@@ -219,15 +283,15 @@ import Testing
         var p = grow()
         _ = p.apply(exit(0), in: Self.here)
         _ = p.apply(.makeProgress(["houses: rebuilding the exact houses of runs/x at step 30000"]), in: Self.here)
-        #expect(p.banner(elapsed: 1)?.detail.hasPrefix("Rebuilding the family lines") == true)
+        #expect(p.banner(elapsed: 1)?.detail.hasPrefix("Rebuilding the family lines") == true && p.banner(elapsed: 1)?.fraction == nil)
         _ = p.apply(.makeProgress([
             "houses: rebuilding the exact houses of runs/x at step 30000", "run runs/x: N=1024 | steps 30000 → 60000",
             "weather spin-up: 5040/10000 steps",
         ]), in: Self.here)
         let b = p.banner(elapsed: 5)
         #expect(b?.detail.hasPrefix("Warming up the weather (5,040 of 10,000 steps)") == true)
-        #expect(b?.detail.contains("left") == true)
-        #expect(abs((b?.fraction ?? 0) - 0.5285) < 0.001)
+        #expect(b?.detail.contains("left") == false, "no precision that was not measured")
+        #expect(abs((b?.fraction ?? 0) - 0.504) < 0.001, "only the warm-up counts its own steps")
         #expect(b?.buttons == [.cancel] && b?.next == "Then it opens in Watch.")
         #expect(b?.title == "Making planet-1")
     }
@@ -254,7 +318,7 @@ import Testing
         let b = p.banner(elapsed: 0)
         #expect(p.state == .failed(.making("alife play found no usable checkpoint")))
         #expect(b?.title == "planet-1 could not be made")
-        #expect(b?.next == "planet-1-grow is kept, so only the planet needs making again.")
+        #expect(b?.next == "The grown world is kept, so only the planet needs making again.")
         #expect(b?.buttons == [.showLog, .makeAgainNewName, .done])
     }
 
@@ -265,11 +329,11 @@ import Testing
         #expect(p.state == .making(cancelling: true))
         #expect(p.apply(.cancelPressed, in: Self.here) == [], "once")
         #expect(p.banner(elapsed: 2)?.buttons == [] && p.banner(elapsed: 2)?.detail == "Cancelling.")
-        _ = p.apply(.makeEnded, in: Self.here)
+        _ = p.apply(.makeEnded(nil), in: Self.here)
         #expect(p.state == .cancelled)
         let b = p.banner(elapsed: 0)
         #expect(b?.title == "planet-1 was not finished" && b?.detail.contains("Unfinished") == true)
-        #expect(b?.next == "planet-1-grow is kept.")
+        #expect(b?.next == "The grown world is kept.")
         #expect(b?.buttons == [.makeAgainNewName, .done])
     }
 
@@ -277,7 +341,7 @@ import Testing
         // (closing the window stops the world: PlayController.stop; the process ends without the world ever being live)
         var p = grow()
         _ = p.apply(exit(0), in: Self.here)
-        _ = p.apply(.makeEnded, in: .init(visible: false))
+        _ = p.apply(.makeEnded(nil), in: .init(visible: false))
         #expect(p.state == .cancelled)
     }
 
@@ -328,7 +392,7 @@ import Testing
         var failed = grow(); _ = failed.apply(exit(1), in: Self.here); out.append(("failedGrowing", failed))
         var making = grow(); _ = making.apply(exit(0), in: Self.here); out.append(("making", making))
         var cancelling = making; _ = cancelling.apply(.cancelPressed, in: Self.here); out.append(("cancelling", cancelling))
-        var cancelled = cancelling; _ = cancelled.apply(.makeEnded, in: Self.here); out.append(("cancelled", cancelled))
+        var cancelled = cancelling; _ = cancelled.apply(.makeEnded(nil), in: Self.here); out.append(("cancelled", cancelled))
         var nothingSaved = grow(); _ = nothingSaved.apply(.stopPressed, in: Self.here)
         _ = nothingSaved.apply(.growExited(.init(status: 2, signalled: true, stopRequested: true, savePoint: false)), in: Self.here); out.append(("nothingSaved", nothingSaved))
         var madeFailed = making; _ = madeFailed.apply(.makeFailed("x"), in: Self.here); out.append(("failedMaking", madeFailed))
@@ -341,7 +405,7 @@ import Testing
         ("progress", .progress(step: 5, stepsPerSecond: 1)),
         ("exit0", .growExited(.init(status: 0))), ("exit1", .growExited(.init(status: 1))), ("exit130", .growExited(.init(status: 130, stopRequested: true))),
         ("stop", .stopPressed), ("cancel", .cancelPressed), ("makePlanet", .makePlanetPressed), ("keepGrowing", .keepGrowingPressed),
-        ("done", .donePressed), ("live", .makeLive), ("failed", .makeFailed("x")), ("ended", .makeEnded), ("lines", .makeProgress(["houses: x"])),
+        ("done", .donePressed), ("live", .makeLive), ("failed", .makeFailed("x")), ("ended", .makeEnded(nil)), ("lines", .makeProgress(["houses: x"])),
     ]
 
     @Test func aWaitingPipelineAlwaysTellsThePersonWhatToDo() {
@@ -425,8 +489,8 @@ import Testing
 
     @Test func theProblemLineIsTheEndOfTheTracebackNotItsStart() {
         let lines = ["Traceback (most recent call last):", "  File \"x.py\", line 3, in <module>", "    boom()", "ValueError: the steps must be positive"]
-        #expect(PipelineWords.firstProblem(in: lines) == "ValueError: the steps must be positive")
-        #expect(PipelineWords.firstProblem(in: ["alife: error: unknown preset 'x'"]) == "alife: error: unknown preset 'x'")
+        #expect(PipelineWords.firstProblem(in: lines) == "the steps must be positive")
+        #expect(PipelineWords.firstProblem(in: ["alife: error: unknown preset 'x'"]) == "unknown preset 'x'")
         #expect(PipelineWords.firstProblem(in: ["just some text", "more"]) == "just some text")
         #expect(PipelineWords.firstProblem(in: []) == nil && PipelineWords.firstProblem(in: ["", "  "]) == nil)
         #expect(PipelineWords.firstProblem(in: [String(repeating: "x", count: 500)])!.count == 238)

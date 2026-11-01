@@ -29,6 +29,8 @@ final class PipelineCoordinator: ObservableObject {
     @Published private(set) var plan: PipelinePlan?
     /// Seconds since the current stage started, for the banner's clock.
     @Published private(set) var elapsed: Double = 0
+    /// The stop-after timer's seconds left, while the run that has one grows (the bar shows it wherever the run's progress is shown).
+    @Published private(set) var timerRemaining: TimeInterval?
     /// The plan and the second stage's spec of the pipeline that is under way or just over (kept so that "Make again" can use them).
     private(set) var setup: SetupPlan?
     private(set) var spec: PlanetSpec?
@@ -42,7 +44,7 @@ final class PipelineCoordinator: ObservableObject {
     /// The app is quitting (the quit waits for what runs): nothing is started then, whatever the windows say.
     var isQuitting: @MainActor () -> Bool = { AppDelegate.current?.terminationGate.isWaiting == true }
     /// What other processes hold or seem to write, from the library (names), for the guard.
-    var elsewhere: () -> (held: Set<String>, writing: Set<String>) = { ([], []) }
+    var elsewhere: () -> Set<String> = { [] }
 
     private var cancellables: Set<AnyCancellable> = []
     private var stageStartedAt = Date()
@@ -104,9 +106,7 @@ final class PipelineCoordinator: ObservableObject {
     /// processes hold.
     func currentGuard() -> DirectoryGuard {
         var g = DirectoryGuard()
-        let foreign = elsewhere()
-        g.heldElsewhere = foreign.held
-        g.seemsWrittenElsewhere = foreign.writing
+        g.heldElsewhere = elsewhere()
         if play.isActive, let world = play.world { g.record(world, as: .playing) }
         for world in play.retiredWorlds { g.record(world, as: .saving) }
         if let plan, plan.isActive {
@@ -216,16 +216,23 @@ final class PipelineCoordinator: ObservableObject {
             } else if let world = p.growName {
                 hooks.openSetup(.keepGrowing(world: world), nil)
             }
-        case .done:
-            _ = plan?.apply(.donePressed, in: surroundings())
-            plan = nil
-            stopTicker()
+        case .done: dismiss()
         case .showLog, .showActivity: hooks.showActivity()
         case .watch: hooks.showWatch()
         case .tryAgainNewName: hooks.openSetup(setup?.intent ?? .create, nil)
         case .makeAgainNewName:
-            if let world = p.planetSource { hooks.openSetup(.makePlanet(from: world), p.name) }
+            guard let world = p.planetSource else { return }
+            // A plan that waits for a button is still active, and the page then shows its bar and no form: "make again" ends it first.
+            if p.isActive { dismiss() }
+            hooks.openSetup(.makePlanet(from: world), p.name)
         }
+    }
+
+    /// Done: the bar goes, whatever state the plan is in (a parked plan is left as it is on disk).
+    private func dismiss() {
+        _ = plan?.apply(.donePressed, in: surroundings())
+        plan = nil
+        stopTicker()
     }
 
     // MARK: Events from the processes
@@ -255,20 +262,37 @@ final class PipelineCoordinator: ObservableObject {
         if plan?.isOver == true { stopTicker() }
     }
 
-    private func runEnded(_ exit: RunExit) {
+    /// A run that was started by this app has ended (exposed to the tests, which feed it exits that the real process would not).
+    func runEnded(_ exit: RunExit) {
         guard exit.serial > seenExit else { return }
         seenExit = exit.serial
-        guard let p = plan, case .growing = p.state, NameFolding.same(exit.run, p.growName ?? "") else { return }
+        guard let p = plan, case .growing = p.state else { return }
+        // A run that ends under another name than the one the page showed must never leave the pipeline waiting for an exit that already came.
+        guard NameFolding.same(exit.run, p.growName ?? "") else {
+            plan?.state = .failed(.growing("The engine's run ended under another name (\(exit.run)) than the one that was asked for (\(p.growName ?? "")). Nothing was lost: look in Worlds."))
+            stopTicker()
+            return
+        }
         var savePoint = true
         var savedStep: Int?
+        var worldStatus: String?
         if let grow = p.growName, let runs = runsDirectory() {
-            let saved = PlayCatalogScanner.checkpointSteps(in: runs.appendingPathComponent(grow), fileManager: .default)
+            let directory = runs.appendingPathComponent(grow)
+            let saved = PlayCatalogScanner.checkpointSteps(in: directory, fileManager: .default)
             savePoint = !saved.isEmpty
             savedStep = saved.max()
+            worldStatus = Self.worldStatus(in: directory)
         }
         apply(.growExited(.init(
             status: exit.status, signalled: exit.signalled, stopRequested: exit.stopRequested && !exit.forced, problem: exit.problem,
-            savePoint: savePoint, savedStep: savedStep)))
+            savePoint: savePoint, savedStep: savedStep, worldStatus: worldStatus)))
+    }
+
+    /// The `status` the engine wrote in a run's `meta.json` (`done`, `extinct`, `interrupted`, `violation`); nil when it cannot be read.
+    static func worldStatus(in directory: URL) -> String? {
+        guard let data = try? Data(contentsOf: directory.appendingPathComponent("meta.json")),
+              let meta = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return meta["status"] as? String
     }
 
     private func metricsChanged(_ metrics: MetricsSnapshot?) {
@@ -287,11 +311,19 @@ final class PipelineCoordinator: ObservableObject {
         switch phase {
         case .live: apply(.makeLive, around: PipelinePlan.Surroundings())
         case .failed(let message):
-            apply(.makeFailed(PipelineWords.planetFailure(message)), around: PipelinePlan.Surroundings())
+            // A world that died out ends `alife play` with exit 0 before its header and a line on stderr: that line is the reason.
+            if let line = play.progress.last(where: { PipelineWords.diedOutStep(in: $0) != nil }) {
+                apply(.makeEnded(line), around: PipelinePlan.Surroundings())
+            } else {
+                apply(.makeFailed(PipelineWords.planetFailure(message, said: PipelineWords.lastSaid(in: play.progress))), around: PipelinePlan.Surroundings())
+            }
             // The Worlds page and the Watch row are told of a world that did not open by the shell's own observer of the same phase, which may
             // run after this one: the pipeline says it once, in its bar, so the shell's note is taken back on the next turn.
             Task { @MainActor [weak self] in self?.hooks.dismissStartFailure() }
-        case .idle, .ended: apply(.makeEnded, around: PipelinePlan.Surroundings())
+        case .idle: apply(.makeEnded(nil), around: PipelinePlan.Surroundings())
+        case .ended(let message):
+            let line = play.progress.last(where: { PipelineWords.diedOutStep(in: $0) != nil })
+            apply(.makeEnded(line ?? PipelineWords.planetEnded(message)), around: PipelinePlan.Surroundings())
         case .starting: return
         }
     }
@@ -347,6 +379,7 @@ final class PipelineCoordinator: ObservableObject {
                 try? await Task.sleep(for: .seconds(1))
                 guard let self, !Task.isCancelled else { return }
                 self.elapsed = self.hooks.now().timeIntervalSince(self.stageStartedAt)
+                if case .growing? = self.plan?.state { self.timerRemaining = self.controller.remaining } else if self.timerRemaining != nil { self.timerRemaining = nil }
             }
         }
     }

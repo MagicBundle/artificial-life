@@ -341,7 +341,15 @@ package struct RunSettings: Equatable {
     /// The run the status, viewer, inspect and reveal buttons refer to.
     package var targetRun: String { mode == .resume ? sourceRun : name.trimmingCharacters(in: .whitespaces) }
 
-    package var timerDuration: TimeInterval { TimeInterval(timerHours * 3600 + timerMinutes * 60) }
+    /// The time after which the run is asked to stop. The hours and minutes are limited to what the page offers (0 to 99 and 0 to 59), and the
+    /// sum cannot overflow, so a typed value of any size stays harmless.
+    package var timerDuration: TimeInterval {
+        let hours = min(max(timerHours, 0), Self.timerHoursMax), minutes = min(max(timerMinutes, 0), Self.timerMinutesMax)
+        return TimeInterval(hours * 3600 + minutes * 60)
+    }
+
+    package static let timerHoursMax = 99
+    package static let timerMinutesMax = 59
 
     /// What the 3D levers are diffed against: the preset's values for a new run, the source's for a fork, which the
     /// caller loads into `leverBaseline` from the source's `config.json` (`RunController.loadForkLevers`, in Fork mode

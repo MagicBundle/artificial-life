@@ -62,7 +62,11 @@ final class SetupModel: ObservableObject {
 
     // MARK: Opening
 
+    /// While a world is being made the page shows its bar: a new form is not opened under it (the buttons that lead here are grey then).
+    private var pipelineBusy: Bool { coordinator.isActive }
+
     func openCreate(_ point: StartingPoint? = nil) {
+        guard !pipelineBusy else { return show() }
         prepareCreate(point)
         requested = true
         show()
@@ -78,19 +82,18 @@ final class SetupModel: ObservableObject {
         applySuggestion()
     }
 
-    /// The page appeared. A card's button has set the intent already (`requested`); the sidebar's row, or the page restored at launch, has
-    /// not, and means *New world*: the form of a Create is kept as it was, any other intent gives way to one.
+    /// The page appeared (the sidebar's row, "Open in window", a return from another page, or the page restored at launch). A form that is
+    /// half filled in is never thrown away by that: Branch, Keep growing and Make planet stay as they are until the person asks for a new world
+    /// (File > New World, the Worlds page's button, or the form's own "New world instead"); only a first appearance prepares a Create.
     func pageAppeared() {
-        if requested {
-            requested = false
-        } else if !prepared || intent != .create {
-            prepareCreate()
-        }
+        requested = false
+        if !prepared { prepareCreate() }
     }
     private var prepared = false
     private var requested = false
 
     func openBranch(from world: String) {
+        guard !pipelineBusy else { return show() }
         prepared = true
         requested = true
         intent = .branch(from: world)
@@ -105,12 +108,15 @@ final class SetupModel: ObservableObject {
         growSteps = ""
         controller.loadForkLevers()
         controller.loadDirector()
-        applyMemory()
+        // (a branch starts from its source's own values: what was remembered from a Create is not carried into it)
+        rememberedKeys = []
+        rememberedSkipped = []
         applySuggestion()
         show()
     }
 
     func openKeepGrowing(world: String) {
+        guard !pipelineBusy else { return show() }
         prepared = true
         requested = true
         intent = .keepGrowing(world: world)
@@ -129,6 +135,7 @@ final class SetupModel: ObservableObject {
 
     /// Make planet from a world (and a save point, when the card or an unfinished build says which).
     func openMakePlanet(from world: String?, step: Int? = nil, name suggested: String? = nil) {
+        guard !pipelineBusy else { return show() }
         prepared = true
         requested = true
         intent = .makePlanet(from: world ?? launcher.planet.source)
@@ -149,6 +156,7 @@ final class SetupModel: ObservableObject {
 
     /// An unfinished build made again under a new name: the form of this session's own request, else the source and save point `meta.json` names.
     func openMakeAgain(_ build: UnfinishedRow) {
+        guard !pipelineBusy else { return show() }
         prepared = true
         requested = true
         launcher.prepareAgain(build)
@@ -203,7 +211,17 @@ final class SetupModel: ObservableObject {
     func defaultSteps(for point: StartingPoint) -> String {
         if let recipe = point.recipe { return String(recipe.growSteps) }
         let file = PresetFile.preset(point.preset.rawValue, repo: controller.repoURL)
-        return file?.int("run", "steps").map(String.init) ?? "30000"
+        return file?.int("run", "steps").map(String.init) ?? String(Self.engineDefaultSteps)
+    }
+
+    /// The length the engine grows a world for when neither the preset nor the command says (`Config.run.steps`, `config.py`).
+    static let engineDefaultSteps = 100_000
+
+    /// Whose number "Grow for" starts at, in a few words: a recipe's own, the preset file's own, or the engine's default.
+    var stepsOrigin: String {
+        if startingPoint.recipe != nil { return "This is the recipe's own length." }
+        let file = PresetFile.preset(startingPoint.preset.rawValue, repo: controller.repoURL)
+        return file?.int("run", "steps") != nil ? "This is the preset's own length." : "This is the engine's usual length, not the preset's own."
     }
 
     func setGrowSteps(_ text: String) {
@@ -263,7 +281,7 @@ final class SetupModel: ObservableObject {
     }
 
     private func remember() {
-        guard intent == .create || { if case .branch = intent { return true } else { return false } }() else { return }
+        guard intent == .create else { return }
         remembered = RememberedLevers.capture(controller.settings)
         if remembered.isEmpty { defaults.removeObject(forKey: RememberedLevers.defaultsKey) } else { defaults.set(remembered.data, forKey: RememberedLevers.defaultsKey) }
     }
@@ -358,7 +376,14 @@ final class SetupModel: ObservableObject {
         SetupRules.Facts(
             runJob: controller.hasRunJob, openWorld: play.isActive ? play.world : nil, guardState: coordinator.currentGuard(),
             folderExists: controller.repoFolderExists, engineReady: controller.repoReady,
-            folderProblem: controller.repoFolderExists ? nil : "The alife folder was not found.")
+            folderProblem: controller.repoFolderExists ? nil : "The alife folder was not found.", pipeline: pipelineActivity)
+    }
+
+    /// What the pipeline is doing, for the rules: running, waiting for a button, or nothing.
+    var pipelineActivity: SetupRules.Facts.Pipeline {
+        guard let plan = coordinator.plan, plan.isActive else { return .none }
+        if case .parked = plan.state { return .waiting }
+        return .running
     }
 
     /// Everything that keeps the button grey, in the page's words. Empty when the button works.
@@ -367,7 +392,7 @@ final class SetupModel: ObservableObject {
         func add(_ text: String?) { if let text, !out.contains(text) { out.append(text) } }
         if !controller.repoFolderExists { add("The alife folder was not found. Choose it in Settings.") }
         else if !controller.repoReady { add("Set up the engine first.") }
-        if coordinator.isActive { add("A world is being made. Wait for it, or stop it.") }
+        if let busy = SetupRules.pipelineReason(pipelineActivity) { add(busy) }
         else if controller.job == .setup { add("The engine is being set up. Wait for it to finish.") }
         else if controller.job == .inspect { add("A check is running. Wait for it to finish.") }
         else if controller.job == .run { add("A run is going. Wait for it to finish, or stop it in Activity.") }
@@ -474,6 +499,7 @@ final class SetupModel: ObservableObject {
     var otherChanges: [String] {
         var out = ChangeList.others(controller.settings)
         if withoutPowers, intent != .keepGrowing(world: "") { out.append("No powers in the planet") }
+        if houses != .auto, goal == .play || intent.isMakePlanet { out.append("Family lines rebuilt \(houses.plainTitle.lowercased())") }
         return out
     }
 
@@ -491,6 +517,30 @@ final class SetupModel: ObservableObject {
         return GrowEstimate.line(steps: Parse.integer(growSteps), stepsPerSecond: stepsPerSecond, startSeconds: start)
     }
 
+    /// The line under "Grow for" of a Create: "About 1 min 50 s on a recent Mac (measured on an M5 Pro), then about 10 s to make the planet."
+    /// Nothing is said for a preset nobody measured (the page does not make a number up).
+    var timeSentence: String? {
+        guard intent == .create, let grow = growLine else { return nil }
+        let measured = startingPoint.recipe?.measured != nil
+        var line = grow.prefix(1).uppercased() + grow.dropFirst()
+        // (a very short world carries its own sentence after the time)
+        if let dot = line.range(of: ". ") {
+            let tail = String(line[dot.upperBound...])
+            line = String(line[..<dot.lowerBound]) + (measured ? " on a recent Mac (measured on an M5 Pro)" : " at the speed the preset guide measured")
+            if goal == .play { line += ", then " + (planetSeconds.map { TimeWords.about($0) } ?? "a short while") + " to make the planet" }
+            return line + ". " + tail + "."
+        }
+        line += measured ? " on a recent Mac (measured on an M5 Pro)" : " at the speed the preset guide measured"
+        if goal == .play { line += ", then " + (planetSeconds.map { TimeWords.about($0) } ?? "a short while") + " to make the planet" }
+        return line + "."
+    }
+
+    /// Under the time: whose length it is, and that the first world after an install is slower.
+    var timeNote: String? {
+        guard intent == .create else { return nil }
+        return stepsOrigin + " The first world after installing alife takes longer: the engine prepares itself once."
+    }
+
     /// Seconds from "Make planet" to the first picture, when measured.
     var planetSeconds: Double? { startingPoint.recipe?.measured?.planetSeconds }
 
@@ -498,7 +548,6 @@ final class SetupModel: ObservableObject {
 
     func start() {
         guard reasons.isEmpty else { return }
-        remember()
         let setup = plan
         var timing = PipelineCoordinator.Timing()
         timing.expectedPlanetSeconds = planetSeconds
@@ -512,18 +561,20 @@ final class SetupModel: ObservableObject {
             let source = library.state.row(named: from)
             timing.startStep = source?.step ?? 0
             // (blank: the engine grows as many steps as the source's own run was set to, beyond the save point it starts from)
-            timing.targetSteps = (Parse.integer(growSteps) ?? source?.targetSteps).map { $0 + timing.startStep }
+            timing.targetSteps = (Parse.integer(growSteps) ?? source?.targetSteps).map { $0.saturatingAdding(timing.startStep) }
             spec = nil
         case .keepGrowing(let world):
             let row = library.state.row(named: world)
             timing.startStep = row?.step ?? 0
-            timing.targetSteps = Parse.integer(growSteps).map { $0 + timing.startStep } ?? row?.targetSteps
+            timing.targetSteps = Parse.integer(growSteps).map { $0.saturatingAdding(timing.startStep) } ?? row?.targetSteps
             timing.offersPlanet = row?.shape == .planet
             spec = nil
         case .makePlanet:
             spec = makePlanetSpec
         }
         refusal = coordinator.begin(setup, planet: spec, timing: timing)
+        // What was edited is remembered only once the start went through (a refused press forgets nothing and remembers nothing).
+        if refusal == nil { remember() }
     }
 
     /// The same press with the name made free (the "Try again with a new name" of a failed build).

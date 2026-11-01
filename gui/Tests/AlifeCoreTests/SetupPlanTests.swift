@@ -109,8 +109,8 @@ import Testing
 
     @Test func oneClickMakesTwoWorldsAndSaysSo() {
         let plan = SetupPlan.make(intent: .create, goal: .play, name: "planet-1", settings: form(Recipes.smallPlanet), planet: planet(Recipes.smallPlanet), existing: [])
-        #expect(plan.made == [MadeWorld(name: "planet-1", kind: .played, role: "you play it"), MadeWorld(name: "planet-1-grow", kind: .research, role: "its seed")])
-        #expect(plan.madeSentence == "This makes 2 worlds: planet-1 (you play it) and planet-1-grow (its seed).")
+        #expect(plan.made == [MadeWorld(name: "planet-1", kind: .played, role: "you play it"), MadeWorld(name: "planet-1-grow", kind: .research, role: "the grown world it starts from")])
+        #expect(plan.madeSentence == "This makes 2 worlds: planet-1 (you play it) and planet-1-grow (the grown world it starts from).")
     }
 
     // MARK: The other intents use the builders as they are

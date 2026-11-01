@@ -34,7 +34,7 @@ package enum LeverKeys {
 
     package static let sphere: [(key: String, title: String)] = [
         ("world.radius", "Planet radius"),
-        ("world.nside", "Field detail (Nside)"),
+        ("world.nside", "Surface detail"),
         ("world.layers", "Layers"),
         ("physics.ceiling_band", "Soft ceiling"),
     ]
@@ -44,6 +44,18 @@ package enum LeverKeys {
 
     package static var allKeys: [String] {
         (dynamics + world3D + sphere).map(\.key) + FeatureLevers.allSpecs.map(\.key)
+    }
+
+    /// A sentence for the tooltip of the words that are still the engine's (the page shows the plain name; the key follows in brackets).
+    package static func explanation(_ key: String) -> String? {
+        switch key {
+        case "world.nside": return "How finely the planet's surface is divided into cells that hold food (the engine's Nside). More detail is slower."
+        case "world.layers": return "How many layers the planet's shell has, from the floor to the sky."
+        case "physics.ceiling_band": return "A soft limit near the sky that keeps the animals from leaving the world."
+        case "mutation.rate_min": return "The least often a child's genes change."
+        case "mutation.sigma_min": return "The least a changed gene moves."
+        default: return nil
+        }
     }
 
     /// The plain name of a key; nil for a key that is not a lever.

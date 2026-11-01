@@ -11,6 +11,24 @@ package enum PlayHouses: String, CaseIterable, Sendable {
     case clade
     /// Try `exact` and fall back to the clades with a note (the default).
     case auto
+
+    /// The word on the page ("exact", "clade" and "auto" are the engine's).
+    package var plainTitle: String {
+        switch self {
+        case .auto: return "Automatically"
+        case .exact: return "Exactly"
+        case .clade: return "Roughly"
+        }
+    }
+
+    /// One sentence for a tooltip or a note under the choice.
+    package var plainHelp: String {
+        switch self {
+        case .auto: return "Rebuilds the family lines exactly when the world kept the record for it, and roughly when it did not."
+        case .exact: return "Rebuilds the family lines exactly, and refuses to start when the world did not keep the record for it."
+        case .clade: return "Rebuilds the family lines roughly from the groups of related animals: faster, and approximate."
+        }
+    }
 }
 
 /// The director of a played world (`--director`): the rule tier decides, or nobody (the LLM tier is not used in play).

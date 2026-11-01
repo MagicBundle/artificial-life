@@ -161,9 +161,13 @@ package enum WorldsGuide {
         if !facts.engineReady { return "Set up the engine first." }
         if row.state == .saving || facts.saving.contains(row.name) { return "Saving..." }
         if !row.hasSavePoint { return "No save point to start from yet." }
+        if row.diedOut { return WorldsGuide.diedOutHasNoPlanet }
         if row.shape == .flat { return WorldsGuide.flatHasNoPlanet }
         return nil
     }
+
+    /// Said beside a grey *Make planet...* of a world in which nothing is left alive.
+    package static let diedOutHasNoPlanet = "Everything died out in this world, so no planet can be made from it."
 
     /// Said beside a grey *Make planet...* of a flat world: the weather runs only in 3D.
     package static let flatHasNoPlanet = "A flat world has no weather, so it cannot become a planet."

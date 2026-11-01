@@ -124,24 +124,46 @@ package enum StartingPoint: Hashable, Identifiable, Sendable {
 
 /// Durations in the words of the page: "about 1 min 40 s", "about 12 min". Rounded so that nobody reads a precision that is not there.
 package enum TimeWords {
+    /// A whole number of seconds from any `Double` (infinite and not-a-number give 0, huge values stop at about 30 million years): the
+    /// words never trap on a speed that is zero or a length that is enormous.
+    static func whole(_ seconds: Double) -> Int {
+        guard seconds.isFinite else { return 0 }
+        return Int(min(max(seconds, 0), 1e15))
+    }
+
     package static func about(_ seconds: Double) -> String {
-        let s = max(0, seconds)
+        let s = seconds.isFinite ? max(0, seconds) : 0
         if s < 10 { return "a few seconds" }
-        if s < 60 { return "about \(Int((s / 5).rounded()) * 5) s" }
+        if s < 60 { return "about \(whole((s / 5).rounded()) * 5) s" }
         if s < 600 {
-            let total = Int((s / 10).rounded()) * 10
+            let total = whole((s / 10).rounded()) * 10
             let m = total / 60, r = total % 60
             return r == 0 ? "about \(m) min" : "about \(m) min \(r) s"
         }
-        if s < 3600 { return "about \(Int((s / 60).rounded())) min" }
-        let h = Int(s / 3600), m = Int((s - Double(h) * 3600) / 60 / 5) * 5
+        if s < 3600 { return "about \(whole((s / 60).rounded())) min" }
+        if s >= 100 * 3600 { return "more than 100 h" }
+        let h = whole(s / 3600), m = whole((s - Double(h) * 3600) / 60 / 5) * 5
         return m == 0 ? "about \(h) h" : "about \(h) h \(m) min"
+    }
+
+    /// "1:23:00" for a countdown (hours, minutes, seconds).
+    package static func countdown(_ seconds: Double) -> String {
+        let s = whole(seconds)
+        return String(format: "%d:%02d:%02d", s / 3600, (s / 60) % 60, s % 60)
     }
 
     /// "1:05" / "12:40" for an elapsed clock.
     package static func clock(_ seconds: Double) -> String {
-        let s = Int(max(0, seconds))
+        let s = whole(seconds)
         return String(format: "%d:%02d", s / 60, s % 60)
+    }
+}
+
+extension Int {
+    /// The sum, stopping at the largest number instead of trapping (a length typed by hand can be anything).
+    package func saturatingAdding(_ other: Int) -> Int {
+        let (sum, overflow) = addingReportingOverflow(other)
+        return overflow ? (other > 0 ? Int.max : Int.min) : sum
     }
 }
 

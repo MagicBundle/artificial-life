@@ -79,7 +79,15 @@ struct WorldsPage: View {
 
     private func openClassic(_ row: LibraryRow) { controller.openClassicViewer(world: row.name) }
 
-    private func check(_ row: LibraryRow) { controller.inspect(world: row.name); shell.select(.activity) }
+    /// The check runs as the engine's one job at a time: when another job holds it, the page says so instead of jumping to Activity.
+    private func check(_ row: LibraryRow) {
+        guard controller.repoReady, controller.job == nil else {
+            shell.launchNote = controller.repoReady ? "Another job is running. Wait for it to finish, then check \(row.name)." : "Set up the engine first."
+            return
+        }
+        controller.inspect(world: row.name)
+        shell.select(.activity)
+    }
 
     /// Play and Make planet are the player's own action: the world that goes live from them is shown (`ShellModel.playerStartsWorld`).
     private func playWorld(_ name: String) {
@@ -336,7 +344,7 @@ struct WorldsPage: View {
                     WorldCard(
                         row: row, seedOf: seeds[row.name], selected: library.selected == row.name, now: now,
                         play: CardAction(label: "Play", reason: playable[row.name].flatMap { WorldsGuide.reason(forPlaying: $0, in: f) }),
-                        makePlanet: CardAction(label: "Make planet…", reason: WorldsGuide.reasonToMakePlanet(from: row, in: f)),
+                        makePlanet: CardAction(label: "Make planet…", reason: WorldsGuide.reasonToMakePlanet(from: row, in: f) ?? SetupRules.reason(.makePlanet, on: row, in: ruleFacts)),
                         isOpen: f.openWorld == row.name,
                         keepGrowing: CardAction(label: "Keep growing…", reason: SetupRules.reason(.keepGrowing, on: row, in: ruleFacts)),
                         branch: CardAction(label: "Branch…", reason: SetupRules.reason(.branch, on: row, in: ruleFacts)),

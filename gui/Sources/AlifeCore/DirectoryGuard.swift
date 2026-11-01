@@ -7,7 +7,8 @@ import Foundation
 
 /// Directory names compare without regard to capitals: a case-insensitive volume has one folder for `Planet` and `planet`.
 package enum NameFolding {
-    package static func fold(_ name: String) -> String { name.lowercased() }
+    /// What the file system compares: APFS folds capitals and does not tell composed from decomposed letters (`é`), so neither does the guard.
+    package static func fold(_ name: String) -> String { name.decomposedStringWithCanonicalMapping.lowercased() }
 
     package static func same(_ a: String, _ b: String) -> Bool { fold(a) == fold(b) }
 
@@ -33,17 +34,15 @@ package struct DirectoryGuard: Equatable, Sendable {
 
     /// The directories this app writes, by the name as it was given. Looked up without regard to capitals.
     package private(set) var writers: [String: Writer] = [:]
-    /// Directories another process holds (`play.lock`, or `alife resume` writing a world): a second writer is refused.
+    /// Directories another process holds or writes (`play.lock`, or another `alife run` / `alife resume` writing a world the library sees as
+    /// in use elsewhere): a second writer is refused, not just warned (§5.2 R6, as built).
     package var heldElsewhere: Set<String> = []
-    /// Directories another process seems to write (a run with fresh output): a warning, not a refusal (no lock shows it, §5.2 R6).
-    package var seemsWrittenElsewhere: Set<String> = []
 
     package init() {}
 
-    package init(writers: [String: Writer], heldElsewhere: Set<String> = [], seemsWrittenElsewhere: Set<String> = []) {
+    package init(writers: [String: Writer], heldElsewhere: Set<String> = []) {
         self.writers = writers
         self.heldElsewhere = heldElsewhere
-        self.seemsWrittenElsewhere = seemsWrittenElsewhere
     }
 
     // MARK: Recording
@@ -91,7 +90,7 @@ package struct DirectoryGuard: Equatable, Sendable {
 
     /// A warning for an action that reads `name` while another process may be writing it; nil when there is nothing to say.
     package func readWarning(_ name: String) -> String? {
-        if NameFolding.clash(of: name, in: heldElsewhere) != nil || NameFolding.clash(of: name, in: seemsWrittenElsewhere) != nil {
+        if NameFolding.clash(of: name, in: heldElsewhere) != nil {
             return "\(name) seems to be in use by another process. What you get starts from the last save point it wrote."
         }
         return nil
@@ -118,9 +117,14 @@ package enum SetupRules {
         package var folderExists: Bool
         package var engineReady: Bool
         package var folderProblem: String?
+        /// The pipeline of the set-up page: none, one that runs, or one that waits for a button.
+        package var pipeline: Pipeline
+
+        package enum Pipeline: Equatable, Sendable { case none, running, waiting }
 
         package init(runJob: Bool = false, openWorld: String? = nil, guardState: DirectoryGuard = DirectoryGuard(), folderExists: Bool = true,
-                     engineReady: Bool = true, folderProblem: String? = nil) {
+                     engineReady: Bool = true, folderProblem: String? = nil, pipeline: Pipeline = .none) {
+            self.pipeline = pipeline
             self.runJob = runJob
             self.openWorld = openWorld
             self.guardState = guardState
@@ -135,9 +139,11 @@ package enum SetupRules {
     package static func reason(_ action: SetupAction, on row: LibraryRow, in facts: Facts) -> String? {
         if !facts.folderExists { return facts.folderProblem ?? "The alife folder was not found." }
         if !facts.engineReady { return "Set up the engine first." }
+        if let busy = pipelineReason(facts.pipeline) { return busy }
         switch action {
         case .keepGrowing:
             if row.kind == .played { return "A played world is continued by playing it." }
+            if row.diedOut { return "Everything died out in this world, so there is nothing to keep growing." }
             if row.state == .growing { return "Already growing." }
             if let why = facts.guardState.writeRefusal(row.name) { return why }
             if facts.runJob { return "A run is going. Wait for it to finish, or stop it." }
@@ -155,8 +161,18 @@ package enum SetupRules {
             if let open = facts.openWorld { return open == row.name ? "Close it first" : "Close \(open) first" }
             if row.state == .saving || facts.guardState.writer(of: row.name)?.writer == .saving { return "Saving…" }
             if !row.hasSavePoint { return "No save point to start from yet." }
+            if row.diedOut { return WorldsGuide.diedOutHasNoPlanet }
             if row.shape == .flat { return WorldsGuide.flatHasNoPlanet }
             return nil
+        }
+    }
+
+    /// Why nothing new can be started while a world is being made (or waits for an answer); nil when no pipeline is active.
+    package static func pipelineReason(_ pipeline: Facts.Pipeline) -> String? {
+        switch pipeline {
+        case .none: return nil
+        case .running: return "A world is being made. Wait for it, or press Stop in the bar."
+        case .waiting: return "A world is waiting for your answer. Use the buttons in the bar, or press Done."
         }
     }
 

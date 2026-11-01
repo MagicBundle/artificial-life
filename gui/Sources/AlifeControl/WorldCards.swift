@@ -205,7 +205,7 @@ struct WorldCard: View {
     private var researchLine: String {
         if row.shape == .flat { return "A flat world is for study: it has no weather, so it cannot become a planet." }
         guard let parent = seedOf else { return "To play it, make a planet from it." }
-        return "The seed of \(parent). To play it, make a planet from it."
+        return "The grown world of \(parent). To play it, make a planet from it."
     }
 
     private var savedLine: String {

@@ -77,6 +77,11 @@ struct SetupPage: View {
     // MARK: The form
 
     @ViewBuilder private var form: some View {
+        if model.intent != .create {
+            Button("New world instead") { model.openCreate() }
+                .buttonStyle(.link).controlSize(.small)
+                .help("Leaves this form and starts a new world from a starting point.")
+        }
         switch model.intent {
         case .create: createForm
         case .branch: branchForm
@@ -217,21 +222,13 @@ struct SetupPage: View {
                 Text(more ? "more steps" : "steps")
                 Spacer(minLength: 0)
             }
-            if let line = timeLine {
+            if let line = model.timeSentence {
                 Text(line).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.leading, 128)
             }
+            if let note = model.timeNote {
+                Text(note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.leading, 128)
+            }
         }
-    }
-
-    /// "About 1 min 50 s, then about 10 s to make the planet."
-    private var timeLine: String? {
-        guard model.intent == .create, let grow = model.growLine else { return nil }
-        var line = grow.prefix(1).uppercased() + grow.dropFirst()
-        if model.goal == .play {
-            if let planet = model.planetSeconds { line += ", then " + TimeWords.about(planet) + " to make the planet" }
-            else { line += ", then a short while to make the planet" }
-        }
-        return line + "."
     }
 
     // MARK: Changes and remembered values
@@ -299,11 +296,12 @@ struct SetupPage: View {
 
     private var housesPicker: some View {
         HStack {
-            Text("How family lines are rebuilt").frame(width: 270, alignment: .leading)
+            Text("Rebuild the family lines").frame(width: 270, alignment: .leading)
             Picker("", selection: $model.houses) {
-                ForEach(PlayHouses.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                ForEach([PlayHouses.auto, .exact, .clade], id: \.self) { Text($0.plainTitle).tag($0) }
             }
             .pickerStyle(.segmented).labelsHidden().fixedSize()
+            .help(model.houses.plainHelp)
         }
     }
 
@@ -327,6 +325,14 @@ struct SetupPage: View {
                 }
                 .padding(6)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                HStack {
+                    Spacer()
+                    Button("Put every setting back to its default") {
+                        controller.settings.levers.reset(world3D: controller.settings.world3DBaseline, features: controller.settings.featureLeverBaseline)
+                    }
+                    .controlSize(.small)
+                    .disabled(model.changes.isEmpty)
+                }
             }
             if controller.settings.worldDims == 3 {
                 GroupBox("World shape and gravity") {
@@ -340,6 +346,12 @@ struct SetupPage: View {
                                 LeverRow(model: model, controller: controller, key: item.key, title: item.title, disabled: isFork && LeverKeys.shapeKeys.contains(item.key))
                             }
                             if isFork { Text("A branch keeps the planet's shape.").font(.caption).foregroundStyle(.secondary) }
+                        }
+                        HStack {
+                            Spacer()
+                            Button("Put the world shape and gravity back") { controller.settings.levers.world3D = controller.settings.world3DBaseline }
+                                .controlSize(.small)
+                                .disabled(model.changes.allSatisfy { !LeverKeys.world3D.map(\.key).contains($0.key) && !LeverKeys.sphere.map(\.key).contains($0.key) })
                         }
                     }
                     .padding(6)
@@ -358,11 +370,9 @@ struct SetupPage: View {
             VStack(alignment: .leading, spacing: 6) {
                 Toggle("Stop after a time", isOn: $controller.settings.timerEnabled)
                 if controller.settings.timerEnabled {
-                    HStack {
-                        TextField("h", value: $controller.settings.timerHours, format: .number).frame(width: 44).multilineTextAlignment(.trailing)
-                        Text("h")
-                        TextField("min", value: $controller.settings.timerMinutes, format: .number).frame(width: 44).multilineTextAlignment(.trailing)
-                        Text("min")
+                    HStack(spacing: 10) {
+                        timerField(value: $controller.settings.timerHours, range: 0...RunSettings.timerHoursMax, unit: "h")
+                        timerField(value: $controller.settings.timerMinutes, range: 0...RunSettings.timerMinutesMax, unit: "min")
                     }
                     Text("When the time is up it stops at a save point, as Stop does. A planet is not made after a stop; you are asked.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -370,6 +380,17 @@ struct SetupPage: View {
             }
             .padding(6)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// A typeable number with a stepper; whatever is typed is brought into `range` (the Lab's field did the same).
+    private func timerField(value: Binding<Int>, range: ClosedRange<Int>, unit: String) -> some View {
+        let clamped = Binding<Int>(
+            get: { min(max(value.wrappedValue, range.lowerBound), range.upperBound) },
+            set: { value.wrappedValue = min(max($0, range.lowerBound), range.upperBound) })
+        return HStack(spacing: 4) {
+            TextField(unit, value: clamped, format: .number).frame(width: 44).multilineTextAlignment(.trailing).accessibilityLabel("Stop after, \(unit)")
+            Stepper(unit, value: clamped, in: range)
         }
     }
 
@@ -426,7 +447,8 @@ struct SetupPage: View {
             commandSection(blocks: model.commandBlocks, made: model.plan.madeSentence)
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
-                    ForEach(reasons, id: \.self) { Text($0).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                    // (what is already said under the name field is not said twice)
+                    ForEach(reasons.filter { !model.nameProblems.contains($0) }, id: \.self) { Text($0).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
                     if let refusal = model.refusal { Text(refusal).font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
                 }
                 Spacer(minLength: 12)
@@ -529,6 +551,6 @@ struct LeverRow: View {
                 Text(message).font(.caption).foregroundStyle(.red).padding(.leading, 278).fixedSize(horizontal: false, vertical: true)
             }
         }
-        .help(key)
+        .help(LeverKeys.explanation(key).map { $0 + " (" + key + ")" } ?? key)
     }
 }

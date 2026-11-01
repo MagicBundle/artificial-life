@@ -158,7 +158,7 @@ final class WorldLauncherModel: ObservableObject {
     var housesMessage: String? {
         guard let source = selectedSource else { return nil }
         if planet.houses == .exact, !source.hasEvents { return "\(source.name) has no event record, so family lines cannot be rebuilt exactly." }
-        if planet.houses == .auto, !source.hasEvents { return "There is no event record, so family lines will be rebuilt from the clades, approximately." }
+        if planet.houses == .auto, !source.hasEvents { return "There is no event record, so family lines will be rebuilt roughly." }
         return nil
     }
 

@@ -51,6 +51,7 @@ private struct BannerButtons: View {
 private struct BannerBar: View {
     let banner: PipelinePlan.Banner
     let elapsed: Double
+    var remaining: TimeInterval?
 
     var body: some View {
         if banner.tone == .working {
@@ -62,6 +63,10 @@ private struct BannerBar: View {
                 }
                 Text(TimeWords.clock(elapsed)).font(.caption.monospacedDigit()).foregroundStyle(.secondary).frame(width: 44, alignment: .trailing)
                     .accessibilityLabel("Time so far \(TimeWords.clock(elapsed))")
+                if let remaining {
+                    Text("stops in \(TimeWords.countdown(remaining))").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        .accessibilityLabel("The stop timer has \(TimeWords.countdown(remaining)) left")
+                }
             }
         }
     }
@@ -86,13 +91,14 @@ struct PipelineSteps: View {
             case .failed(.growing), .failed(.nothingSaved): (first, second, third) = (.stopped, .waiting, .waiting)
             case .failed(.making), .cancelled: (first, second, third) = (.done, .stopped, .waiting)
             case .finished: (first, second, third) = (.done, .waiting, .waiting)
+            case .diedOut: (first, second, third) = (.stopped, .waiting, .waiting)
             }
-            return [("Grow \(grow)", first), ("Make the planet \(plan.name)", second), ("Open it in Watch", third)]
+            return [("Grow the world", first), ("Make the planet \(plan.name)", second), ("Open it in Watch", third)]
         case .makePlanet:
             let first: Mark
             switch plan.state {
             case .live, .dismissed: first = .done
-            case .failed, .cancelled: first = .stopped
+            case .failed, .cancelled, .diedOut: first = .stopped
             default: first = .current
             }
             return [("Make the planet \(plan.name)", first), ("Open it in Watch", plan.isOver && first == .done ? .done : .waiting)]
@@ -100,7 +106,7 @@ struct PipelineSteps: View {
             let first: Mark
             switch plan.state {
             case .finished, .dismissed: first = .done
-            case .failed: first = .stopped
+            case .failed, .diedOut: first = .stopped
             default: first = .current
             }
             return [("Grow \(grow)", first), ("It is saved when it finishes", first == .done ? .done : .waiting)]
@@ -156,7 +162,7 @@ struct PipelineCard: View {
                     }
                     Spacer(minLength: 0)
                 }
-                BannerBar(banner: banner, elapsed: coordinator.elapsed)
+                BannerBar(banner: banner, elapsed: coordinator.elapsed, remaining: coordinator.timerRemaining)
                 PipelineSteps(plan: plan)
                 if let next = banner.next {
                     Text(next).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -188,7 +194,7 @@ struct PipelineStrip: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if banner.tone == .working {
-                    BannerBar(banner: banner, elapsed: coordinator.elapsed).frame(minWidth: 140, maxWidth: 260)
+                    BannerBar(banner: banner, elapsed: coordinator.elapsed, remaining: coordinator.timerRemaining).frame(minWidth: 140, maxWidth: 320)
                 }
                 Spacer(minLength: 8)
                 BannerButtons(buttons: banner.buttons) { coordinator.press($0) }.controlSize(.small)

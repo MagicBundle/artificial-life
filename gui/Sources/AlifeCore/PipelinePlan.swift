@@ -58,6 +58,8 @@ package struct PipelinePlan: Equatable, Sendable {
         case failed(Failure)
         /// Stage 2 was cancelled, or ended before the planet was ready.
         case cancelled
+        /// Nobody is left alive in the world (the engine says it died out): nothing is made from it, and the bar says what happened.
+        case diedOut(step: Int)
         /// The person pressed Done.
         case dismissed
     }
@@ -98,6 +100,15 @@ package struct PipelinePlan: Equatable, Sendable {
 
     /// True when the stage that failed left no save point behind (the engine refused before it wrote anything).
     package private(set) var wroteNothing = false
+    /// True when the stage that failed had made more than the save point it started from (so a planet, or more growing, can go on from it).
+    package private(set) var leftProgress = false
+
+    /// How the banner speaks of the world stage 1 writes: for "grow, then play" it is "the grown world" (the directory `NAME-grow` is an
+    /// implementation detail), else its own name. `Sentence` is the same for the start of a sentence.
+    package var grownWorld: String { mode == .growThenPlay ? "the grown world" : (growName ?? name) }
+    private var grownWorldSentence: String { mode == .growThenPlay ? "The grown world" : (growName ?? name) }
+    /// The name a title uses: the planet the person asked for, for "grow, then play".
+    private var titleName: String { mode == .growThenPlay ? name : (growName ?? name) }
 
     /// The directory stage 2 reads (the world that was grown, or the source of a Make planet).
     package var planetSource: String? { mode == .makePlanet ? source : growName }
@@ -125,9 +136,12 @@ package struct PipelinePlan: Equatable, Sendable {
         package var savePoint: Bool
         /// The step of the newest save point in the run's directory (the numbers the bar read are up to two seconds old, this is the truth).
         package var savedStep: Int?
+        /// The `status` the engine wrote in the run's `meta.json` (`done`, `extinct`, `interrupted`, `violation`), nil when it could not be read.
+        package var worldStatus: String?
         package init(status: Int32, signalled: Bool = false, stopRequested: Bool = false, problem: String? = nil, savePoint: Bool = true,
-                     savedStep: Int? = nil) {
+                     savedStep: Int? = nil, worldStatus: String? = nil) {
             self.savedStep = savedStep
+            self.worldStatus = worldStatus
             self.status = status
             self.signalled = signalled
             self.stopRequested = stopRequested
@@ -143,8 +157,8 @@ package struct PipelinePlan: Equatable, Sendable {
         case makeProgress([String])
         case makeLive
         case makeFailed(String)
-        /// The planet's process ended without the world being live (cancelled, or the window closed).
-        case makeEnded
+        /// The planet's process ended without the world being live: cancelled (nil), or it ended on its own and said why.
+        case makeEnded(String?)
         case cancelPressed
         /// "Make planet" / "Make planet from here" on a parked pipeline.
         case makePlanetPressed
@@ -194,7 +208,7 @@ package struct PipelinePlan: Equatable, Sendable {
 
     package var isOver: Bool {
         switch state {
-        case .live, .finished, .failed, .cancelled, .dismissed: return true
+        case .live, .finished, .failed, .cancelled, .diedOut, .dismissed: return true
         case .growing, .parked, .making: return false
         }
     }
@@ -249,12 +263,16 @@ package struct PipelinePlan: Equatable, Sendable {
         case (.making(false), .cancelPressed):
             state = .making(cancelling: true)
             return [.stopMaking]
-        case (.making, .makeEnded):
-            state = .cancelled
+        case (.making(let cancelling), .makeEnded(let why)):
+            if let why, !cancelling {
+                if let died = PipelineWords.diedOutStep(in: why) { state = .diedOut(step: died) } else { state = .failed(.making(why)) }
+            } else {
+                state = .cancelled
+            }
             return []
 
         // The end
-        case (.finished, .donePressed), (.failed, .donePressed), (.cancelled, .donePressed), (.live, .donePressed):
+        case (.finished, .donePressed), (.failed, .donePressed), (.cancelled, .donePressed), (.live, .donePressed), (.diedOut, .donePressed):
             state = .dismissed
             return []
         default:
@@ -276,7 +294,14 @@ package struct PipelinePlan: Equatable, Sendable {
         let failed = exit.signalled || !(exit.status == 0 || exit.status == 130)
         if failed {
             wroteNothing = !exit.savePoint
+            leftProgress = exit.savePoint && max(exit.savedStep ?? step, step) > startStep
             state = .failed(.growing(exit.problem ?? PipelineWords.exitSentence(status: exit.status, signalled: exit.signalled)))
+            return []
+        }
+        // The engine ends a world in which nothing is left alive with exit 0, before its target: it is not a finished growth, and no planet is
+        // made from it.
+        if exit.worldStatus == "extinct" {
+            state = .diedOut(step: step)
             return []
         }
         // Stopped by the person, by the timer or by a signal that left a save point: never continued by itself. (The pipeline knows it was
@@ -359,12 +384,12 @@ package struct PipelinePlan: Equatable, Sendable {
             let title: String
             switch mode {
             case .growThenPlay: title = "Growing \(planet)"
-            case .keepGrowing: title = "Growing \(growName ?? planet) further"
-            default: title = "Growing \(growName ?? planet)"
+            case .keepGrowing: title = "Growing \(titleName) further"
+            default: title = "Growing \(titleName)"
             }
             let next: String?
             switch mode {
-            case .growThenPlay: next = "Next it becomes a planet" + (expectedPlanetSeconds.map { " (\(TimeWords.about($0)) more)" } ?? "") + "."
+            case .growThenPlay: next = "Next it becomes a planet" + (expectedPlanetSeconds.map { ", which takes \(TimeWords.about($0)) on a recent Mac" } ?? "") + "."
             default: next = "It is saved when it finishes. You can make a planet from it then."
             }
             return Banner(tone: .working, title: title, detail: detail, fraction: fraction, next: next, buttons: stopping ? [] : [.stop])
@@ -374,37 +399,34 @@ package struct PipelinePlan: Equatable, Sendable {
             case .stopped:
                 return Banner(
                     tone: .attention, title: "Growing stopped at step \(at)",
-                    detail: "\(growName ?? planet) is saved. You can make a planet from it as it is, or keep growing it first.",
+                    detail: "\(grownWorldSentence) is saved. You can make a planet from it as it is, or keep growing it first.",
                     fraction: nil, next: nil, buttons: [.makePlanetFromHere, .keepGrowing, .done])
             case .notVisible:
                 return Banner(
-                    tone: .attention, title: "\(growName ?? planet) has finished growing",
+                    tone: .attention, title: "\(titleName) has finished growing",
                     detail: "It finished while the window was not in front, so the planet was not started behind your back.",
                     fraction: nil, next: nil, buttons: [.makePlanet, .keepGrowing, .done])
             case .worldOpen(let open):
                 return Banner(
-                    tone: .attention, title: "\(growName ?? planet) has finished growing",
+                    tone: .attention, title: "\(titleName) has finished growing",
                     detail: "\(open) is open, and a new planet replaces the open world. Close \(open), then make the planet.",
                     fraction: nil, next: nil, buttons: [.makePlanet, .done])
             case .nameTaken:
                 return Banner(
-                    tone: .attention, title: "\(growName ?? planet) has finished growing",
+                    tone: .attention, title: "\(titleName) has finished growing",
                     detail: "A world called \(planet) appeared while it grew. Make the planet under a new name.",
                     fraction: nil, next: nil, buttons: [.makeAgainNewName, .done])
             case .engineMissing:
                 return Banner(
-                    tone: .attention, title: "\(growName ?? planet) has finished growing",
+                    tone: .attention, title: "\(titleName) has finished growing",
                     detail: "The engine cannot be found. Set it up in Settings, then make the planet.",
                     fraction: nil, next: nil, buttons: [.makePlanet, .done])
             }
         case .making(let cancelling):
+            // (Only the weather warm-up counts its own steps; the rest has no honest fraction, so the bar then moves without one.)
             let detail = cancelling ? "Cancelling." : making.sentence
-            var fraction = making.fraction
-            if fraction == nil, let expected = expectedPlanetSeconds, expected > 0, !cancelling { fraction = min(0.9, elapsed / expected) }
-            var line = detail
-            if !cancelling, let expected = expectedPlanetSeconds, expected - elapsed > 3 { line += ", " + TimeWords.about(expected - elapsed) + " left" }
             return Banner(
-                tone: .working, title: "Making \(planet)", detail: line, fraction: fraction,
+                tone: .working, title: "Making \(planet)", detail: detail, fraction: cancelling ? nil : making.fraction,
                 next: cancelling ? nil : "Then it opens in Watch.", buttons: cancelling ? [] : [.cancel])
         case .live:
             return Banner(tone: .success, title: "\(planet) is ready", detail: "Your planet is open in Watch.", fraction: 1, next: nil, buttons: [.watch, .done])
@@ -417,8 +439,9 @@ package struct PipelinePlan: Equatable, Sendable {
         case .failed(.growing(let message)):
             return Banner(
                 tone: .failure, title: "Growing failed", detail: message, fraction: nil,
-                next: wroteNothing ? "It stopped before it made a save point, so there is nothing to continue." : "\(growName ?? planet) is kept as it was written.",
-                buttons: [.showLog, .tryAgainNewName, .done])
+                next: wroteNothing ? "It stopped before it made a save point, so there is nothing to continue." : "\(grownWorldSentence) is kept as it was written.",
+                buttons: [.showLog] + (!leftProgress ? [] : (offersPlanet && mode != .keepGrowing ? [.makePlanet] : []) + [.keepGrowing])
+                    + [.tryAgainNewName, .done])
         case .failed(.nothingSaved):
             return Banner(
                 tone: .attention, title: "Stopped before anything was saved",
@@ -427,13 +450,21 @@ package struct PipelinePlan: Equatable, Sendable {
         case .failed(.making(let message)):
             return Banner(
                 tone: .failure, title: "\(planet) could not be made", detail: message, fraction: nil,
-                next: mode == .growThenPlay ? "\(growName ?? planet) is kept, so only the planet needs making again." : nil,
+                next: mode == .growThenPlay ? "\(grownWorldSentence) is kept, so only the planet needs making again." : nil,
                 buttons: [.showLog, .makeAgainNewName, .done])
         case .cancelled:
             return Banner(
                 tone: .attention, title: "\(planet) was not finished",
                 detail: "Making the planet was stopped. It is listed under Unfinished; nothing is deleted.", fraction: nil,
-                next: mode == .growThenPlay ? "\(growName ?? planet) is kept." : nil, buttons: [.makeAgainNewName, .done])
+                next: mode == .growThenPlay ? "\(grownWorldSentence) is kept." : nil, buttons: [.makeAgainNewName, .done])
+        case .diedOut(let at):
+            let world = mode == .growThenPlay ? "the grown world" : (growName ?? source ?? planet)
+            let again: [Button] = mode == .makePlanet || mode == .keepGrowing ? [] : [.tryAgainNewName]
+            return Banner(
+                tone: .attention, title: "The population died out at step \(WorldsGuide.grouped(at))",
+                detail: "Nothing is left alive in \(world), so no planet can be made from it. It is saved as it was.",
+                fraction: nil, next: mode == .makePlanet ? "Choose an earlier save point, or another world, to make a planet from." : "Branch from an earlier save point of it, or start again with other settings.",
+                buttons: again + [.done])
         case .dismissed:
             return nil
         }
@@ -461,7 +492,11 @@ package enum PipelineWords {
 
     /// What a planet that did not open says, in the words of the page: the engine's exit in a sentence, then its own last line when it said
     /// one. (The play controller's message names a checkpoint for exit 4 and quotes the engine; neither is for the person who pressed Create.)
-    package static func planetFailure(_ message: String) -> String {
+    package static func planetFailure(_ message: String, said: String? = nil) -> String {
+        // A planet's engine that ends before it sent its header (it ended by itself, with exit 0) reads as a cut stream: say what happened.
+        if message.hasPrefix("truncated stream") || message.hasPrefix("cannot read the stream") || message.contains("ended before its header") {
+            return "The planet's engine ended by itself before the planet was ready" + (said.map { ". It said: " + $0 } ?? ".")
+        }
         if message.lowercased().contains("still saving") { return "That world is still being saved. Wait a moment, then make the planet again." }
         if message.hasPrefix("Failed to launch") { return "The engine could not be started. " + message }
         guard let range = message.range(of: #"\(exit code (\d+)\)"#, options: .regularExpression) else { return message }
@@ -478,6 +513,27 @@ package enum PipelineWords {
         let said = message[range.upperBound...].trimmingCharacters(in: CharacterSet(charactersIn: ": ").union(.whitespacesAndNewlines))
             .replacingOccurrences(of: "checkpoint", with: "save point")
         return said.isEmpty ? head + "." : head + ". It said: " + said
+    }
+
+    /// What a planet's engine that ended on its own (nobody asked it to stop) says, in the words of the page. The play controller's message
+    /// carries the engine's last line after a colon; "extinct at step N" is kept so that the plan can tell a world that died out.
+    package static func planetEnded(_ message: String) -> String {
+        if diedOutStep(in: message) != nil { return message }   // (the plan turns it into "the population died out at step N")
+        let detail = message.range(of: ": ").map { String(message[$0.upperBound...]) }
+        return "The planet's engine ended by itself before the planet was ready" + (detail.map { ". It said: " + $0 } ?? ".")
+    }
+
+    /// The last line of the planet's stderr that says something (not one of its progress lines: the houses, the copy, the warm-up).
+    package static func lastSaid(in lines: [String]) -> String? {
+        lines.reversed().map { $0.trimmingCharacters(in: .whitespaces) }.first { line in
+            !line.isEmpty && !line.hasPrefix("houses:") && !line.hasPrefix("run ") && !line.hasPrefix("weather spin" + "-up")
+        }
+    }
+
+    /// The step a world died out at, when a line of the engine says so ("play: the world is extinct at step 4200", "extinct at step 4200").
+    package static func diedOutStep(in text: String) -> Int? {
+        guard let range = text.range(of: #"extinct at step (\d+)"#, options: .regularExpression) else { return nil }
+        return Int(text[range].filter(\.isNumber))
     }
 
     /// The line of a run's output that says what went wrong: the last line that names an error (the end of a traceback), else the first
@@ -503,6 +559,13 @@ package enum PipelineWords {
             let rest = pick[range.upperBound...].trimmingCharacters(in: .whitespaces)
             pick = "The newest save point of \(source.replacingOccurrences(of: "runs/", with: "")) does not fit the changed settings"
                 + (rest.isEmpty ? "." : ": " + rest)
+        }
+        // The name of an exception class is for the log, not for the person: "ValueError: the steps must be positive" says the second part.
+        for pattern in [#"^([A-Za-z_][A-Za-z0-9_.]*)?(Error|Exception|Warning):\s+"#, #"^alife:\s+(error:\s+)?"#, #"^error:\s+"#] {
+            if let range = pick.range(of: pattern, options: .regularExpression), range.upperBound < pick.endIndex {
+                pick = String(pick[range.upperBound...])
+                break
+            }
         }
         return pick.count > 240 ? String(pick.prefix(237)) + "…" : pick
     }
@@ -547,11 +610,8 @@ package struct PlayProgress: Equatable, Sendable {
     /// Where the bar is, 0...1; nil before anything is known.
     package var fraction: Double? {
         switch phase {
-        case .starting: return nil
-        case .houses: return 0.05
-        case .copying: return 0.1
-        case .warmup(let done, let total): return 0.1 + 0.85 * min(1, Double(done) / Double(max(1, total)))
-        case .opening: return 0.97
+        case .warmup(let done, let total): return min(1, Double(done) / Double(max(1, total)))
+        case .starting, .houses, .copying, .opening: return nil
         }
     }
 

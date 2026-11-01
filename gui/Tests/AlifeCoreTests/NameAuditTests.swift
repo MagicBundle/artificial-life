@@ -62,7 +62,7 @@ import Testing
 
     /// The words §2.5 retires or reserves, and the engine's own names, which a page of the new window does not show to the user.
     static let banned = ["Resume", "Checkpoint", "Fork", "Home", "spin-up", "Spin-up", "director.enabled", "Storm Worlds", "Source",
-                         "another window", "Repository", "repository", "the Lab", "Lab's", "Open the Lab", "Go to the Lab", "Mode:", "Director"]
+                         "another window", "Repository", "repository", "its seed", "the Lab", "Lab's", "Open the Lab", "Go to the Lab", "Mode:", "Director"]
 
     private func read(_ file: String, core: Bool) throws -> String {
         let dir = core ? "AlifeCore" : "AlifeControl"
@@ -114,6 +114,22 @@ import Testing
                 let handle = text.hasPrefix("world.") || text.hasPrefix("shell.") || text.contains(".swift")
                 #expect(handle, "'\(word)' in the page string \"\(text)\"")
             }
+        }
+    }
+
+    /// "seed" is the random seed field and nothing else: the world a planet is grown from is "the grown world" (one word, one meaning).
+    @Test func seedMeansOnlyTheRandomSeedAndBranchOnlyWhatBranchDoes() throws {
+        var literalsOfPages: [String] = []
+        for file in Self.sources { literalsOfPages += literals(try read(file, core: false)) }
+        for file in Self.coreSources { literalsOfPages += literals(try read(file, core: true)) }
+        let seedUses = ["Seed \\(", "New seed", "Seed must", "The seed must", "The same seed", "Seed: the preset's", "MadeWorld("]
+        for text in literalsOfPages where text.localizedCaseInsensitiveContains("seed") {
+            #expect(text == "Seed" || text == "seed" || seedUses.contains { text.contains($0) }, "'seed' means the random seed only: \"\(text)\"")
+        }
+        // "branch" is the action of copying a world from its newest save point and changing it; these are the places it is said
+        let branchUses = ["Branch", "-branch", "A branch keeps", "you branch from", "branched from", "branch one"]
+        for text in literalsOfPages where text.localizedCaseInsensitiveContains("branch") {
+            #expect(branchUses.contains { text.contains($0) }, "'branch' is used for something else: \"\(text)\"")
         }
     }
 

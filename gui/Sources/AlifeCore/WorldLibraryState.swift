@@ -130,6 +130,8 @@ package struct LibraryRow: Equatable, Identifiable, Sendable {
     package var isPlaceholder = false
     /// For a seed (`NAME-grow`) whose planet `NAME` was never made: the name it was meant for. The next action is *Make planet*.
     package var unmadePlanet: String?
+    /// The engine says every organism died out in it: no planet can be made from it.
+    package var diedOut = false
 
     package var id: String { name }
     package var hasSavePoint: Bool { step != nil }
@@ -303,7 +305,7 @@ package struct LibraryState: Equatable, Sendable {
         state.unfinished.removeAll { promised.contains(NameFolding.fold($0.name)) }
         // A seed whose planet was never made (the pipeline was stopped, or the app was closed): the next action is Make planet.
         let known = Set(snapshot.records.map { NameFolding.fold($0.name) }).union(snapshot.problems.keys.map(NameFolding.fold)).union(promised)
-        for i in rows.indices where rows[i].kind == .research && rows[i].shape == .planet && rows[i].hasSavePoint && !rows[i].isPlaceholder {
+        for i in rows.indices where rows[i].kind == .research && rows[i].shape == .planet && rows[i].hasSavePoint && !rows[i].isPlaceholder && !rows[i].diedOut {
             guard rows[i].name.hasSuffix(SetupPlan.growSuffix) else { continue }
             let base = String(rows[i].name.dropLast(SetupPlan.growSuffix.count))
             if !base.isEmpty, !known.contains(NameFolding.fold(base)) { rows[i].unmadePlanet = base }
@@ -314,10 +316,12 @@ package struct LibraryState: Equatable, Sendable {
     }
 
     private static func row(_ r: LibraryRecord, kind: WorldKind, state: WorldState, cutOff: Bool) -> LibraryRow {
-        LibraryRow(
+        var row = LibraryRow(
             name: r.name, kind: kind, shape: WorldShape.of(dims: r.dims, geometry: r.geometry), state: state,
             note: kind == .research && state == .saved ? endNote(r.status, cutOff: cutOff) ?? stoppedNote(r) : nil, step: r.steps.last,
             lastSaved: r.lastSaved, madeFrom: SourceRef.parse(r.play?.planet?.source), targetSteps: r.targetSteps)
+        row.diedOut = kind == .research && r.status == "extinct"
+        return row
     }
 
     /// The state of a world: what this app does with it first, then what another process does.

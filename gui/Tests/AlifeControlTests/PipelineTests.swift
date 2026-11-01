@@ -24,8 +24,13 @@ struct PipelineTests {
         let row = rig.library.state.row(named: "planet-1")
         #expect(row?.isPlaceholder == true && row?.state == .growing && row?.kind == .played)
         #expect(await patiently { rig.exists("planet-1-grow") })
-        await rig.scan()
-        #expect(LibraryState.tree(rig.library.state.rows).first { $0.row.name == "planet-1" }?.children.map(\.name) == ["planet-1-grow"])
+        var nested = false
+        for _ in 0..<40 where !nested {
+            await rig.scan()
+            nested = LibraryState.tree(rig.library.state.rows).first { $0.row.name == "planet-1" }?.children.map(\.name) == ["planet-1-grow"]
+            if !nested { try? await Task.sleep(for: .milliseconds(50)) }
+        }
+        #expect(nested, "one click is one world: the seed is nested under the planet")
         #expect(await rig.waitForState { $0 == .live }, "state: \(String(describing: rig.coordinator.plan?.state)) \(rig.controller.logText)")
         #expect(rig.play.phase == .live && rig.play.world == "planet-1")
         #expect(rig.playerStarts == 1, "the window is told that the player's click started the world")
@@ -177,8 +182,8 @@ struct PipelineTests {
         #expect(await rig.create("planet-1").isEmpty)
         #expect(await rig.waitForState { if case .failed = $0 { return true } else { return false } })
         let b = rig.coordinator.banner
-        #expect(b?.title == "Growing failed" && b?.detail == "ValueError: refused by the stand-in")
-        #expect(b?.buttons == [.showLog, .tryAgainNewName, .done] && b?.next == "planet-1-grow is kept as it was written.")
+        #expect(b?.title == "Growing failed" && b?.detail == "refused by the stand-in")
+        #expect(b?.buttons == [.showLog, .tryAgainNewName, .done] && b?.next == "The grown world is kept as it was written.")
         #expect(rig.exists("planet-1-grow") && !rig.exists("planet-1") && rig.play.phase == .idle)
         #expect(!rig.coordinator.isActive, "the form comes back")
         rig.coordinator.press(.showLog)
@@ -312,7 +317,7 @@ struct PipelineTests {
         #expect(await rig.waitForState { if case .failed = $0 { return true } else { return false } })
         let b = rig.coordinator.banner
         #expect(b?.title == "planet-1 could not be made" && b?.tone == .failure)
-        #expect(b?.next == "planet-1-grow is kept, so only the planet needs making again.")
+        #expect(b?.next == "The grown world is kept, so only the planet needs making again.")
         #expect(b?.buttons == [.showLog, .makeAgainNewName, .done])
         #expect(await patiently { rig.dismissedFailures >= 1 }, "the Worlds page does not say it a second time")
         #expect(b?.detail == "The engine could not open the world the planet was to start from. It said: alife play found no usable checkpoint (exit code 4)" || b?.detail.hasPrefix("The engine could not open") == true, "\(b?.detail ?? "")")
@@ -410,7 +415,7 @@ struct PipelineTests {
         defer { rig.finish() }
         #expect(await rig.create("planet-1").isEmpty)
         #expect(await rig.waitForGrowing())
-        #expect(rig.setup.reasons.contains("A world is being made. Wait for it, or stop it."))
+        #expect(rig.setup.reasons.contains("A world is being made. Wait for it, or press Stop in the bar."))
         let setupPlan = rig.setup.plan
         let refusal = rig.coordinator.begin(setupPlan, planet: nil, timing: .init())
         #expect(refusal == "Another world is being made. Wait for it, or stop it.")
@@ -425,7 +430,7 @@ struct PipelineTests {
         await rig.scan()
         let seed = try #require(rig.library.state.row(named: "planet-1-grow"))
         let facts = rig.setup.ruleFacts
-        #expect(SetupRules.reason(.keepGrowing, on: seed, in: facts) == "Already growing.")
+        #expect(SetupRules.reason(.keepGrowing, on: seed, in: facts) == "A world is being made. Wait for it, or press Stop in the bar.")
         #expect(SetupRules.reason(.branch, on: seed, in: facts) != nil, "a run is going")
         // the guard itself, asked for the seed and for the planet that is promised
         let g = rig.coordinator.currentGuard()
@@ -438,13 +443,13 @@ struct PipelineTests {
         let rig = try PipelineRig(mode: "ok:ok")
         defer { rig.finish() }
         await rig.scan()
-        rig.coordinator.elsewhere = { (["planet-1-grow"], []) }
+        rig.coordinator.elsewhere = { ["planet-1-grow"] }
         let reasonsBefore = await rig.create("planet-1")
         #expect(reasonsBefore.isEmpty || reasonsBefore.contains { $0.contains("already here") })
         // the guard is asked again at start, by the coordinator, whatever the form said
         rig.setup.openCreate(.recipe(Recipes.smallPlanet.id))
         rig.setup.name = "planet-9"
-        rig.coordinator.elsewhere = { (["planet-9-grow"], []) }
+        rig.coordinator.elsewhere = { ["planet-9-grow"] }
         let refusal = rig.coordinator.begin(rig.setup.plan, planet: rig.setup.stageTwoSpec(seed: "planet-9-grow"), timing: .init())
         #expect(refusal == "planet-9-grow is in use by another app or process.")
         #expect(rig.coordinator.plan == nil && rig.controller.job == nil)
@@ -533,12 +538,11 @@ struct PipelineTests {
         #expect(await rig.waitForState { $0 == .finished(stopped: false) })
         #expect(rig.exists("src-branch-1") && rig.play.phase == .idle, "a branch is one research world and starts no planet")
         #expect(rig.coordinator.banner?.buttons == [.makePlanet, .keepGrowing, .done])
-        // the edit was remembered: the next form shows it, with a chip, and Reset all puts it back
+        // a branch's edit belongs to that branch: the next Branch starts from its source's own values, and so does a Create
         rig.setup.openBranch(from: "src")
-        #expect(rig.setup.rememberedShown.map(\.key) == ["mutation.rate_min"] && rig.setup.isRemembered("mutation.rate_min"))
-        #expect(rig.controller.settings.levers.rateMin == "0.004")
-        rig.setup.resetRemembered()
-        #expect(rig.controller.settings.levers.rateMin == "0.001" && rig.setup.rememberedShown.isEmpty)
+        #expect(rig.setup.rememberedShown.isEmpty && rig.controller.settings.levers.rateMin == "0.001", "\(rig.controller.settings.levers.rateMin)")
+        rig.setup.openCreate(.recipe(Recipes.smallPlanet.id))
+        #expect(rig.setup.rememberedShown.isEmpty, "only a Create's edits are remembered")
     }
 
     @Test func keepGrowingContinuesAResearchWorldWithoutANewOne() async throws {
@@ -605,5 +609,196 @@ struct PipelineTests {
         rig.setup.openCreate(.recipe(Recipes.flatWorld.id))
         #expect(rig.setup.rememberedShown.map(\.key) == ["mutation.rate_min"])
         #expect(rig.setup.rememberedSkipped == ["physics.gravity"], "kept for a world it fits, and told")
+    }
+
+    // MARK: Review fixes (H1, M1, M6, M7)
+
+    @Test func aWorldThatDiedOutIsNeverReportedAsFinishedAndNeverBecomesAPlanet() async throws {
+        let rig = try PipelineRig(mode: "extinct:ok")
+        defer { rig.finish() }
+        #expect(await rig.create("planet-1").isEmpty)
+        #expect(await rig.waitForState { if case .diedOut = $0 { return true } else { return false } })
+        let b = rig.coordinator.banner
+        #expect(b?.title == "The population died out at step 4,200" && b?.tone == .attention, "\(b?.title ?? "")")
+        #expect(b?.detail.contains("no planet can be made") == true && b?.buttons == [.tryAgainNewName, .done])
+        #expect(rig.coordinator.plan?.step == 4200, "not the 30,000 it was asked to reach")
+        #expect(rig.play.phase == .idle && !rig.exists("planet-1"), "stage 2 never started")
+        #expect(rig.playerStarts == 0)
+        #expect(!rig.coordinator.isActive, "the form comes back")
+        // the library tells the same: the grown world is a research world that died out, offered no planet
+        await rig.scan()
+        let row = try #require(rig.library.state.row(named: "planet-1-grow"))
+        #expect(row.diedOut && row.unmadePlanet == nil)
+        #expect(WorldsGuide.reasonToMakePlanet(from: row, in: WorldsGuide.Facts(folderExists: true, engineReady: true, catalog: rig.library.state.catalog)) == WorldsGuide.diedOutHasNoPlanet)
+        #expect(SetupRules.reason(.makePlanet, on: row, in: rig.setup.ruleFacts) == WorldsGuide.diedOutHasNoPlanet)
+        #expect(SetupRules.reason(.keepGrowing, on: row, in: rig.setup.ruleFacts)?.contains("died out") == true)
+    }
+
+    @Test func aResearchWorldThatDiesOutIsToldAsSuchToo() async throws {
+        let rig = try PipelineRig(mode: "extinct:ok")
+        defer { rig.finish() }
+        #expect(await rig.create("study", goal: .research).isEmpty)
+        #expect(await rig.waitForState { if case .diedOut = $0 { return true } else { return false } })
+        #expect(rig.coordinator.banner?.title == "The population died out at step 4,200")
+    }
+
+    @Test func aPlanetThatEndsByItselfOnAWorldThatDiedOutIsToldTheRealReason() async throws {
+        let rig = try PipelineRig(mode: "ok:extinct")
+        defer { rig.finish() }
+        #expect(await rig.create("planet-1").isEmpty)
+        #expect(await rig.waitForState { if case .diedOut = $0 { return true } else { return false } })
+        #expect(rig.coordinator.banner?.title == "The population died out at step 4,200", "not 'stopped': nobody stopped it")
+        #expect(!(rig.coordinator.banner?.detail.contains("stopped") ?? false))
+    }
+
+    @Test func aPlanetThatEndsByItselfForAnotherReasonIsNotCalledStopped() async throws {
+        let rig = try PipelineRig(mode: "ok:quits")
+        defer { rig.finish() }
+        #expect(await rig.create("planet-1").isEmpty)
+        #expect(await rig.waitForState { if case .failed(.making) = $0 { return true } else { return false } })
+        let b = rig.coordinator.banner
+        #expect(b?.title == "planet-1 could not be made" && b?.detail.contains("ended by itself") == true, "\(b?.detail ?? "")")
+        #expect(!(b?.detail.contains("stopped") ?? false))
+    }
+
+    @Test func makeAgainWithANewNameOnAParkedNameTakenPlanDismissesItAndOpensTheForm() async throws {
+        let rig = try PipelineRig(mode: "long:ok")
+        defer { rig.finish() }
+        // the hook as the window wires it: the page's own model opens the form
+        rig.coordinator.hooks.openSetup = { [unowned rig] intent, name in
+            if case .makePlanet(let world) = intent { rig.setup.openMakePlanet(from: world, name: name) }
+        }
+        #expect(await rig.create("planet-1").isEmpty)
+        #expect(await rig.waitForGrowing())
+        try LibraryTestFolders.research(rig.runs, "planet-1")   // a world of that name appears meanwhile
+        rig.mode = "ok:ok"
+        rig.controller.stop()
+        #expect(await rig.waitForState { if case .parked = $0 { return true } else { return false } })
+        rig.coordinator.press(.makePlanetFromHere)
+        #expect(rig.coordinator.plan?.state == .parked(.nameTaken, step: rig.coordinator.plan?.step ?? 0))
+        #expect(rig.coordinator.isActive, "the page would show the bar and no form")
+        await rig.scan()
+        rig.coordinator.press(.makeAgainNewName)
+        #expect(rig.coordinator.plan == nil && !rig.coordinator.isActive, "the bar went, so the form shows")
+        #expect(rig.setup.intent == .makePlanet(from: "planet-1-grow"))
+        #expect(rig.setup.name == "planet-2", "a free name, not the taken one: \(rig.setup.name)")
+        #expect(rig.setup.reasons.isEmpty, "\(rig.setup.reasons)")
+        rig.setup.start()
+        #expect(await rig.waitForState { $0 == .live })
+        #expect(rig.play.world == "planet-2")
+    }
+
+    @Test func aCardsButtonsAreGreyWhileAWorldIsBeingMadeOrWaitsForAnAnswer() async throws {
+        let rig = try PipelineRig(mode: "long:ok")
+        defer { rig.finish() }
+        try rig.makeSource("src")
+        #expect(await rig.create("planet-1").isEmpty)
+        #expect(await rig.waitForGrowing())
+        let row = try #require(rig.library.state.row(named: "src"))
+        for action in [SetupAction.keepGrowing, .branch, .makePlanet] {
+            #expect(SetupRules.reason(action, on: row, in: rig.setup.ruleFacts) == "A world is being made. Wait for it, or press Stop in the bar.", "\(action)")
+        }
+        rig.controller.stop()
+        #expect(await rig.waitForState { if case .parked = $0 { return true } else { return false } })
+        for action in [SetupAction.keepGrowing, .branch, .makePlanet] {
+            #expect(SetupRules.reason(action, on: row, in: rig.setup.ruleFacts)?.hasPrefix("A world is waiting for your answer") == true, "\(action)")
+        }
+        // and a form is not opened under the bar
+        rig.setup.openBranch(from: "src")
+        #expect(rig.setup.intent == .create || rig.setup.intent != .branch(from: "src"))
+        rig.coordinator.press(.done)
+        rig.setup.openBranch(from: "src")
+        #expect(rig.setup.intent == .branch(from: "src"))
+    }
+
+    @Test func anUnfinishedBranchOrMakePlanetFormSurvivesThePageAppearingAgainInEitherWindow() async throws {
+        let rig = try PipelineRig(mode: "ok:ok")
+        defer { rig.finish() }
+        try rig.makeSource("src", steps: [10_000, 20_000])
+        await rig.scan()
+        let m = rig.setup
+        m.openBranch(from: "src")
+        m.name = "my-branch"
+        rig.controller.settings.levers.world3D.gravity = "0.05"
+        m.pageAppeared()   // the page (or the window of its own) appears
+        m.pageAppeared()   // and the other window
+        #expect(m.intent == .branch(from: "src") && m.name == "my-branch" && rig.controller.settings.levers.world3D.gravity == "0.05")
+        m.openMakePlanet(from: "src")
+        m.name = "my-planet"
+        m.pageAppeared()
+        m.pageAppeared()
+        #expect(m.intent == .makePlanet(from: "src") && m.name == "my-planet")
+        m.openCreate()   // an explicit new world is the only thing that ends them
+        #expect(m.intent == .create && m.name != "my-planet")
+    }
+
+    @Test func theCommandThatRunsIsTheCommandTheFormShowedOrNothingStarts() async throws {
+        let rig = try PipelineRig(mode: "ok:ok")
+        defer { rig.finish() }
+        // the folder has the grown world's name, but the library has not seen it yet: the engine's naming would silently pick `-2`
+        try LibraryTestFolders.research(rig.runs, "planet-1-grow")
+        rig.setup.openCreate(.recipe(Recipes.smallPlanet.id))
+        rig.setup.name = "planet-1"
+        let plan = rig.setup.plan
+        #expect(plan.stages[0].arguments.contains("planet-1-grow") || plan.stages[0].arguments.joined(separator: " ").contains("runs/planet-1-grow"))
+        let refusal = rig.coordinator.begin(plan, planet: rig.setup.stageTwoSpec(seed: "planet-1-grow"), timing: .init())
+        #expect(refusal == "The command changed while it was being started. Press the button again.", "\(refusal ?? "nil")")
+        #expect(rig.coordinator.plan == nil && rig.controller.job == nil)
+    }
+
+    @Test func anExitThatAlreadyCameIsNotCountedTwiceAndAnExitUnderAnotherNameFailsThePlanVisibly() async throws {
+        let rig = try PipelineRig(mode: "long:ok")
+        defer { rig.finish() }
+        #expect(await rig.create("planet-1").isEmpty)
+        #expect(await rig.waitForGrowing())
+        let serial = rig.controller.lastRunExit?.serial ?? 0
+        // a stale exit (a serial the coordinator has already seen) changes nothing
+        rig.coordinator.runEnded(RunExit(run: "planet-1-grow", status: 0, signalled: false, stopRequested: false, forced: false, problem: nil, serial: serial))
+        #expect(rig.coordinator.plan?.state == .growing(stopping: false), "an old exit is not this run's")
+        // an exit of the run, under another name than the one the plan holds: the plan fails in the open instead of waiting for ever
+        rig.coordinator.runEnded(RunExit(run: "other", status: 0, signalled: false, stopRequested: false, forced: false, problem: nil, serial: serial + 1))
+        if case .failed(.growing(let message))? = rig.coordinator.plan?.state { #expect(message.contains("other")) } else { Issue.record("the plan still waits: \(String(describing: rig.coordinator.plan?.state))") }
+        #expect(!rig.coordinator.isActive)
+    }
+
+    @Test func whatWasEditedIsRememberedOnlyOnceTheStartWentThrough() async throws {
+        let rig = try PipelineRig(mode: "ok:ok")
+        defer { rig.finish() }
+        await rig.scan()
+        rig.setup.openCreate(.recipe(Recipes.smallPlanet.id))
+        rig.setup.name = "planet-9"
+        rig.controller.settings.levers.world3D.gravity = "0.09"
+        rig.coordinator.elsewhere = { ["planet-9-grow"] }   // the guard refuses at the moment of the press, whatever the form said
+        rig.setup.start()
+        #expect(rig.setup.refusal == "planet-9-grow is in use by another app or process." && rig.coordinator.plan == nil)
+        rig.setup.openCreate(.recipe(Recipes.smallPlanet.id))
+        #expect(rig.setup.rememberedShown.isEmpty, "a press that was refused remembers nothing")
+        rig.coordinator.elsewhere = { [] }
+        rig.setup.name = "planet-9"
+        rig.controller.settings.levers.world3D.gravity = "0.09"
+        rig.setup.start()
+        #expect(rig.coordinator.plan != nil && rig.setup.refusal == nil)
+        _ = await rig.waitForState { $0 == .live }
+        rig.coordinator.press(.done)
+        rig.setup.openCreate(.recipe(Recipes.smallPlanet.id))
+        #expect(rig.setup.rememberedShown.map(\.key) == ["physics.gravity"])
+    }
+
+    @Test func aLengthOfAnySizeStartsNothingThatCrashes() async throws {
+        let rig = try PipelineRig(mode: "ok:ok")
+        defer { rig.finish() }
+        try rig.makeSource("src", steps: [20_000])
+        await rig.scan()
+        rig.setup.openBranch(from: "src")
+        for huge in [String(Int.max), "99999999999999999999999", "-5", "0", "1e9"] {
+            rig.setup.setGrowSteps(huge)
+            #expect(!rig.setup.reasons.isEmpty, "\(huge) is told, not started")
+        }
+        rig.setup.setGrowSteps("999999999")   // the largest the page accepts
+        #expect(rig.setup.reasons.isEmpty, "\(rig.setup.reasons)")
+        rig.setup.start()
+        #expect(rig.coordinator.plan?.targetSteps == 999_999_999 + 20_000)
+        _ = rig.coordinator.plan?.banner(elapsed: 5)   // the bar reads it
+        rig.controller.forceStop()
     }
 }

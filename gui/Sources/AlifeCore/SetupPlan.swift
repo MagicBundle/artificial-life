@@ -23,6 +23,8 @@ package enum SetupIntent: Equatable, Sendable {
         }
     }
 
+    package var isMakePlanet: Bool { if case .makePlanet = self { return true } else { return false } }
+
     /// The page's title.
     package var title: String {
         switch self {
@@ -96,7 +98,7 @@ package struct SetupPlan: Equatable, Sendable {
     /// `NAME-grow`: the seed of a planet that Create makes.
     package static func seedName(_ name: String) -> String { name + growSuffix }
 
-    /// "This makes 2 worlds: planet-1 (you play it) and planet-1-grow (its seed)."
+    /// "This makes 2 worlds: planet-1 (you play it) and planet-1-grow (the grown world it starts from)."
     package var madeSentence: String? {
         guard made.count > 1 else { return nil }
         let parts = made.map { "\($0.name) (\($0.role))" }
@@ -132,7 +134,7 @@ package struct SetupPlan: Equatable, Sendable {
                         PlanStage(kind: .grow, world: seed, reads: nil, arguments: run.arguments(existingRuns: existing)),
                         PlanStage(kind: .makePlanet, world: asked, reads: seed, arguments: PlayLaunch.arguments(planet: planet)),
                     ],
-                    made: [MadeWorld(name: asked, kind: .played, role: "you play it"), MadeWorld(name: seed, kind: .research, role: "its seed")])
+                    made: [MadeWorld(name: asked, kind: .played, role: "you play it"), MadeWorld(name: seed, kind: .research, role: "the grown world it starts from")])
             }
             var run = settings
             run.name = asked
@@ -187,7 +189,7 @@ package struct SetupPlan: Equatable, Sendable {
         if case .keepGrowing = intent { return [] }
         let name = raw.trimmingCharacters(in: .whitespaces)
         if name.isEmpty { return ["Give the world a name."] }
-        if name.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]*$"#, options: .regularExpression) == nil {
+        if name.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]*\z"#, options: .regularExpression) == nil {
             return ["A name can use letters, digits, dots, dashes and underscores, and must start with a letter or a digit."]
         }
         var out: [String] = []

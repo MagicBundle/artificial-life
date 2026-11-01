@@ -21,7 +21,7 @@ struct SetupModelTests {
         #expect(m.changes.isEmpty && m.otherChanges.isEmpty && m.rememberedShown.isEmpty)
         #expect(m.intent.buttonLabel == "Create")
         #expect(m.growLine == "about 1 min 50 s")
-        #expect(m.plan.madeSentence == "This makes 2 worlds: planet-1 (you play it) and planet-1-grow (its seed).")
+        #expect(m.plan.madeSentence == "This makes 2 worlds: planet-1 (you play it) and planet-1-grow (the grown world it starts from).")
     }
 
     @Test func aFlatWorldIsForResearchOnlyAndSaysWhy() async throws {
@@ -154,21 +154,65 @@ struct SetupModelTests {
         #expect(m.otherChanges.contains("Seed 5") && m.otherChanges.contains("Lighter brains") && m.otherChanges.contains("No powers in the planet"))
     }
 
-    @Test func theSidebarsNewWorldRowOpensACreateAndAMakePlanetFormGivesWayToIt() async throws {
+    @Test func aHalfFilledFormSurvivesThePageAppearingAgainAndOnlyANewWorldEndsIt() async throws {
         let rig = try rig()
         defer { rig.finish() }
         try LibraryTestFolders.research(rig.runs, "src")
         await rig.scan()
         let m = rig.setup
-        m.openMakePlanet(from: "src")
-        #expect(m.intent == .makePlanet(from: "src"))
-        m.pageAppeared()   // the page was asked for by a card: the intent stays
-        #expect(m.intent == .makePlanet(from: "src"))
-        m.pageAppeared()   // the sidebar's row
+        m.pageAppeared()   // the page restored at launch: a Create
         #expect(m.intent == .create)
         m.name = "mine"
         m.pageAppeared()
         #expect(m.name == "mine", "a Create form is kept when the page is shown again")
+        m.openMakePlanet(from: "src")
+        #expect(m.intent == .makePlanet(from: "src"))
+        m.pageAppeared()   // a card asked for the page; and then the window of its own, and the sidebar's row
+        m.pageAppeared()
+        #expect(m.intent == .makePlanet(from: "src"), "an unfinished Make planet is not turned into a Create by the page appearing")
+        m.openCreate()     // File > New World, the Worlds page's button, the form's own "New world instead"
+        #expect(m.intent == .create)
+    }
+
+    @Test func theLengthOfAPresetWithoutOneIsTheEnginesAndSaysSo() async throws {
+        let rig = try rig()
+        defer { rig.finish() }
+        await rig.scan()
+        let m = rig.setup
+        m.openCreate()
+        #expect(m.stepsOrigin == "This is the recipe's own length.")
+        m.choose(.preset(.k64_3s))
+        #expect(m.growSteps == "100000" && m.stepsOrigin.contains("engine's usual length"), "\(m.growSteps) \(m.stepsOrigin)")
+        m.choose(.preset(.tiny))
+        #expect(m.growSteps != "30000" || m.stepsOrigin.contains("preset's own"))
+    }
+
+    @Test func theTimeLineSaysWhoseMachineMeasuredItAndThatTheFirstWorldIsSlower() async throws {
+        let rig = try rig()
+        defer { rig.finish() }
+        await rig.scan()
+        let m = rig.setup
+        m.openCreate()
+        #expect(m.timeSentence == "About 1 min 50 s on a recent Mac (measured on an M5 Pro), then about 10 s to make the planet.", "\(m.timeSentence ?? "")")
+        #expect(m.timeNote?.contains("The first world after installing alife takes longer") == true)
+        m.goal = .research
+        #expect(m.timeSentence == "About 1 min 50 s on a recent Mac (measured on an M5 Pro).")
+        m.setGrowSteps("3000")
+        #expect(m.timeSentence?.contains("Very short") == true && m.timeSentence?.hasSuffix(".") == true && m.timeSentence?.contains("..") == false, "\(m.timeSentence ?? "")")
+        m.openBranch(from: "x")
+        #expect(m.timeSentence == nil && m.timeNote == nil)
+    }
+
+    @Test func familyLinesAndThePlanetsWordsAreInPlainWordsAndShownAsChanges() async throws {
+        let rig = try rig()
+        defer { rig.finish() }
+        await rig.scan()
+        let m = rig.setup
+        m.openCreate()
+        #expect(PlayHouses.allCases.map(\.plainTitle).sorted() == ["Automatically", "Exactly", "Roughly"])
+        #expect(!m.otherChanges.contains { $0.contains("Family lines") })
+        m.houses = .clade
+        #expect(m.otherChanges.contains("Family lines rebuilt roughly"), "houses is remembered across forms, so it is shown: \(m.otherChanges)")
     }
 
     @Test func eachIntentShowsWhatItWillDoInTheCommand() async throws {

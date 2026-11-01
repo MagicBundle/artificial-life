@@ -43,13 +43,12 @@ import Testing
         }
     }
 
-    @Test func aDirectoryAnotherProcessHoldsIsRefusedAndOneItSeemsToWriteIsWarnedAbout() {
-        let g = DirectoryGuard(writers: [:], heldElsewhere: ["held"], seemsWrittenElsewhere: ["busy"])
+    @Test func aDirectoryAnotherProcessHoldsIsRefusedNotJustWarnedAbout() {
+        let g = DirectoryGuard(writers: [:], heldElsewhere: ["held"])
         #expect(g.writeRefusal("held") == "held is in use by another app or process.")
         #expect(g.writeRefusal("HELD") != nil)
-        #expect(g.writeRefusal("busy") == nil, "no lock shows a foreign run: only a warning")
-        #expect(g.readWarning("busy")?.contains("seems to be in use by another process") == true)
-        #expect(g.readWarning("held") != nil && g.readWarning("quiet") == nil)
+        #expect(g.writeRefusal("quiet") == nil)
+        #expect(g.readWarning("held")?.contains("seems to be in use by another process") == true && g.readWarning("quiet") == nil)
     }
 
     @Test func recordingReplacesWhatWasThere() {
@@ -134,7 +133,7 @@ import Testing
         #expect(SetupRules.note(.branch, on: row(.growing), in: facts()) == "w is still growing. This starts from its newest save point.")
         #expect(SetupRules.note(.makePlanet, on: row(.growing), in: facts()) != nil)
         #expect(SetupRules.note(.keepGrowing, on: row(.growing), in: facts()) == nil)
-        let g = DirectoryGuard(writers: [:], heldElsewhere: [], seemsWrittenElsewhere: ["w"])
+        let g = DirectoryGuard(writers: [:], heldElsewhere: ["w"])
         #expect(SetupRules.note(.branch, on: row(.saved), in: facts(guardState: g))?.contains("another process") == true)
         #expect(SetupRules.note(.branch, on: row(.saved), in: facts()) == nil)
     }

@@ -171,7 +171,7 @@ struct AppShellView: View {
         }
         setup.coordinator.elsewhere = { [weak library] in
             let rows = library?.state.rows ?? []
-            return (Set(rows.filter { $0.state == .inUseElsewhere }.map(\.name)), [])
+            return Set(rows.filter { $0.state == .inUseElsewhere }.map(\.name))
         }
     }
 
