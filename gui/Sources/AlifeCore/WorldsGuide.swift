@@ -69,7 +69,7 @@ package enum WorldsGuide {
     package static func reason(forPlaying world: PlayWorld, in facts: Facts) -> String? {
         if let open = facts.openWorld { return open == world.name ? "Open now" : "Close \(open) first" }
         if facts.saving.contains(world.name) { return "Saving..." }
-        if world.locked { return "In use by another app" }
+        if world.locked { return WorldState.inUseElsewhere.title }
         if world.newestStep == nil { return "No save point" }
         return nil
     }
@@ -112,24 +112,71 @@ package enum WorldsGuide {
     package static func summary(_ world: PlayWorld, now: Date = Date()) -> String {
         var parts: [String] = [world.geometry == "sphere" ? "Planet" : "World"]
         if let step = world.newestStep { parts.append("step " + grouped(step)) }
-        if world.file.planet != nil, let source = world.file.planet?.source { parts.append("made from " + source) }
+        if let source = SourceRef.parse(world.file.planet?.source) { parts.append("made from " + source.name) }
         let when = relative(world.modified, now: now)
         parts.append(when == "just now" ? "saved just now" : "saved " + when)
         return parts.joined(separator: " · ")
     }
 
-    package static func grouped(_ n: Int) -> String {
+    // (Formatters are slow to make and a long list asks for hundreds of strings: made once, used from the main actor and the tests'.)
+    private nonisolated(unsafe) static let groupedFormatter: NumberFormatter = {
         let f = NumberFormatter()
         f.numberStyle = .decimal
         f.locale = Locale(identifier: "en_US")
-        return f.string(from: NSNumber(value: n)) ?? String(n)
+        return f
+    }()
+    private nonisolated(unsafe) static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .full
+        f.locale = Locale(identifier: "en_US")
+        return f
+    }()
+    private static let formatterLock = NSLock()
+
+    package static func grouped(_ n: Int) -> String {
+        formatterLock.lock()
+        defer { formatterLock.unlock() }
+        return groupedFormatter.string(from: NSNumber(value: n)) ?? String(n)
     }
 
     package static func relative(_ date: Date, now: Date) -> String {
         if abs(now.timeIntervalSince(date)) < 60 { return "just now" }
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .full
-        f.locale = Locale(identifier: "en_US")
-        return f.localizedString(for: date, relativeTo: now)
+        formatterLock.lock()
+        defer { formatterLock.unlock() }
+        return relativeFormatter.localizedString(for: date, relativeTo: now)
+    }
+
+    // MARK: The library's cards (docs/APP.md §5.2)
+
+    /// Why *Make planet* is unavailable from this world's card; nil when it can be made. Always said beside the grey button.
+    package static func reasonToMakePlanet(from row: LibraryRow, in facts: Facts) -> String? {
+        // (Short: the open world's card at the top of the page says why, and every card repeats this line.)
+        if let open = facts.openWorld { return open == row.name ? "Close it first" : "Close \(open) first" }
+        if !facts.folderExists { return facts.folderProblem ?? "The alife folder was not found." }
+        if !facts.engineReady { return "Set up the engine first." }
+        if row.state == .saving || facts.saving.contains(row.name) { return "Saving..." }
+        if !row.hasSavePoint { return "No save point to start from yet." }
+        return nil
+    }
+
+    /// Why *Make again with a new name* is unavailable for an unfinished build; nil when it can be done. `source` is the world it was made
+    /// from (from `meta.json`, or from this session's own request) and `sourceHasSavePoint` says whether that world is still here with a save
+    /// point: the new planet is made from one.
+    package static func reasonToMakeAgain(source: String?, sourceHasSavePoint: Bool, in facts: Facts) -> String? {
+        guard let source else { return "It does not say which world it was made from." }
+        if !sourceHasSavePoint { return "\(source) is no longer here with a save point." }
+        return reasonToMakePlanet(facts)
+    }
+
+    /// What the list says when it has nothing to show, and what to do next.
+    package static func emptyList(filter: LibraryFilter, query: String, counts: LibraryCounts) -> String {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        if !q.isEmpty { return "No \(filter == .all ? "world" : filter.title.lowercased() + " world") matches \u{201C}\(q)\u{201D}. Check the spelling, or clear the search." }
+        switch filter {
+        case .all: return "There is no world in this folder yet."
+        case .played: return "No played worlds yet. Choose a research world and press Make planet… to make one."
+        case .research: return "No research worlds yet. A research world is grown in the Lab."
+        case .unfinished: return counts.unfinished == 0 ? "No unfinished builds. Every planet that was started finished." : ""
+        }
     }
 }
