@@ -409,6 +409,8 @@ import Testing
     @Test func aPlanetThatDidNotOpenIsToldInPlainWordsWithTheEnginesLastLine() {
         #expect(PipelineWords.planetFailure("alife play found no usable checkpoint (exit code 4): alife play: refused (exit code 4)")
             == "The engine could not open the world the planet was to start from. It said: alife play: refused (exit code 4)")
+        #expect(PipelineWords.planetFailure("alife play failed (exit code 4): alife play found no usable checkpoint (exit code 4)")
+            == "The engine could not open the world the planet was to start from. It said: alife play found no usable save point (exit code 4)")
         #expect(PipelineWords.planetFailure("alife play failed (exit code 1)") == "The engine stopped while it was making the planet.")
         #expect(PipelineWords.planetFailure("alife play refused the request (exit code 2): weather needs 3D") == "The engine did not accept the planet's settings. It said: weather needs 3D")
         #expect(PipelineWords.planetFailure("alife play was interrupted (exit code 130)") == "The planet was interrupted.")

@@ -476,6 +476,7 @@ package enum PipelineWords {
         default: head = "The engine stopped (code \(code))"
         }
         let said = message[range.upperBound...].trimmingCharacters(in: CharacterSet(charactersIn: ": ").union(.whitespacesAndNewlines))
+            .replacingOccurrences(of: "checkpoint", with: "save point")
         return said.isEmpty ? head + "." : head + ". It said: " + said
     }
 
