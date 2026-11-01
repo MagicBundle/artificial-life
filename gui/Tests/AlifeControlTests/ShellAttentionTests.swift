@@ -139,9 +139,16 @@ import Testing
         let delegate = delegate(.alife)
         var opened = 0
         delegate.reopenMainWindow = { opened += 1 }
-        #expect(delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false) == false)
+        let stray = window(nil)  // the glass window of the quit question's alert, which stays visible after Cancel
+        defer { stray.close() }
+        delegate.windowsProvider = { [stray] }
+        // AppKit says a window is visible (the stray one): the main window is not, so it comes back
+        #expect(delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: true) == false)
         #expect(opened == 1)
-        #expect(delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: true), "with a window showing, AppKit does as it does")
+        let main = window(AppShell.mainWindowID)
+        defer { main.close() }
+        delegate.windowsProvider = { [stray, main] }
+        #expect(delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: true), "with the main window showing, AppKit does as it does")
         #expect(opened == 1)
     }
 

@@ -81,20 +81,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Dock click by itself.
     var reopenMainWindow: (() -> Void)?
 
-    /// A click on the Dock icon (or `open` on the running app) with no window showing: the shell's window comes back, whatever kept the
-    /// app alive (a Cancel at the quit question, a window that was left open). The old apps keep AppKit's own handling.
+    /// A click on the Dock icon (or `open` on the running app) with the main window not showing: it comes back, whatever kept the app
+    /// alive (a Cancel at the quit question, a window that was left open). AppKit's own `hasVisibleWindows` is not used: on this macOS the
+    /// quit question's alert leaves a glass-effect window that counts as visible long after it was answered (seen in the running app: the
+    /// reopen event found "visible windows" and did nothing). The old apps keep AppKit's own handling.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        guard plan.isShell, !flag, let reopenMainWindow else { return true }
+        guard plan.isShell, let reopenMainWindow else { return true }
+        let shown = windowsProvider().contains { $0.isVisible && $0.identifier?.rawValue == AppShell.mainWindowID }
+        guard !shown else { return true }
         reopenMainWindow()
         return false
     }
 
+    /// The windows the reopen and the close look at (tests replace it).
+    var windowsProvider: () -> [NSWindow] = { NSApp.windows }
+
     /// The main window of the `alife` window closed: it is the app's window, so closing it is closing the last one. The other windows
     /// it leaves (Settings, the 3D Viewer) go with it, which lets AppKit end the app as it does after any last window
     /// (`applicationShouldTerminateAfterLastWindowClosed`), through the question and the wait of the quit. `windows` is injectable.
-    func mainWindowClosed(windows: () -> [NSWindow] = { NSApp.windows }) {
+    func mainWindowClosed(windows: (() -> [NSWindow])? = nil) {
         guard plan.isShell else { return }
-        for window in windows() where window.isVisible && !(window is NSPanel) && window.identifier?.rawValue != AppShell.mainWindowID {
+        for window in (windows ?? windowsProvider)() where window.isVisible && !(window is NSPanel) && window.identifier?.rawValue != AppShell.mainWindowID {
             window.close()
         }
     }
