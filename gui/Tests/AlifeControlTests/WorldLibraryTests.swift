@@ -184,7 +184,7 @@ import Testing
         defer { defaults.removePersistentDomain(forName: suite) }
         let play = PlayController()
         let shell = ShellModel(session: WorldSession(play: play, defaults: defaults), defaults: defaults)
-        shell.select(.lab)
+        shell.select(.setup)
         library.query = "zzz"
         SidebarItem.world("p").choose(shell: shell, library: library)
         #expect(shell.page == .worlds && library.selected == "p" && library.query == "", "a search that would hide the world is cleared")

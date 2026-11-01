@@ -214,7 +214,7 @@ import Testing
         let none = LibraryCounts()
         #expect(WorldsGuide.emptyList(filter: .all, query: "zz", counts: none).contains("\u{201C}zz\u{201D}"))
         #expect(WorldsGuide.emptyList(filter: .played, query: "", counts: none).contains("Make planet…"))
-        #expect(WorldsGuide.emptyList(filter: .research, query: "", counts: none).contains("Lab"))
+        #expect(WorldsGuide.emptyList(filter: .research, query: "", counts: none).contains("New world"))
         #expect(WorldsGuide.emptyList(filter: .unfinished, query: "", counts: none).hasPrefix("No unfinished builds"))
     }
 

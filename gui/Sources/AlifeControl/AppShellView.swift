@@ -38,7 +38,7 @@ struct AppShellView: View {
         } detail: {
             VStack(spacing: 0) {
                 // The pipeline's bar is on every page but the one that shows it in full: the wait is never out of sight.
-                if shell.page != .setup, setup.coordinator.banner != nil {
+                if showsStrip {
                     PipelineStrip(coordinator: setup.coordinator) { shell.select(.setup) }
                 }
                 ZStack {
@@ -85,6 +85,12 @@ struct AppShellView: View {
             // `--world RUN` (a fresh launch): started once, through the same path as Play.
             shell.handleLaunch(arguments: arguments, controller: controller)
         }
+    }
+
+    /// The pipeline's bar is on every page but the one that shows it in full, and not on Watch once the planet it made is there to see.
+    private var showsStrip: Bool {
+        guard setup.coordinator.banner != nil, shell.page != .setup else { return false }
+        return !(shell.page == .watch && setup.coordinator.plan?.state == .live)
     }
 
     @ViewBuilder private var page: some View {

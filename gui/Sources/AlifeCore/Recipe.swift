@@ -73,19 +73,19 @@ package enum Recipes {
         id: "small-planet", title: "Small planet",
         blurb: "A small planet with simple life that has had time to evolve.",
         preset: .tiny3s, growSteps: 30_000, goals: [.play, .research], nameBase: "planet",
-        measured: .init(stepsPerSecond: 334, startSeconds: 16, planetSeconds: nil, date: "2026-11-01"))
+        measured: .init(stepsPerSecond: 334, startSeconds: 16, planetSeconds: 11, date: "2026-11-01"))
 
     package static let biggerPlanet = Recipe(
         id: "bigger-planet", title: "Bigger planet",
         blurb: "A larger planet with more room for life. It takes a good deal longer.",
         preset: .mini3s, growSteps: 100_000, goals: [.play, .research], nameBase: "planet",
-        measured: nil)
+        measured: .init(stepsPerSecond: 218, startSeconds: 24, planetSeconds: 13, date: "2026-11-01"))
 
     package static let flatWorld = Recipe(
         id: "flat-world", title: "Flat world",
         blurb: "A flat world to study. It has no weather, so it is for research only.",
         preset: .dev, growSteps: 20_000, goals: [.research], nameBase: "flat",
-        measured: nil)
+        measured: .init(stepsPerSecond: 352, startSeconds: 3, planetSeconds: nil, date: "2026-11-01"))
 
     package static let all = [smallPlanet, biggerPlanet, flatWorld]
 

@@ -172,7 +172,7 @@ struct WorldsPage: View {
                     .font(.caption).foregroundStyle(.secondary)
             case .makeFirstRun:
                 header("sparkles", "Start your first world")
-                Text("Press Create and alife grows a small planet for you, then opens it. It takes about two minutes, and you see how far it has got all the time.")
+                Text("alife grows a small planet for you and then opens it. It takes about two minutes, and you see how far it has got all the time.")
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Button("Create a small planet") { setup.openCreate(.recipe(Recipes.smallPlanet.id)) }

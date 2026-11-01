@@ -197,7 +197,10 @@ struct PipelineStrip: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
-            .background(banner.tone.tint.opacity(0.12))
+            .background {
+                // (an opaque page colour under the tint: the strip sits under the title bar, over a dark Watch or a light page alike)
+                ZStack { Color(nsColor: .windowBackgroundColor); banner.tone.tint.opacity(0.12) }
+            }
             .overlay(alignment: .bottom) { Divider() }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("\(banner.title). \(banner.detail)")

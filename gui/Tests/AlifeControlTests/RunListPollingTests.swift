@@ -64,7 +64,7 @@ import Testing
         #expect(controller.runs.contains("made_a_moment_ago"), "the name that Start will use is chosen against the folder as it is")
     }
 
-    @Test func theWindowPollsOnlyWhileTheLabIsShownAndListsOnTheWayIn() async throws {
+    @Test func theWindowPollsOnlyWhileTheSetUpPageIsShownAndListsOnTheWayIn() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
         let root = try folder(scratch)
@@ -85,8 +85,8 @@ import Testing
         defer { window.orderOut(nil) }
         #expect(await eventually(timeout: .seconds(10)) { !controller.pollsRunList }, "the window opens on Worlds: the ticker leaves the list alone")
         try newRun(root, "made_while_away")
-        shell.select(.lab)
-        #expect(await eventually(timeout: .seconds(10)) { controller.pollsRunList }, "on the Lab's page it polls")
+        shell.select(.setup)
+        #expect(await eventually(timeout: .seconds(10)) { controller.pollsRunList }, "on the set-up page it polls")
         #expect(controller.runs.contains("made_while_away"), "and the list is read once on the way in")
         shell.select(.worlds)
         #expect(await eventually(timeout: .seconds(10)) { !controller.pollsRunList })

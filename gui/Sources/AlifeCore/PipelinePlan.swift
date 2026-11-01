@@ -368,22 +368,22 @@ package struct PipelinePlan: Equatable, Sendable {
                     fraction: nil, next: nil, buttons: [.makePlanetFromHere, .keepGrowing, .done])
             case .notVisible:
                 return Banner(
-                    tone: .attention, title: "\(growName ?? planet) is grown",
+                    tone: .attention, title: "\(growName ?? planet) has finished growing",
                     detail: "It finished while the window was not in front, so the planet was not started behind your back.",
                     fraction: nil, next: nil, buttons: [.makePlanet, .keepGrowing, .done])
             case .worldOpen(let open):
                 return Banner(
-                    tone: .attention, title: "\(growName ?? planet) is grown",
+                    tone: .attention, title: "\(growName ?? planet) has finished growing",
                     detail: "\(open) is open, and a new planet replaces the open world. Close \(open), then make the planet.",
                     fraction: nil, next: nil, buttons: [.makePlanet, .done])
             case .nameTaken:
                 return Banner(
-                    tone: .attention, title: "\(growName ?? planet) is grown",
+                    tone: .attention, title: "\(growName ?? planet) has finished growing",
                     detail: "A world called \(planet) appeared while it grew. Make the planet under a new name.",
                     fraction: nil, next: nil, buttons: [.makeAgainNewName, .done])
             case .engineMissing:
                 return Banner(
-                    tone: .attention, title: "\(growName ?? planet) is grown",
+                    tone: .attention, title: "\(growName ?? planet) has finished growing",
                     detail: "The engine cannot be found. Set it up in Settings, then make the planet.",
                     fraction: nil, next: nil, buttons: [.makePlanet, .done])
             }
@@ -401,7 +401,7 @@ package struct PipelinePlan: Equatable, Sendable {
         case .finished(let stopped):
             let world = growName ?? planet
             return Banner(
-                tone: .success, title: stopped ? "Stopped at step \(WorldsGuide.grouped(step))" : "\(world) is grown",
+                tone: .success, title: stopped ? "Stopped at step \(WorldsGuide.grouped(step))" : "\(world) has finished growing",
                 detail: stopped ? "\(world) is saved. Keep growing continues it later." : "\(world) is saved at step \(WorldsGuide.grouped(step)).",
                 fraction: nil, next: nil, buttons: (offersPlanet ? [.makePlanet] : []) + [.keepGrowing, .done])
         case .failed(.growing(let message)):

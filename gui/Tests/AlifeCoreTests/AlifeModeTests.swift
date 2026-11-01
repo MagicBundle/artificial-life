@@ -46,19 +46,19 @@ import Testing
 @Suite struct ShellPageTests {
     @Test func theCommandKeysFollowTheSidebarOrder() {
         #expect(ShellPage.allCases.map(\.key) == ["1", "2", "3", "4"])
-        #expect(ShellPage.allCases == [.worlds, .watch, .activity, .lab])
+        #expect(ShellPage.allCases == [.worlds, .watch, .activity, .setup])
         #expect(Set(ShellPage.allCases.map(\.key)).count == ShellPage.allCases.count)
         #expect(Set(ShellPage.allCases.map(\.title)).count == ShellPage.allCases.count)
     }
 
     @Test func theNamesAreTheSpecsOnes() {
-        #expect(ShellPage.allCases.map(\.title) == ["Worlds", "Watch", "Activity", "Lab"])
+        #expect(ShellPage.allCases.map(\.title) == ["Worlds", "Watch", "Activity", "New world"])
         // Resume, Home and Continue are not page names; "Watch" is the picture
         for page in ShellPage.allCases { #expect(!["Resume", "Home", "World", "3D Viewer"].contains(page.title)) }
     }
 
     @Test func aRememberedPageIsRestoredExceptWatch() {
-        #expect(ShellPage.restored(from: "lab") == .lab)
+        #expect(ShellPage.restored(from: "setup") == .setup)
         #expect(ShellPage.restored(from: "activity") == .activity)
         #expect(ShellPage.restored(from: "watch") == .worlds)  // opening the app starts nothing, so no world is open to watch
         #expect(ShellPage.restored(from: nil) == .worlds)

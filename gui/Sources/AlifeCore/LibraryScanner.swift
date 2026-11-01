@@ -175,7 +175,9 @@ package final class LibraryScanner: @unchecked Sendable {
     private var cache: [String: Cached] = [:]
     private let stuck = StuckSet()
     private var lastSnapshot = LibrarySnapshot()
-    private let lane = DispatchQueue(label: "alife.library.lane", qos: .userInitiated, attributes: .concurrent)
+    /// The lane every look at an entry runs on; nil when the scanner looks on the thread that asks (`inline`, for the tests of other things
+    /// that need a library: a full test run keeps the process's worker threads busy, and a deadline would then be spent waiting for one).
+    private let lane: DispatchQueue?
     package private(set) var lastStats = LibraryScanStats()
     package let settle: TimeInterval
     package let timeout: TimeInterval
@@ -183,9 +185,10 @@ package final class LibraryScanner: @unchecked Sendable {
     package nonisolated(unsafe) var inspectHook: (@Sendable (String) -> Void)?
 
     /// `settle`: seconds a stamp must be older than the read to be trusted (2: coarse disk dates). `timeout`: the deadline of each look.
-    package init(settle: TimeInterval = 2, timeout: TimeInterval = 3) {
+    package init(settle: TimeInterval = 2, timeout: TimeInterval = 3, inline: Bool = false) {
         self.settle = settle
         self.timeout = timeout
+        lane = inline ? nil : DispatchQueue(label: "alife.library.lane", qos: .userInitiated, attributes: .concurrent)
     }
 
     /// The shortest time a world may be quiet and still be running. The engine writes a row of `metrics.jsonl` every `metrics_every` steps
@@ -484,9 +487,18 @@ private enum Lane {
     }
 
     static func run<T: Sendable>(
-        lane: DispatchQueue, timeout: TimeInterval, pending: StuckSet?, jobs: [(String, @Sendable () -> T)]
+        lane: DispatchQueue?, timeout: TimeInterval, pending: StuckSet?, jobs: [(String, @Sendable () -> T)]
     ) -> (done: [String: T], late: Set<String>) {
         guard !jobs.isEmpty else { return ([:], []) }
+        guard let lane else {
+            var done: [String: T] = [:]
+            for (key, work) in jobs {
+                if let pending, !pending.begin(key) { continue }
+                done[key] = work()
+                pending?.end(key)
+            }
+            return (done, Set(jobs.map(\.0)).subtracting(done.keys))
+        }
         let collector = Collector<T>()
         let group = DispatchGroup()
         for (key, work) in jobs {

@@ -7,7 +7,7 @@ import Testing
 @testable import AlifeControl
 
 /// The library object while the world changes under it: the watch on `runs/`, the follow-up scans, the folder that changes during a scan,
-/// the menu's Reveal, the Lab's refusal and the sidebar's anchor (docs/APP.md §5.2, §5.3).
+/// the menu's Reveal, the refusal of Keep growing and the sidebar's anchor (docs/APP.md §5.2, §5.3).
 @MainActor
 @Suite("The library while things change", .serialized) struct LibraryLiveTests {
     private func runs(_ scratch: Scratch, _ name: String = "runs") throws -> URL {
@@ -195,8 +195,8 @@ import Testing
         library.revealURL = { shown.append($0) }
         library.select("r", scroll: false)
         var fallbacks = 0
-        await library.revealFromMenu(page: .lab) { fallbacks += 1 }
-        #expect(fallbacks == 1 && shown.isEmpty, "on the Lab's page the Lab's run is the one: the world chosen on Worlds is not")
+        await library.revealFromMenu(page: .setup) { fallbacks += 1 }
+        #expect(fallbacks == 1 && shown.isEmpty, "on a page that is not Worlds the fallback is the one: the world chosen on Worlds is not")
         await library.revealFromMenu(page: .worlds) { fallbacks += 1 }
         #expect(fallbacks == 1 && shown.map(\.lastPathComponent) == ["r"])
         try FileManager.default.removeItem(at: dir)
@@ -207,9 +207,9 @@ import Testing
         #expect(fallbacks == 2, "nothing is chosen any more: the fallback is the alife folder")
     }
 
-    // MARK: H1: the Lab
+    // MARK: H1: Keep growing
 
-    @Test func theLabRefusesToContinueAWorldThatIsPlayedOrInUse() async throws {
+    @Test func keepGrowingRefusesToContinueAWorldThatIsPlayedOrInUse() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
         let runs = try runs(scratch)
@@ -224,7 +224,7 @@ import Testing
         #expect(library.reasonNotToResume("ok") == nil)
         #expect(library.reasonNotToResume("played")?.contains("is a played world") == true)
         #expect(library.reasonNotToResume("build")?.contains("unfinished build") == true)
-        #expect(library.reasonNotToResume("nothing") == nil, "the Lab's own check says a missing run does not exist")
+        #expect(library.reasonNotToResume("nothing") == nil, "the refusal says a missing run does not exist")
         library.update(live: LiveFacts(openWorld: "mine"))
         #expect(await eventually { library.reasonNotToResume("mine") != nil })
         #expect(library.reasonNotToResume("mine") == "'runs/mine' is open in this window.")
@@ -244,7 +244,7 @@ import Testing
         #expect(library.reasonNotToResume("busy") == "'runs/busy' is in use by another app or process. Wait until it stops.")
     }
 
-    @Test func theLabsStartIsGreyWithThatReason() throws {
+    @Test func keepGrowingsStartIsGreyWithThatReason() throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
         let root = scratch.url.appendingPathComponent("folder")

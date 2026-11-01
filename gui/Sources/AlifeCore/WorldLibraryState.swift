@@ -265,7 +265,8 @@ package struct LibraryState: Equatable, Sendable {
                     name: r.name, file: r.play!, newestStep: r.steps.last, status: r.status, modified: r.lastSaved, locked: held || written,
                     geometry: r.geometry, planetRadius: r.planetRadius))
                 listed = true
-            } else if r.looksUnfinished, !held {
+            } else if r.looksUnfinished, !held, live.growing != r.name {
+                // (the run this app grows is a research world, never an unfinished build, whatever it looks like in the moment it is being written)
                 var note = notes[r.name]
                 if let when = noteTimes[r.name], r.lastSaved.timeIntervalSince(when) > 5 { note = nil }
                 state.unfinished.append(unfinishedRow(r, note: note))

@@ -57,7 +57,7 @@ struct SetupPage: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(model.intent.title).font(.largeTitle.weight(.semibold))
-            if coordinator.isActive {
+            if let state = coordinator.plan?.state, state == .growing(stopping: false) || state == .growing(stopping: true) || state == .making(cancelling: false) || state == .making(cancelling: true) {
                 Text("alife is making this for you. You can look at other pages meanwhile; the same bar stays at the top of each of them.")
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else if coordinator.plan == nil {

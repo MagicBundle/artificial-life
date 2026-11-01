@@ -5,7 +5,8 @@ import Testing
 
 /// One word per action (docs/APP.md §2.5), for the pages of the alife window that are new: every label that triggers an action is in
 /// the table with the action it triggers; no label triggers two actions and no action has two labels; and none of the words §2.5 retires
-/// is in a string the pages show. (The Lab page keeps today's words until PR-D and is not scanned; PR-D extends this to the set-up page.)
+/// is in a string the pages show. PR-D extends it to the set-up page, the pipeline's bar and the cards' new buttons, and to the Lab's and
+/// the launcher's words, which no page of the window has any more.
 @Suite struct NameAuditTests {
     /// (the label on the button or menu item, the action it triggers). The pages' sources are checked to contain each label.
     static let actions: [(label: String, action: String)] = [
@@ -22,7 +23,26 @@ import Testing
         ("Go to Worlds", "show-worlds"),
         ("Back to Worlds", "show-worlds"),
         ("Show Activity", "show-activity"),
-        ("Open the Lab", "show-lab"),
+        ("New world", "new-world"),
+        ("New World…", "new-world"),  // the File menu's item
+        ("Create a small planet", "create-small-planet"),
+        ("Choose something else…", "new-world"),
+        ("Create", "start-create"),
+        ("Branch", "start-branch"),
+        ("Branch…", "open-branch-form"),
+        ("Keep growing", "start-keep-growing"),
+        ("Keep growing…", "open-keep-growing-form"),
+        ("Make planet from here", "make-planet"),  // the bar's button for a world that was stopped: the same action as Make planet
+        ("Done", "pipeline-done"),
+        ("Show log", "show-activity"),  // the log is on the Activity page
+        ("Try again with a new name", "retry-new-name"),
+        ("Show progress", "show-setup"),
+        ("Open in window", "open-setup-window"),
+        ("Reset all", "reset-remembered"),
+        ("Copy command", "copy-command"),
+        ("Watch in 3D viewer", "watch-3d-viewer"),
+        ("Open Classic 2D Viewer", "open-classic-viewer"),
+        ("Check world", "check-world"),
         ("Overview", "camera-overview"),
         ("Set up engine", "set-up-engine"),
         ("Check again", "check-engine"),
@@ -34,13 +54,15 @@ import Testing
 
     /// The page sources that are new in PR-B (the Lab page is `LabPage.swift`).
     static let sources = ["WorldsPage.swift", "ActivityPage.swift", "WatchPage.swift", "GeneralSettingsView.swift", "AppShellView.swift",
-                          "AlifeApp.swift", "WorldCards.swift", "WorldLibrary.swift"]
+                          "AlifeApp.swift", "WorldCards.swift", "WorldLibrary.swift", "SetupPage.swift", "SetupModel.swift", "PipelineViews.swift",
+                          "PipelineCoordinator.swift", "RunNumbersView.swift"]
     static let coreSources = ["WorldsGuide.swift", "ActivityGuide.swift", "WatchCue.swift", "ShellPage.swift", "WorldLibraryState.swift",
-                              "LibraryScanner.swift"]
+                              "LibraryScanner.swift", "Recipe.swift", "PipelinePlan.swift", "SetupPlan.swift", "SetupSettings.swift",
+                              "DirectoryGuard.swift"]
 
     /// The words §2.5 retires or reserves, and the engine's own names, which a page of the new window does not show to the user.
     static let banned = ["Resume", "Checkpoint", "Fork", "Home", "spin-up", "Spin-up", "director.enabled", "Storm Worlds", "Source",
-                         "another window", "branch", "Repository", "repository"]
+                         "another window", "Repository", "repository", "the Lab", "Lab's", "Open the Lab", "Go to the Lab", "Mode:", "Director"]
 
     private func read(_ file: String, core: Bool) throws -> String {
         let dir = core ? "AlifeCore" : "AlifeControl"
@@ -72,7 +94,12 @@ import Testing
         for (label, actions) in byLabel { #expect(actions.count == 1, "\(label) triggers \(actions)") }
         // two different labels for one action are allowed only where a menu repeats a button (the table says which)
         let twins = Dictionary(grouping: Self.actions, by: \.action).filter { $0.value.count > 1 }.mapValues { $0.map(\.label).sorted() }
-        #expect(twins == ["open-planet-form": ["Make Planet…", "Make planet…"], "show-worlds": ["Back to Worlds", "Go to Worlds"]])
+        #expect(twins == [
+            "open-planet-form": ["Make Planet…", "Make planet…"], "show-worlds": ["Back to Worlds", "Go to Worlds"],
+            "new-world": ["Choose something else…", "New World…", "New world"],
+            "make-planet": ["Make planet", "Make planet from here"],
+            "show-activity": ["Show Activity", "Show log"],
+        ])
     }
 
     @Test func everyLabelOfTheTableIsInThePagesAndTheRetiredWordsAreNot() throws {
@@ -91,7 +118,7 @@ import Testing
     }
 
     @Test func theLabelsOfTheMenusAndTheSidebarAreThePageTitles() {
-        #expect(ShellPage.allCases.map(\.title) == ["Worlds", "Watch", "Activity", "Lab"])
+        #expect(ShellPage.allCases.map(\.title) == ["Worlds", "Watch", "Activity", "New world"])
     }
 
     // MARK: The library's words (PR-C)
