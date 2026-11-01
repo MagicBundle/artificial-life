@@ -158,6 +158,7 @@ import Testing
     @Test func theCommittedManifestHasOneCompleteEntryPerPreset() throws {
         let manifest = try #require(Self.manifest, "gui/PresetSnapshots/manifest.json is missing or unreadable")
         #expect(!manifest.machine.isEmpty)
+        #expect(manifest.gitDirty == false, "the final snapshots are made from committed code")
         #expect(manifest.snapshots.count == Preset.allCases.count)
         for preset in Preset.allCases {
             let entry = try #require(manifest.entry(for: preset), "\(preset.rawValue) has no manifest entry")
@@ -165,6 +166,13 @@ import Testing
             #expect(entry.seed == 1)
             #expect(entry.step >= 5_000, "\(preset.rawValue): step \(entry.step)")
             #expect(entry.population > 0 && entry.population <= facts.nMax, "\(preset.rawValue): population \(entry.population)")
+            #expect(entry.view?.isEmpty == false)
+            if let inView = entry.windowPopulation {
+                #expect(inView > 0 && inView <= entry.population && entry.view?.contains("window") == true, "\(preset.rawValue): \(inView) in view")
+            } else {
+                #expect(entry.view?.contains("window") != true, "\(preset.rawValue): a window without its count")
+            }
+            #expect((entry.peakMemoryBytes ?? 0) > 50_000_000, "\(preset.rawValue): memory \(String(describing: entry.peakMemoryBytes))")
             #expect(entry.stepsPerSecond > 0)
             #expect(entry.gitRev.count == 40 && entry.gitRev.allSatisfy(\.isHexDigit), "\(preset.rawValue): git rev \(entry.gitRev)")
             #expect(entry.date.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil, "\(preset.rawValue): date \(entry.date)")
@@ -204,18 +212,95 @@ import Testing
 
     @Test func theCaptionsSayWhatTheSnapshotIsAndWhereTheSpeedWasMeasured() throws {
         let json = """
-        {"machine": "Apple M5 Pro", "snapshots": [{"preset": "64k", "seed": 1, "step": 30000, "population": 21400,
-         "steps_per_s": 41.3, "git_rev": "397b0f588205173abf42df7911ff92e3a599c735", "date": "2026-11-01",
-         "view": "a 512 x 320 window of typical density"}]}
+        {"machine": "Apple M5 Pro", "git_dirty": false, "snapshots": [{"preset": "64k", "seed": 1, "step": 30000, "population": 33400,
+         "window_population": 3900, "steps_per_s": 41.3, "peak_memory_bytes": 2410000000, "git_rev": "397b0f588205173abf42df7911ff92e3a599c735",
+         "date": "2026-11-01", "view": "a 512 \u{00D7} 320 window of the world, of typical density"}]}
         """
         let manifest = try JSONDecoder().decode(PresetSnapshotManifest.self, from: Data(json.utf8))
-        let entry = PresetGuideEntry(preset: .k64, facts: nil, snapshot: manifest.entry(for: .k64),
+        let entry = PresetGuideEntry(preset: .k64, facts: PresetFacts.preset(.k64, repo: Repo.root), snapshot: manifest.entry(for: .k64),
                                      imageURL: URL(fileURLWithPath: "/nonexistent.jpg"))
-        #expect(entry.snapshotCaption() == "A real run, seed 1, step 30\u{2009}000, 21\u{2009}400 alive. Shows a 512 x 320 window of typical density.")
-        #expect(entry.speedCaption(machine: manifest.machine) == "41 steps/s, measured on Apple M5 Pro.")
+        let caption = try #require(entry.snapshotCaption())
+        #expect(caption == "A real run (seed 1) at step 30\u{2009}000: 33\u{2009}400 organisms alive in the whole world. The picture shows a 512 \u{00D7} 320 window of the world, of typical density, with 3\u{2009}900 of them in it.")
+        #expect(entry.speedCaption(machine: manifest.machine) == "41 steps/s with this many organisms alive, measured on Apple M5 Pro.")
+        #expect(entry.memoryCaption() == "Peak memory about 2.4 GB (approximate).")
+        #expect(PresetGuideEntry.memoryText(250_000_000) == "250 MB" && PresetGuideEntry.memoryText(8_970_000_000) == "9.0 GB")
         var slow = entry
         slow.snapshot?.stepsPerSecond = 3.26
-        #expect(slow.speedCaption(machine: "Apple M5 Pro") == "3.3 steps/s, measured on Apple M5 Pro.")
+        #expect(slow.speedCaption(machine: "Apple M5 Pro")?.hasPrefix("3.3 steps/s") == true)
         #expect(manifest.entry(for: .dev) == nil)
+        // a screen reader gets the whole row, not its name and first sentence
+        let spoken = entry.spokenText(machine: manifest.machine)
+        for part in [entry.guide.what, entry.guide.goodFor, entry.guide.cost, caption, entry.speedCaption(machine: manifest.machine)!, entry.memoryCaption()!,
+                     entry.facts!.populationText, entry.nameNote!] {
+            #expect(spoken.contains(part), "the spoken row lacks: \(part)")
+        }
+        #expect(entry.imageLabel.contains("512") && entry.imageLabel.contains("step 30"))
+        // a manifest written before the window count and the memory existed still reads
+        let old = #"{"machine": "m", "snapshots": [{"preset": "dev", "seed": 1, "step": 5000, "population": 10, "steps_per_s": 2, "git_rev": "x", "date": "d"}]}"#
+        let decoded = try JSONDecoder().decode(PresetSnapshotManifest.self, from: Data(old.utf8))
+        #expect(decoded.snapshots[0].windowPopulation == nil && decoded.snapshots[0].peakMemoryBytes == nil && decoded.gitDirty == nil)
+    }
+
+    // MARK: Words held to the data
+
+    @Test func everyComparisonTheWordsMakeHoldsInTheCommittedManifest() throws {
+        let manifest = try #require(Self.manifest)
+        #expect(Preset.comparisons.count >= 10)
+        for c in Preset.comparisons {
+            let ratio = try #require(c.ratio(in: manifest), "\(c.preset.rawValue) against \(c.reference.rawValue): no value in the manifest")
+            #expect(c.band.contains(ratio), "\"\(c.sentence)\" says \(c.preset.rawValue)/\(c.reference.rawValue) \(c.metric) is in \(c.band), the manifest has \(ratio)")
+        }
+        for e in Preset.extremes { #expect(e.holds(in: manifest), "\"\(e.sentence)\" does not hold in the manifest") }
+    }
+
+    @Test func aComparisonFailsWhenTheManifestStopsSupportingIt() throws {
+        var manifest = try #require(Self.manifest)
+        let dev = try #require(manifest.snapshots.firstIndex { $0.preset == "dev" })
+        let claim = try #require(Preset.comparisons.first { $0.preset == .dev && $0.metric == .speed })
+        #expect(claim.holds(in: manifest))
+        manifest.snapshots[dev].stepsPerSecond = manifest.entry(for: .k64)!.stepsPerSecond * 1.2  // "several times faster" is no longer so
+        #expect(!claim.holds(in: manifest))
+        let big = try #require(manifest.snapshots.firstIndex { $0.preset == "256k" })
+        let memory = try #require(Preset.comparisons.first { $0.metric == .memory })
+        manifest.snapshots[big].peakMemoryBytes = manifest.entry(for: .k64)!.peakMemoryBytes! * 2
+        #expect(!memory.holds(in: manifest))
+        let tiny = try #require(manifest.snapshots.firstIndex { $0.preset == "tiny" })
+        let fastest = try #require(Preset.extremes.first { $0.kind == .fastest })
+        #expect(fastest.holds(in: try #require(Self.manifest)))
+        manifest.snapshots[tiny].stepsPerSecond = 1
+        #expect(!fastest.holds(in: manifest))
+        #expect(!claim.holds(in: PresetSnapshotManifest(machine: "", gitDirty: nil, snapshots: [])), "no value, no support")
+    }
+
+    @Test func theCostTextIsItsLeadAndTheSentencesOfItsComparisons() {
+        for preset in Preset.allCases {
+            let own = Preset.extremes.filter { $0.preset == preset }.map(\.sentence) + Preset.comparisons.filter { $0.preset == preset }.map(\.sentence)
+            for sentence in own { #expect(preset.guide.cost.contains(sentence)) }
+        }
+        #expect(Preset.k256.guide.cost.contains("Nearly four times the memory of 64k."))
+    }
+
+    @Test func theWordsAreInPlainLanguage() {
+        let jargon = ["overlay", "buoyancy", "per-organism", "organism limit", "thinner", "per step", "groups and bodies", "n_max", "tiny3d rules"]
+        for preset in Preset.allCases {
+            let g = preset.guide
+            for text in [g.what, g.goodFor, g.cost] {
+                for word in jargon { #expect(!text.localizedCaseInsensitiveContains(word), "\(preset.rawValue): \"\(word)\" in: \(text)") }
+            }
+        }
+        for group in PresetGroup.allCases { #expect(!group.blurb.localizedCaseInsensitiveContains("overlay")) }
+    }
+
+    @Test func theMeaningOfKInANameIsSaidOnlyWhereTheFileAgrees() throws {
+        for preset in Preset.allCases {
+            let facts = try #require(PresetFacts.preset(preset, repo: Repo.root))
+            let note = PresetFacts.nameNote(preset, nMax: facts.nMax)
+            if ["64k", "256k", "64k3d", "64k3s"].contains(preset.rawValue) {
+                #expect(note?.contains(PresetFacts.count(facts.nMax)) == true, "\(preset.rawValue): \(String(describing: note))")
+            } else {
+                #expect(note == nil, "\(preset.rawValue)")
+            }
+        }
+        #expect(PresetFacts.nameNote(.k64, nMax: 1000) == nil, "a note that the file does not bear out is not shown")
     }
 }

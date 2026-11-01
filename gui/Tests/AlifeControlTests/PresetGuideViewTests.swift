@@ -104,7 +104,8 @@ struct PresetGuideViewTests {
         let c = controller()
         c.settings.mode = .new
         c.settings.preset = .tiny3d
-        let rep = try draw(ContentView(controller: c, presetGuide: content), width: 1000, height: 760, dark: dark, name: "lab")
+        // the window of the app has its own background; the hosted view has none, so it is given the system's here
+        let rep = try draw(ContentView(controller: c, presetGuide: content).background(Color(nsColor: .windowBackgroundColor)), width: 1000, height: 760, dark: dark, name: "lab")
         #expect(colours(rep) > 60)
     }
 
@@ -121,5 +122,23 @@ struct PresetGuideViewTests {
         c.settings.preset = .mini3d  // what a click in the sheet does
         let followed = await eventually(timeout: .seconds(5)) { c.settings.worldDims == 3 && c.settings.presetWorld3D.height == "80" }
         #expect(followed, "the 3D levers did not follow the preset: dims \(c.settings.worldDims), height \(c.settings.presetWorld3D.height)")
+    }
+
+    // MARK: The image cache
+
+    @Test func aSnapshotMadeAgainIsSeenWithoutARestart() throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let file = scratch.url.appendingPathComponent("tiny.jpg")
+        let dir = Repo.root.appendingPathComponent("gui/PresetSnapshots")
+        try FileManager.default.copyItem(at: dir.appendingPathComponent("tiny.jpg"), to: file)
+        let first = try #require(PresetSnapshotImages.image(at: file))
+        #expect(PresetSnapshotImages.image(at: file) === first, "the same file is served from the cache")
+        try Data(contentsOf: dir.appendingPathComponent("dev.jpg")).write(to: file)
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(60)], ofItemAtPath: file.path)
+        let second = try #require(PresetSnapshotImages.image(at: file))
+        #expect(second !== first, "a file made again is read again")
+        try FileManager.default.removeItem(at: file)
+        #expect(PresetSnapshotImages.image(at: file) == nil, "a missing file is no image")
     }
 }

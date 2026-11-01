@@ -72,7 +72,9 @@ struct PresetSnapshotTool {
         let aspect = Float(w) / Float(h)
         let image: OffscreenImage
         var view = "the whole world"
+        var windowAlive: Int?
         if header.isSphere {
+            view = "one side of the planet"
             image = try sphere(device: device, header: header, frame: frame, aspect: aspect)
         } else {
             let renderer = try Renderer(device: device)
@@ -81,7 +83,10 @@ struct PresetSnapshotTool {
             renderer.display = ViewerDisplay()
             // The home pose of a 3D box fits the whole box in a margin of dark; the snapshot is a small picture, so the eye comes in a
             // little (the same pose, 0.72 of the distance: the box still fits the 8:5 frame whole).
-            if header.dims == 3 { renderer.camera.distance *= Self.boxZoom }
+            if header.dims == 3 {
+                renderer.camera.distance *= Self.boxZoom
+                view = "the whole box"
+            }
             // A flat world is drawn whole while it is small; a large one is a dust of sub-pixel organisms, so the eye comes down to a
             // window of one scale for every flat preset (`Self.flatWindow`), at the place of typical density (`typicalWindow`).
             if header.dims == 2, let window = Self.typicalWindow(frame: frame, size: Float(header.size), aspect: aspect) {
@@ -89,7 +94,8 @@ struct PresetSnapshotTool {
                 camera.distance = Camera.topDown(size: window.height, aspect: aspect).distance
                 camera.target = SIMD3(window.centre.x, window.centre.y, 0)
                 renderer.camera = camera
-                view = "a \(Int(window.width.rounded())) x \(Int(window.height.rounded())) window of typical density"
+                view = "a \(Int(window.width.rounded())) \u{00D7} \(Int(window.height.rounded())) window of the world, of typical density"
+                windowAlive = window.alive
             }
             image = try renderer.renderOffscreen(width: w, height: h)
         }
@@ -99,7 +105,8 @@ struct PresetSnapshotTool {
         let jpeg = try Self.jpeg(small, limit: Self.byteLimit)
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         try jpeg.write(to: output.appendingPathComponent("\(preset.rawValue).jpg"))
-        let info: [String: Any] = ["preset": preset.rawValue, "step": Int(frame.step), "alive": frame.nAlive, "bytes": jpeg.count, "view": view]
+        var info: [String: Any] = ["preset": preset.rawValue, "step": Int(frame.step), "alive": frame.nAlive, "bytes": jpeg.count, "view": view]
+        if let windowAlive { info["window_alive"] = windowAlive }
         try JSONSerialization.data(withJSONObject: info, options: [.sortedKeys])
             .write(to: renders.appendingPathComponent("\(preset.rawValue).json"))
         print("PresetSnapshotTool: \(preset.rawValue) step \(frame.step) alive \(frame.nAlive) -> \(jpeg.count) bytes")
@@ -139,7 +146,7 @@ struct PresetSnapshotTool {
     /// The window (`flatWindow` high, as wide as the 8:5 frame needs) that holds about the average number of organisms of all the windows
     /// that fit inside the world (grid of 32 units), or nil when the world is no larger than the window and is drawn whole. Typical, not
     /// the busiest: a snapshot should not flatter.
-    static func typicalWindow(frame: StreamFrame, size: Float, aspect: Float) -> (centre: SIMD2<Float>, width: Float, height: Float)? {
+    static func typicalWindow(frame: StreamFrame, size: Float, aspect: Float) -> (centre: SIMD2<Float>, width: Float, height: Float, alive: Int)? {
         let height = flatWindow, width = flatWindow * aspect
         guard size > height + 1 else { return nil }
         let xs = Array(stride(from: width / 2, through: max(size - width / 2, width / 2), by: 32))
@@ -155,7 +162,7 @@ struct PresetSnapshotTool {
         }
         let mean = Double(candidates.reduce(0) { $0 + $1.1 }) / Double(max(candidates.count, 1))
         guard let best = candidates.min(by: { abs(Double($0.1) - mean) < abs(Double($1.1) - mean) }) else { return nil }
-        return (best.0, min(width, size), height)
+        return (best.0, min(width, size), height, best.1)
     }
 
     // MARK: Images

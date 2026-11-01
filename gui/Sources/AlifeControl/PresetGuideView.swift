@@ -4,16 +4,22 @@ import SwiftUI
 
 // MARK: - The snapshot
 
-/// The snapshot JPEGs read from the repository, kept while the guide is on screen. A missing or unreadable file is nil and not cached, so
-/// that a snapshot made while the app runs shows at the next redraw.
+/// The snapshot JPEGs read from the repository, kept while the guide is on screen. The cache is keyed by the file's path and modification
+/// date, so a snapshot made again while the app runs shows at the next redraw; a missing or unreadable file is nil and not cached.
 @MainActor
 enum PresetSnapshotImages {
-    private static let cache = NSCache<NSURL, NSImage>()
+    private static let cache = NSCache<NSString, NSImage>()
+
+    static func key(for url: URL) -> NSString? {
+        guard let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate else { return nil }
+        return "\(url.path)|\(date.timeIntervalSinceReferenceDate)" as NSString
+    }
 
     static func image(at url: URL) -> NSImage? {
-        if let hit = cache.object(forKey: url as NSURL) { return hit }
+        guard let key = key(for: url) else { return nil }
+        if let hit = cache.object(forKey: key) { return hit }
         guard let image = NSImage(contentsOf: url), image.isValid else { return nil }
-        cache.setObject(image, forKey: url as NSURL)
+        cache.setObject(image, forKey: key)
         return image
     }
 }
@@ -32,7 +38,7 @@ struct PresetSnapshotView: View {
                     .resizable()
                     .interpolation(.high)
                     .aspectRatio(contentMode: .fill)
-                    .accessibilityLabel("A frame of a real \(entry.preset.rawValue) run")
+                    .accessibilityLabel(entry.imageLabel)
             } else {
                 ZStack {
                     Color.secondary.opacity(0.12)
@@ -42,7 +48,7 @@ struct PresetSnapshotView: View {
                     }
                     .foregroundStyle(.secondary)
                 }
-                .accessibilityLabel("No snapshot of \(entry.preset.rawValue) is available")
+                .accessibilityLabel(entry.imageLabel)
             }
         }
         .frame(width: width, height: height)
@@ -68,6 +74,9 @@ struct PresetTexts: View {
                 Text("\(facts.shapeName), \(facts.worldText)").font(.caption.weight(.semibold))
                 Text(facts.populationText).font(.caption).foregroundStyle(.secondary)
             }
+            if let note = entry.nameNote {
+                Text(note).font(.caption).foregroundStyle(.secondary)
+            }
             Text(entry.guide.what).font(.caption)
             labelled("Good for", entry.guide.goodFor)
             labelled("Cost", entry.guide.cost)
@@ -78,6 +87,9 @@ struct PresetTexts: View {
             }
             if let speed = entry.speedCaption(machine: machine) {
                 Text(speed).font(.caption2).foregroundStyle(.secondary)
+            }
+            if let memory = entry.memoryCaption() {
+                Text(memory).font(.caption2).foregroundStyle(.secondary)
             }
         }
         .fixedSize(horizontal: false, vertical: true)
@@ -142,7 +154,10 @@ struct PresetCompareRow: View {
             .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(entry.preset.rawValue), \(entry.guide.what)")
+        // One element that says everything the row shows (the facts, the words, the captions), not only the name and the first sentence.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(entry.spokenText(machine: machine))
+        .accessibilityHint("Uses this preset and closes the list")
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
         .help("Use \(entry.preset.rawValue)")
     }
@@ -199,9 +214,11 @@ struct PresetCompareSheet: View {
                 .padding(16)
             }
             Divider()
-            Text("Every picture is a frame of a real run of that plain preset (seed 1, no overlay, default settings). Speeds are measured with the "
-                 + "run on its own, on \(content.machine.isEmpty ? "the Mac that made the snapshots" : content.machine); on another Mac or with "
-                 + "other settings they differ. Click a preset to use it.")
+            Text("Every picture is a frame of a real run of that preset: seed 1, "
+                 + "no extras switched on, the preset's own settings (only a checkpoint every 5\u{2009}000 steps instead of every 10\u{2009}000). "
+                 + "Speed and memory were measured on a separate continuation of that run, on its own on "
+                 + "\(content.machine.isEmpty ? "the Mac that made the snapshots" : content.machine), at the number of organisms shown. A run slows as its "
+                 + "population grows, and another Mac or other settings change it. Click a preset to use it.")
                 .font(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 16).padding(.vertical, 8)

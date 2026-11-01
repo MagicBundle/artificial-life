@@ -5,10 +5,15 @@ import Foundation
 /// What the Lab's preset guide says about a preset (DESIGN §27.14): a short description for someone who does not know the
 /// engine, the numbers of the world read from the preset's own file, and the snapshot of a real run with what it cost.
 ///
-/// Nothing numeric is typed here. The shape and size of the world and the population limits come from the preset file
-/// (`PresetFacts`, through `PresetFile`, the engine default where the file sets nothing: the `64k` file is empty), and the speed, the step and
-/// the population of the snapshot from `gui/PresetSnapshots/manifest.json`, which `gui/scripts/make-preset-snapshots.sh` writes from real runs.
-/// The words below say only what the preset files and DESIGN state; `PresetGuideTests` holds them to the files.
+/// What is held to the data, and by what:
+/// - The numbers of the world (shape, size, height, radius, `n_max`, `n_init`) are not typed here: they come from the preset file
+///   (`PresetFacts`, through `PresetFile`; the engine default where the file sets nothing, the `64k` file being empty).
+///   `PresetGuideTests` compares them with the files.
+/// - Every comparison of speed or memory ("several times faster than 64k") is data (`PresetComparison`: the two presets, the metric and
+///   the band its ratio must lie in), its sentence is built from that data, and `PresetGuideTests` fails when the committed
+///   `gui/PresetSnapshots/manifest.json` no longer supports one (a remade snapshot, another machine).
+/// - The rest of the words state what the preset files, DESIGN, README and the results docs state (the source is named beside each
+///   text). No test holds them: they are checked by reading, and `PresetGuideTests` only checks that each is there.
 
 /// The three kinds of world, as the compare sheet groups them.
 package enum PresetGroup: CaseIterable, Identifiable, Sendable {
@@ -27,9 +32,9 @@ package enum PresetGroup: CaseIterable, Identifiable, Sendable {
     /// One line under the group's title.
     package var blurb: String {
         switch self {
-        case .flat: return "A square sheet whose edges wrap round, seen from above."
-        case .box3D: return "A water column with a floor and a surface, with gravity."
-        case .planet: return "A shell round a small planet, with gravity towards its centre."
+        case .flat: return "A square sheet seen from above. Its edges wrap round: an organism that leaves one edge comes back at the opposite one."
+        case .box3D: return "A block of water with a floor, a surface and gravity, seen from outside."
+        case .planet: return "A thin layer round a small planet, with gravity towards its centre. A picture shows one side of the planet."
         }
     }
 
@@ -42,8 +47,76 @@ package struct PresetGuide: Equatable, Sendable {
     package var what: String
     /// What it is good for.
     package var goodFor: String
-    /// What it costs, in words; the measured speed is the manifest's.
+    /// What it costs: a lead in words, then the sentences of its comparisons (`PresetComparison`, `PresetExtreme`).
     package var cost: String
+}
+
+// MARK: - Comparisons held to the manifest
+
+/// A statement that one preset is faster than, slower than or heavier than another, as data: `preset`'s value over `reference`'s, taken from
+/// the manifest, must lie in `band`. The sentence is the words for that band.
+package struct PresetComparison: Equatable, Sendable {
+    package enum Metric: Equatable, Sendable { case speed, memory }
+    package var preset: Preset
+    package var reference: Preset
+    package var metric: Metric
+    package var band: ClosedRange<Double>
+    package var sentence: String
+
+    /// `preset` over `reference` in the manifest; nil when either has no value.
+    package func ratio(in manifest: PresetSnapshotManifest) -> Double? {
+        guard let a = manifest.entry(for: preset), let b = manifest.entry(for: reference) else { return nil }
+        switch metric {
+        case .speed: return b.stepsPerSecond > 0 ? a.stepsPerSecond / b.stepsPerSecond : nil
+        case .memory:
+            guard let m = a.peakMemoryBytes, let n = b.peakMemoryBytes, n > 0 else { return nil }
+            return Double(m) / Double(n)
+        }
+    }
+
+    package func holds(in manifest: PresetSnapshotManifest) -> Bool { ratio(in: manifest).map(band.contains) ?? false }
+}
+
+/// A statement that a preset has the highest speed or the lowest memory of all ten.
+package struct PresetExtreme: Equatable, Sendable {
+    package enum Kind: Equatable, Sendable { case fastest, lightest }
+    package var preset: Preset
+    package var kind: Kind
+    package var sentence: String
+
+    package func holds(in manifest: PresetSnapshotManifest) -> Bool {
+        guard let mine = manifest.entry(for: preset) else { return false }
+        let others = manifest.snapshots.filter { $0.preset != preset.rawValue }
+        guard others.count == Preset.allCases.count - 1 else { return false }
+        switch kind {
+        case .fastest: return others.allSatisfy { mine.stepsPerSecond > $0.stepsPerSecond }
+        case .lightest:
+            guard let m = mine.peakMemoryBytes else { return false }
+            return others.allSatisfy { $0.peakMemoryBytes.map { m < $0 } ?? false }
+        }
+    }
+}
+
+extension Preset {
+    /// Every comparison the words make, with the band the manifest must keep it in. The bands are the width of the wording ("several
+    /// times", "a little"), and are wide enough for a rerun of the same runs and narrow enough to fail on a different picture of the world.
+    package static let comparisons: [PresetComparison] = [
+        PresetComparison(preset: .dev, reference: .k64, metric: .speed, band: 3.0...4.5, sentence: "Several times faster than 64k."),
+        PresetComparison(preset: .k64, reference: .dev, metric: .speed, band: 0.20...0.35, sentence: "About a quarter of dev's speed."),
+        PresetComparison(preset: .k256, reference: .k64, metric: .speed, band: 0.10...0.34, sentence: "Several times slower than 64k."),
+        PresetComparison(preset: .k256, reference: .k64, metric: .memory, band: 3.4...4.0, sentence: "Nearly four times the memory of 64k."),
+        PresetComparison(preset: .tiny3d, reference: .tiny, metric: .speed, band: 0.80...0.95, sentence: "Nearly as fast as tiny."),
+        PresetComparison(preset: .mini3d, reference: .k64_3d, metric: .speed, band: 3.5...4.2, sentence: "Close to four times faster than 64k3d."),
+        PresetComparison(preset: .k64_3d, reference: .k64, metric: .speed, band: 0.70...0.90, sentence: "Somewhat slower than 64k, which has room for the same number of organisms."),
+        PresetComparison(preset: .tiny3s, reference: .tiny3d, metric: .speed, band: 0.70...0.90, sentence: "A little slower than tiny3d."),
+        PresetComparison(preset: .mini3s, reference: .mini3d, metric: .speed, band: 0.70...0.80, sentence: "About three quarters of mini3d's speed."),
+        PresetComparison(preset: .k64_3s, reference: .k64_3d, metric: .speed, band: 0.80...0.95, sentence: "A little slower than 64k3d."),
+    ]
+
+    package static let extremes: [PresetExtreme] = [
+        PresetExtreme(preset: .tiny, kind: .fastest, sentence: "The fastest of the ten."),
+        PresetExtreme(preset: .tiny, kind: .lightest, sentence: "It needs the least memory of the ten."),
+    ]
 }
 
 extension Preset {
@@ -55,72 +128,64 @@ extension Preset {
         }
     }
 
-    /// The description. Every statement is in the preset's TOML file, in DESIGN, README or the docs of the results (the source is named in
-    /// the comment), or is a comparison of the speeds and memory measured for `gui/PresetSnapshots/manifest.json` (the comparisons are
-    /// marked "measured": they were true of the M5 Pro run that made the snapshots).
+    /// The description, in words for someone who does not know the engine. The source of each is named in the comment. The sentences about
+    /// speed and memory are the comparisons above, appended to the lead of the cost.
     package var guide: PresetGuide {
+        let lead: String, what: String, goodFor: String
         switch self {
         case .tiny:
-            // tiny.toml: "tests and CI", steps = 500. Measured: the fastest and the smallest of the ten.
-            return PresetGuide(
-                what: "The smallest flat world: a small square whose edges wrap round, with a few hundred organisms to start.",
-                goodFor: "Tests, checking that something works, trying a lever. Its own default run is only 500 steps.",
-                cost: "The cheapest of the ten: the fastest per step and the least memory.")
+            // tiny.toml: "tests and CI"; run.steps = 500.
+            what = "The smallest flat world: a small square sheet whose edges wrap round, with a few hundred organisms to start."
+            goodFor = "Tests, checking that something works, trying out a setting. Its own default run is only 500 steps."
+            lead = "Very cheap to run."
         case .dev:
-            // dev.toml: "interactive development".
-            return PresetGuide(
-                what: "A mid-size flat world, the one used for interactive development, with room for thousands of organisms.",
-                goodFor: "Watching groups and bodies form, and short experiments, without waiting.",
-                cost: "Light: several times faster per step than 64k.")
+            // dev.toml: "interactive development"; README: organisms bond into bodies.
+            what = "A mid-size flat world, the one used for interactive development, with room for thousands of organisms."
+            goodFor = "Watching organisms cluster and bond together, and short experiments without a long wait."
+            lead = "Light."
         case .k64:
             // 64k.toml: "the dataclass defaults"; README: "the target configuration"; RunConfig.steps = 100 000; docs/RESULTS_3D.md: runs/64k_s0.
-            return PresetGuide(
-                what: "The engine's default flat world and its target size: tens of thousands of organisms on a wide wrapped square.",
-                goodFor: "Real flat-world experiments. A run is 100 000 steps by default, and the long runs in the docs were made at this size.",
-                cost: "Heavy: roughly a quarter of dev's speed per step.")
+            what = "The engine's default flat world, and the size it is designed to run well at: tens of thousands of organisms on a wide square."
+            goodFor = "Real flat-world experiments. A run lasts 100 000 steps by default, and the long runs in the docs were made at this size."
+            lead = "Heavy."
         case .k256:
             // 256k.toml: "large runs"; 4 x the area and 4 x n_max of 64k.
-            return PresetGuide(
-                what: "The largest world: four times the area and four times the organisms of the 64k preset.",
-                goodFor: "Large runs, when 64k is too small.",
-                cost: "By far the heaviest: several times slower per step than 64k, and nearly four times its memory.")
+            what = "The largest flat world: four times the area and four times the organisms of the 64k world."
+            goodFor = "Large runs, when 64k is too small."
+            lead = "By far the heaviest."
         case .tiny3d:
-            // tiny3d.toml: "the 3D tiny world for tests, CI and first looks"; "plus a floor, a surface at height 24, gravity, a buoyancy actuator and a vertical food profile".
-            return PresetGuide(
-                what: "The smallest 3D world: a block of water with a floor and a surface. Gravity pulls organisms down; they swim and can float. Food is richest on the floor, with a thinner band under the surface.",
-                goodFor: "Tests and a first look at life in 3D. Its file marks its values as provisional.",
-                cost: "Very cheap, nearly as fast as tiny.")
+            // tiny3d.toml: "the 3D tiny world for tests, CI and first looks"; floor, surface, gravity, buoyancy actuator, benthic + photic (amp 0.5) food.
+            what = "The smallest 3D world: a small block of water with a floor below and a surface above. Gravity pulls organisms down; they swim, and they can float up against gravity. Food is richest on the floor, with a weaker band just under the surface."
+            goodFor = "Tests and a first look at life in 3D. Its file marks its values as provisional (not yet tuned)."
+            lead = "Very cheap."
         case .mini3d:
             // mini3d.toml: "a quarter of 64k3d's area at the same density"; DESIGN 37.1: the storm160 overlay is composed on mini3d.
-            return PresetGuide(
-                what: "A quarter of the 64k3d world's area, with the same physics, the same food and the same density of organisms.",
-                goodFor: "3D experiments that need the full 3D ecology without the cost of the big world. The storm160 weather overlay is made for it.",
-                cost: "Moderate: close to four times faster per step than 64k3d.")
+            what = "A quarter of the area of 64k3d, the full-size 3D world, with the same physics, the same food and the same density of organisms."
+            goodFor = "3D experiments that need the full 3D ecology without the cost of the big world. An optional storm-weather extra, storm160, is made for it (it is not part of this preset)."
+            lead = "Moderate."
         case .k64_3d:
-            // 64k3d.toml: "the 3D world at 64k scale", a 320 x 320 x 80 water column; docs/RESULTS_3D.md: the first long 3D run.
-            return PresetGuide(
-                what: "The full-size 3D world: the tiny3d rules (gravity, buoyancy, food on the floor and under the surface) in a large water column.",
-                goodFor: "Long 3D runs. The first long 3D run in the docs was made in it.",
-                cost: "Heavy: a little slower per step than 64k, which has the same organism limit.")
+            // 64k3d.toml: "the 3D world at 64k scale", a water column; docs/RESULTS_3D.md: the first long 3D run.
+            what = "The full-size 3D world: a large block of water with a floor and a surface, with the same kinds of rules as tiny3d (gravity, floating, food richest on the floor)."
+            goodFor = "Long 3D runs. The first long 3D run in the docs was made in it."
+            lead = "Heavy."
         case .tiny3s:
             // tiny3s.toml: "the tiny sphere world for tests, CI and first looks"; "Everything else is tiny3d's"; the same volume as tiny3d.
-            return PresetGuide(
-                what: "The smallest planet: a thin shell round a small ball, with gravity towards its centre. The planet counterpart of tiny3d, with the same volume and the same rules for organisms.",
-                goodFor: "Tests and a first look at a round world, which has no edges to wrap.",
-                cost: "Very cheap, a little slower per step than tiny3d.")
+            what = "The smallest planet: organisms live in a thin layer between a small planet's surface and a ceiling above it, and gravity pulls them towards its centre. It is the planet version of tiny3d, with the same volume and the same rules for organisms."
+            goodFor = "Tests and a first look at a round world, which has no edges to wrap."
+            lead = "Very cheap."
         case .mini3s:
             // mini3s.toml: "the sphere analogue of mini3d ... The per-agent physics and economy are mini3d's".
-            return PresetGuide(
-                what: "A mid-size planet: the round counterpart of mini3d, with its per-organism rules.",
-                goodFor: "Planet experiments without the cost of the big planet, and comparing a round world with a box one.",
-                cost: "Moderate: slower per step than mini3d, at about three quarters of its speed.")
+            what = "A mid-size planet: the planet version of mini3d, with the same physics and energy costs for each organism."
+            goodFor = "Planet experiments without the cost of the big planet, and comparing a round world with a box one."
+            lead = "Moderate."
         case .k64_3s:
-            // 64k3s.toml: "the 64k sphere world, the sphere analogue of 64k3d"; "The weather is the `stormsph` overlay".
-            return PresetGuide(
-                what: "The full-size planet: the round counterpart of 64k3d, with the same organism limit.",
-                goodFor: "Long runs on a planet. The stormsph weather overlay is made for it.",
-                cost: "Heavy: a little slower per step than 64k3d.")
+            // 64k3s.toml: "the 64k sphere world, the sphere analogue of 64k3d"; n_max equal to 64k3d's; "The weather is the `stormsph` overlay".
+            what = "The full-size planet: the planet version of 64k3d, with room for the same number of organisms."
+            goodFor = "Long runs on a planet. An optional storm-weather extra, stormsph, is made for it (it is not part of this preset)."
+            lead = "Heavy."
         }
+        let sentences = Self.extremes.filter { $0.preset == self }.map(\.sentence) + Self.comparisons.filter { $0.preset == self }.map(\.sentence)
+        return PresetGuide(what: what, goodFor: goodFor, cost: ([lead] + sentences).joined(separator: " "))
     }
 }
 
@@ -219,6 +284,14 @@ package struct PresetFacts: Equatable, Sendable {
         "up to \(Self.count(nMax)) organisms, \(Self.count(nInit)) at the start"
     }
 
+    /// What the number in a name like "64k" means, when it is what this preset's file says: "64k" means room for 65 536 organisms (64 × 1 024).
+    /// nil for a name without one, and when the file's `n_max` is not that many (then the note would be false).
+    package static func nameNote(_ preset: Preset, nMax: Int) -> String? {
+        let name = preset.rawValue
+        guard let k = Int(name.prefix(while: \.isNumber)), name.dropFirst(String(k).count).first == "k", nMax == k * 1024 else { return nil }
+        return "\u{201C}\(String(k))k\u{201D} means room for \(count(nMax)) organisms (\(k) \u{00D7} 1\u{2009}024)."
+    }
+
     package var shapeName: String {
         switch shape {
         case .flat: return "Flat world"
@@ -237,25 +310,40 @@ package struct PresetSnapshotManifest: Equatable, Sendable, Decodable {
         package var seed: Int
         /// The step of the frame shown.
         package var step: Int
-        /// The organisms alive in that frame.
+        /// The organisms alive in that frame, in the whole world.
         package var population: Int
+        /// Of those, the ones inside the window of a large flat world's picture (nil when the picture is not a window).
+        package var windowPopulation: Int?
+        /// What the picture shows: "the whole world", "the whole box", "one side of the planet", or "a 512 × 320 window of the world, of typical density".
+        package var view: String?
         /// Steps per second of the engine at that population, measured alone on `machine`.
         package var stepsPerSecond: Double
+        /// The peak memory of the process that measured the speed (GPU buffers included), approximate.
+        package var peakMemoryBytes: Int?
         /// `git rev-parse HEAD` of the engine that made the run.
         package var gitRev: String
         /// The day the run was made (UTC, `YYYY-MM-DD`).
         package var date: String
-        /// What the picture shows of the world: "the whole world", or "a 512 x 320 window of typical density" for a large flat one.
-        package var view: String?
 
         private enum CodingKeys: String, CodingKey {
-            case preset, seed, step, population, stepsPerSecond = "steps_per_s", gitRev = "git_rev", date, view
+            case preset, seed, step, population, windowPopulation = "window_population", view, stepsPerSecond = "steps_per_s",
+                 peakMemoryBytes = "peak_memory_bytes", gitRev = "git_rev", date
         }
     }
 
     /// The Mac the speeds were measured on ("Apple M5 Pro").
     package var machine: String
+    /// Whether the working tree had uncommitted changes (outside the snapshots) when the manifest was made.
+    package var gitDirty: Bool?
     package var snapshots: [Entry]
+
+    private enum CodingKeys: String, CodingKey { case machine, gitDirty = "git_dirty", snapshots }
+
+    package init(machine: String, gitDirty: Bool?, snapshots: [Entry]) {
+        self.machine = machine
+        self.gitDirty = gitDirty
+        self.snapshots = snapshots
+    }
 
     package func entry(for preset: Preset) -> Entry? { snapshots.first { $0.preset == preset.rawValue } }
 
@@ -288,19 +376,57 @@ package struct PresetGuideEntry: Equatable, Sendable {
 
     package var guide: PresetGuide { preset.guide }
 
-    /// "A real run, seed 1, step 30 000, 21 400 alive in the whole world, shown whole." (nil without a snapshot)
+    /// What "64k" and the like mean in this preset's name (nil for the other names).
+    package var nameNote: String? { facts.flatMap { PresetFacts.nameNote(preset, nMax: $0.nMax) } }
+
+    /// "A real run (seed 1) at step 30 000: 116 382 organisms alive in the whole world. The picture shows a 512 × 320 window of the world, of
+    /// typical density, with 3 912 of them in it." (nil without a snapshot)
     package func snapshotCaption() -> String? {
         guard let s = snapshot else { return nil }
-        let shown = s.view.map { " Shows \($0)." } ?? ""
-        return "A real run, seed \(s.seed), step \(PresetFacts.count(s.step)), \(PresetFacts.count(s.population)) alive.\(shown)"
+        var text = "A real run (seed \(s.seed)) at step \(PresetFacts.count(s.step)): \(PresetFacts.count(s.population)) organisms alive in the whole world."
+        if let view = s.view {
+            text += " The picture shows \(view)"
+            if let n = s.windowPopulation { text += ", with \(PresetFacts.count(n)) of them in it" }
+            text += "."
+        }
+        return text
     }
 
-    /// "41 steps/s, measured on an Apple M5 Pro." (nil without a snapshot)
+    /// "445 steps/s with this many organisms alive, measured on Apple M5 Pro." (nil without a snapshot)
     package func speedCaption(machine: String) -> String? {
         guard let s = snapshot else { return nil }
         let rate = s.stepsPerSecond
         let text = String(format: rate >= 10 ? "%.0f" : "%.1f", rate)
-        return "\(text) steps/s, measured on \(machine.isEmpty ? "the Mac that made the snapshots" : machine)."
+        return "\(text) steps/s with this many organisms alive, measured on \(machine.isEmpty ? "the Mac that made the snapshots" : machine)."
+    }
+
+    /// "Peak memory about 8.7 GB (approximate)." (nil when the manifest has none)
+    package func memoryCaption() -> String? {
+        guard let bytes = snapshot?.peakMemoryBytes else { return nil }
+        return "Peak memory about \(Self.memoryText(bytes)) (approximate)."
+    }
+
+    /// 8 970 000 000 -> "9.0 GB"; 250 000 000 -> "250 MB".
+    package static func memoryText(_ bytes: Int) -> String {
+        if bytes >= 1_000_000_000 { return String(format: "%.1f GB", Double(bytes) / 1e9) }
+        return "\(Int((Double(bytes) / 1e7).rounded()) * 10) MB"
+    }
+
+    /// What the picture is, for a screen reader.
+    package var imageLabel: String {
+        guard let s = snapshot else { return "No picture of \(preset.rawValue) is available" }
+        return "A frame of a real \(preset.rawValue) run at step \(PresetFacts.count(s.step)). It shows \(s.view ?? "the world")."
+    }
+
+    /// The whole row for a screen reader: everything the row shows, in reading order.
+    package func spokenText(machine: String) -> String {
+        var parts = [preset.rawValue]
+        if let facts { parts += ["\(facts.shapeName), \(facts.worldText).", facts.populationText + "."] }
+        if let nameNote { parts.append(nameNote) }
+        parts += [guide.what, "Good for: \(guide.goodFor)", "Cost: \(guide.cost)"]
+        parts += [snapshotCaption(), speedCaption(machine: machine), memoryCaption()].compactMap { $0 }
+        if snapshot == nil { parts.append("No snapshot has been made for this preset.") }
+        return parts.joined(separator: " ")
     }
 }
 
