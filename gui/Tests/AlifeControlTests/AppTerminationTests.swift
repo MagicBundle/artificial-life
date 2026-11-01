@@ -57,7 +57,7 @@ import Testing
 
     @Test func theDelegateAsksThePlayControllerAndQuitsAtOnceWithoutAWorld() {
         // The shared controller has no process in a test run: the real delegate answers `.terminateNow`.
-        let delegate = AppDelegate()
+        let delegate = AppDelegate(run: .shared, play: .shared, quitPanel: .offscreen())
         #expect(!PlayController.shared.hasProcess)
         #expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateNow)
     }

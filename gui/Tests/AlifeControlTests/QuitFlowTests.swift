@@ -167,7 +167,7 @@ import Testing
     // MARK: The panel
 
     @Test func thePanelShowsUpdatesOffersQuitNowAndCloses() {
-        let panel = QuitPanel()
+        let panel = QuitPanel.offscreen()
         var quits = 0
         panel.onQuitNow = { quits += 1 }
         panel.show(QuitPanelModel(worlds: ["storm"], elapsedSeconds: 1, lossMinutes: 7))
@@ -187,7 +187,7 @@ import Testing
     }
 
     @Test func quitNowHasAKeyboardRouteAsWellAsTheMouse() throws {
-        let panel = QuitPanel()
+        let panel = QuitPanel.offscreen()
         var quits = 0
         panel.onQuitNow = { quits += 1 }
         panel.show(QuitPanelModel(worlds: ["storm"], elapsedSeconds: 11, lossMinutes: 7))
@@ -360,14 +360,22 @@ import Testing
         #expect(!delegate.terminationGate.isWaiting && !run.stopRequested)
     }
 
-    /// A window with a sheet attached, as the launcher sheet and the preset comparison are.
+    /// A window that has a sheet, as the launcher sheet and the preset comparison are, without AppKit attaching one: a real sheet moves its
+    /// window onto a screen (seen: both flew to the bottom-left corner of the display for half a second), and a test must never put a window
+    /// on anyone's display. The quit code asks the window for its `sheets` and ends them with `endSheet`, which is all this stands in for.
+    private final class SheetHost: NSWindow {
+        var attached: [NSWindow] = []
+        override var sheets: [NSWindow] { attached }
+        override func endSheet(_ sheet: NSWindow) { attached.removeAll { $0 === sheet } }
+        override func endSheet(_ sheet: NSWindow, returnCode: NSApplication.ModalResponse) { attached.removeAll { $0 === sheet } }
+    }
+
     private func windowWithSheet() -> (NSWindow, NSWindow) {
-        let window = NSWindow(contentRect: NSRect(x: -3000, y: -3000, width: 300, height: 200), styleMask: [.titled], backing: .buffered, defer: true)
-        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled], backing: .buffered, defer: true)
+        let window = SheetHost(contentRect: NSRect(x: -20000, y: -20000, width: 300, height: 200), styleMask: [.borderless], backing: .buffered, defer: true)
+        let sheet = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 200, height: 100), styleMask: [.borderless], backing: .buffered, defer: true)
         window.isReleasedWhenClosed = false
         sheet.isReleasedWhenClosed = false
-        window.orderFront(nil)
-        window.beginSheet(sheet)
+        window.attached = [sheet]
         return (window, sheet)
     }
 
@@ -441,7 +449,7 @@ import Testing
         let repo = try fakeRepo(scratch, engine: "exec sleep 30")
         let run = controller(repo)
         run.settings.name = "cmd-r"
-        let window = NSWindow(contentRect: NSRect(x: -4000, y: -4000, width: 1000, height: 800), styleMask: [.titled], backing: .buffered, defer: true)
+        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 1000, height: 800), styleMask: [.borderless], backing: .buffered, defer: true)
         window.isReleasedWhenClosed = false
         let host = NSHostingView(rootView: ContentView(controller: run).frame(width: 1000, height: 800))
         window.contentView = host
@@ -481,7 +489,7 @@ import Testing
 
     /// A delegate that never answers AppKit: a reply to a quit that is not under way could end the test process.
     private func makeDelegate(_ run: RunController, _ play: PlayController) -> AppDelegate {
-        let delegate = AppDelegate(run: run, play: play)
+        let delegate = AppDelegate(run: run, play: play, quitPanel: .offscreen())
         delegate.replyToTerminate = {}
         delegate.terminate = {}
         return delegate

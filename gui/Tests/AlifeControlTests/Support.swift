@@ -54,3 +54,19 @@ func eventually(timeout: Duration = .seconds(20), _ condition: @MainActor () -> 
     }
     return true
 }
+
+import AppKit
+
+extension QuitPanel {
+    /// The real quit panel, placed off every screen: a test run must never put anything on the display of whoever is working (it still
+    /// draws, updates and answers, in a window nobody sees).
+    @MainActor static func offscreen() -> QuitPanel {
+        QuitPanel(place: { $0.setFrameOrigin(NSPoint(x: -20_000, y: -20_000)) }, keepsOnScreen: false)
+    }
+}
+
+/// A titled window that stays where it is put. AppKit moves a titled window back onto a screen when it is ordered in (a borderless one it
+/// leaves alone), so a test that needs the title bar (a sheet, a key equivalent) uses this at -20000 and nothing of it is ever on a display.
+final class OffscreenWindow: NSWindow {
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+}

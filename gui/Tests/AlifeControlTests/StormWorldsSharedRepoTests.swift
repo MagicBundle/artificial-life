@@ -59,6 +59,6 @@ import Testing
 
     @Test func theDelegateQuitsWhenTheLastWindowClosesInTheLabAndInStormWorlds() {
         // `LaunchMode.current()` is the Lab in a test run; the plan says the same of Storm Worlds (LaunchModeTests).
-        #expect(AppDelegate().applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared))
+        #expect(AppDelegate(run: .shared, play: .shared, quitPanel: .offscreen()).applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared))
     }
 }

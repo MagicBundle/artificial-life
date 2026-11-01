@@ -128,7 +128,7 @@ import Testing
     // MARK: M4: the window comes back, and closing it closes the app's other windows
 
     private func delegate(_ plan: LaunchMode) -> AppDelegate {
-        let delegate = AppDelegate(run: RunController(storedPath: "", savePath: { _ in }, candidates: [], isApp: false), play: PlayController())
+        let delegate = AppDelegate(run: RunController(storedPath: "", savePath: { _ in }, candidates: [], isApp: false), play: PlayController(), quitPanel: .offscreen())
         delegate.plan = plan.plan
         delegate.replyToTerminate = {}
         delegate.terminate = {}
@@ -163,7 +163,7 @@ import Testing
     }
 
     private func window(_ id: String?) -> NSWindow {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled], backing: .buffered, defer: true)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.borderless], backing: .buffered, defer: true)
         window.isReleasedWhenClosed = false
         window.identifier = id.map { NSUserInterfaceItemIdentifier($0) }
         window.setFrameOrigin(NSPoint(x: -20000, y: -20000))

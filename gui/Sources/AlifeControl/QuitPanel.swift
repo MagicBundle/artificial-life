@@ -20,6 +20,24 @@ final class QuitPanel {
     /// Runs when the user chooses "Quit now without saving".
     var onQuitNow: () -> Void = {}
 
+    /// Where the panel goes when it first appears: the middle of the screen. The tests give a place that is off every screen, so that a test
+    /// run never puts a panel on anyone's display (it is the real panel, drawn and updated all the same).
+    private let place: (NSPanel) -> Void
+    /// AppKit moves a titled window back onto a screen when it is ordered in; a panel that is meant to be off every screen says it is not.
+    private let keepsOnScreen: Bool
+
+    init(place: @escaping (NSPanel) -> Void = { $0.center() }, keepsOnScreen: Bool = true) {
+        self.place = place
+        self.keepsOnScreen = keepsOnScreen
+    }
+
+    private final class Panel: NSPanel {
+        var keepsOnScreen = true
+        override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+            keepsOnScreen ? super.constrainFrameRect(frameRect, to: screen) : frameRect
+        }
+    }
+
     var isVisible: Bool { panel?.isVisible == true }
     /// The text on screen, for the tests and the spike.
     var texts: (title: String, detail: String, warning: String, quitNowHidden: Bool) {
@@ -51,7 +69,7 @@ final class QuitPanel {
             }
         }
         if !panel.isVisible {
-            panel.center()
+            place(panel)
             panel.orderFrontRegardless()
             spinner.startAnimation(nil)
         }
@@ -76,8 +94,9 @@ final class QuitPanel {
     @objc private func quitNowPressed() { onQuitNow() }
 
     private func makePanel() -> NSPanel {
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 420, height: 150),
-                            styleMask: [.titled, .utilityWindow], backing: .buffered, defer: false)
+        let panel = Panel(contentRect: NSRect(x: 0, y: 0, width: 420, height: 150),
+                          styleMask: [.titled, .utilityWindow], backing: .buffered, defer: false)
+        panel.keepsOnScreen = keepsOnScreen
         panel.title = "Quitting"
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
