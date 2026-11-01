@@ -434,8 +434,8 @@ def crossing_threshold(real_hist_n: np.ndarray, shadow_hist_n: np.ndarray) -> tu
     if tot == 0:
         return (np.inf, np.inf, np.inf)
     rd, sd = rn / tot, sn / tot
-    pos = np.flatnonzero((rd > 0) | (sd > 0))
-    a_max = A_EDGES[pos[-1]]
+    occupied = np.flatnonzero((rd > 0) | (sd > 0))
+    a_max = A_EDGES[occupied[-1]]
     i = np.arange(N_BINS)
     above = (rd >= sd) & (rd > 0)
     below_prev = np.concatenate([[False], rd[:-1] < sd[:-1]])

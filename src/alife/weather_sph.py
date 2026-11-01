@@ -1154,14 +1154,17 @@ def weather_block(
     rain_audit: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """The ``weather`` block of one metrics row on a sphere (plain floats and ints; the sphere's
-    ``weather_obs.weather_block``, whose storm proxy needs the connected components of the cell graph: S5).
+    ``weather_obs.weather_block``; the storm proxy is the number of cyclonic-vorticity components of the cell
+    graph, ``storms_sph.proxy``).
 
     ``wx`` is the stored ``(N_WX, N)``; ``air_speed`` the hazard speed of the alive rows. The keys are those
     of the box block that have a sphere meaning: the wind maxima of the two layers, the total rain
     (``Σ P·A``, ``A`` the cell area), the raining share of the cells, ``mass_rel`` (the relative drift of the
     column mass from ``N·(H1 + H2)``), ``q_total``, ``hyper_max``, the hazard exposure and the air-speed
     quantiles, the occupancy of the hash bands, the W2 coupling summaries that exist (``seed_r``, the rain
-    shares) and ``rain_cells``. No ``jet_max_l2`` (no zonal mean), ``vort_cells`` or ``storm_proxy``."""
+    shares), ``rain_cells``, ``vort_cells`` (the share of cells in the cyclonic-vorticity mask) and
+    ``storm_proxy`` (its components of ``a_min`` cells with ``r_min`` raining ones, per hemisphere). No
+    ``jet_max_l2`` (no zonal mean)."""
     from alife import weather_obs
 
     p = params_from_config(cfg)
@@ -1174,11 +1177,17 @@ def weather_block(
     sp1, sp2 = np.sqrt((u1 * u1).sum(0)), np.sqrt((u2 * u2).sum(0))
     d = u1 - u2
     speed = np.asarray(air_speed, dtype=np.float64).reshape(-1)
+    from alife import storms_sph
+
+    zeta = np.array(vorticity(unpack(mx.array(np.asarray(wx, np.float32))), p, cfg.world.radius))
+    storms, vort_cells = storms_sph.proxy(zeta, rain, storms_sph.SphereParams.from_config(cfg))
     block: dict[str, Any] = {
         "wind_max_l1": float(sp1.max()),
         "wind_max_l2": float(sp2.max()),
         "rain_total": float(rain.sum() * area),
         "rain_cells": float((rain >= p.p_th).mean()),
+        "vort_cells": vort_cells,
+        "storm_proxy": storms,
         "mass_rel": float((h1 + h2).sum() / (n * (p.H1 + p.H2)) - 1.0),
         "q_total": float(q.sum()),
         "hyper_max": float(((d * d).sum(0) / (p.g_prime * (h1 + h2))).max()),

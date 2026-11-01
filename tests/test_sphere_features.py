@@ -27,8 +27,10 @@ def test_the_five_features_and_the_roles_are_ready_on_a_sphere() -> None:
         "roles",
         "arms",
         "weather",
-    } == config.SPHERE_READY  # S4b: weather
-    assert set(config.SPHERE_FEATURE_PR) - config.SPHERE_READY == {"director", "observers"}
+        "observers",
+        "director",
+    } == config.SPHERE_READY  # S4b: weather, S5: observers, director
+    assert set(config.SPHERE_FEATURE_PR) - config.SPHERE_READY == set()
 
 
 @pytest.mark.parametrize("name", sorted(su.SPECS))

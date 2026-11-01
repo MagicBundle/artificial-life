@@ -76,7 +76,10 @@ def decode_header(data: bytes) -> tuple[dict[str, Any], int]:
     assert json_len % 4 == 0 and len(data) >= 12 + json_len
     text = data[12 : 12 + json_len]
     assert len(text) - len(text.rstrip(b" ")) < 4, "the JSON is padded with fewer than 4 spaces"
-    return json.loads(text.decode("ascii")), 12 + json_len
+    head = json.loads(text.decode("ascii"))
+    # a box decoder reads protocol 1 only (protocol 2 has its own layouts: tests/sphere_decode.py)
+    assert head.get("protocol") == 1, f"not a protocol 1 stream: {head.get('protocol')!r}"
+    return head, 12 + json_len
 
 
 def decode(data: bytes) -> tuple[dict[str, Any], list[Frame]]:

@@ -37,6 +37,7 @@ from typing import Any, Final
 
 import numpy as np
 
+from alife import geom
 from alife.game.kinthreads import KinThreads
 from alife.game.society import raw_house_names
 from alife.storms import STORM_MIN_DETECTIONS
@@ -159,8 +160,11 @@ def _label(name: str | None, ident: int) -> str:
 class Chronicler:
     """Turns the sources of a played world into events and keeps what the sentences need to name things."""
 
-    def __init__(self, house_salt: int) -> None:
+    def __init__(self, house_salt: int, planet: float | None = None) -> None:
         self.house_salt = house_salt
+        # the radius of a sphere world (DESIGN §46.7): a director entry's or a power's place is then
+        # (longitude, latitude) in degrees and an event states it as the planet-frame point at the floor
+        self.planet = planet
         self.threads = KinThreads()  # the kin groups through their id changes (game.kinthreads)
         self._top: dict[int, str] = {}  # the previous record's listed houses, id -> name
         self._used: dict[tuple[int, str], int] = {}  # (step, family) -> ids handed out
@@ -345,7 +349,7 @@ class Chronicler:
             imp,
             a=ident,
             b=int(e.get("other") or 0),
-            at=(e["x"], e["y"]),
+            at=(e["x"], e["y"], e.get("z")),
         )
 
     # --- the director, the focus, the play loop ----------------------------------------------------------
@@ -361,13 +365,20 @@ class Chronicler:
                 out.append(self._power_event(entry))
                 continue
             params = entry.get("params") or {}
-            at = (params.get("x"), params.get("y"))
+            at = self._where(params.get("x"), params.get("y"))
             text = render("director_entry", entry=describe(entry))
             out.append(_event(int(entry["step_applied"]), "director_entry", "director", text, 1, at=at))
         return self._stamp(out)
 
-    @staticmethod
-    def _power_event(entry: Mapping[str, Any]) -> dict[str, Any]:
+    def _where(self, x: float | None, y: float | None) -> tuple[float | None, ...]:
+        """The event position of a place ``(x, y)`` of a lever: itself in a box, the planet-frame point of
+        ``(longitude, latitude)`` at the floor on a sphere; ``None`` stays ``None``."""
+        if self.planet is None or x is None or y is None:
+            return (x, y)
+        px, py, pz = (self.planet * geom.from_latlon(y, x)).tolist()
+        return (round(px, 2), round(py, 2), round(pz, 2))
+
+    def _power_event(self, entry: Mapping[str, Any]) -> dict[str, Any]:
         """The chronicle row of a record of the player channel (DESIGN §34.5): kind ``power_applied``
         (importance 1) for a power, ``power_ended`` (importance 0) for the revert that ends or cancels one; a
         strike has a position. No alert (the surfaces of one power are its ``PLAN`` cards, §34.3)."""
@@ -386,7 +397,7 @@ class Chronicler:
                     "kill_p": params.get("kill_p"),
                 },
             }[power]
-            at = tuple(params["center"]) if power == "strike" else (None, None)
+            at = self._where(*params["center"]) if power == "strike" else (None, None)
             text = render(f"power_{power}", step=step, **slots)
             return _event(step, "power_applied", "director", text, 1, at=at)
         label = _POWER_LABEL[entry["action"]]
@@ -437,14 +448,16 @@ def rebuild_backlog(
     house_salt: int,
     limit: int = 64,
     chronicler: Chronicler | None = None,
+    planet: float | None = None,
 ) -> list[dict[str, Any]]:
     """The newest ``limit`` events a play of this run would have produced from its logs: the records of
     ``observers/social.jsonl``, the lines of ``observers/storms.jsonl`` (each with an ``events`` list) and the
     entries of ``director.jsonl`` (headers excluded by the caller), in order of ``(step, id)``. The kin
     threads and the storm persistence are folds over the whole log, so pass all of it. With ``chronicler`` the
     events are made by that one (a live play's, which then holds the thread table, the storm counters and the
-    ids handed out, so it continues the log it was started from); otherwise by a new one."""
-    chron = Chronicler(house_salt) if chronicler is None else chronicler
+    ids handed out, so it continues the log it was started from); otherwise by a new one (of a sphere of
+    radius ``planet``, if given)."""
+    chron = Chronicler(house_salt, planet) if chronicler is None else chronicler
     events: list[dict[str, Any]] = []
     for rec in social:
         events += chron.from_record(rec)

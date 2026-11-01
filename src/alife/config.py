@@ -1075,7 +1075,9 @@ SPHERE_FEATURE_PR: Final[Mapping[str, str]] = {
     "director": "S5",
     "observers": "S5",
 }
-SPHERE_READY: frozenset[str] = frozenset({"structures", "niche", "comm", "bonds", "roles", "arms", "weather"})
+SPHERE_READY: frozenset[str] = frozenset(
+    {"structures", "niche", "comm", "bonds", "roles", "arms", "weather", "observers", "director"}
+)
 
 
 def sphere_wanted(cfg: Config) -> list[str]:
@@ -1792,10 +1794,6 @@ def validate(cfg: Config) -> None:
         req(w.dims == 3, "run.eco_every > 0 needs a 3D world (the dump holds height and vertical wind)")
     if ru.wx_every > 0:
         req(cfg.weather.enabled, "run.wx_every > 0 needs weather.enabled")
-        req(
-            w.geometry != "sphere",
-            "run.wx_every > 0 is not available on a sphere yet (PR S5: the dump of the planes is the box's)",
-        )
 
     # Feature extensions (DESIGN §43): the protection floor, then each registered feature's own rules.
     req(0.0 <= co.protect_floor <= 0.5, f"combat.protect_floor {co.protect_floor} must be in [0, 0.5]")

@@ -52,11 +52,13 @@ __all__ = [
     "INTENT_DISPLAY",
     "INTENT_NAMES",
     "INTENT_VERSION",
+    "INTENT_VERSION_SPHERE",
     "N_ARCH_BASE",
     "N_INTENT_COLS",
     "RULES_V1",
     "RULES_V2",
     "RULES_V3",
+    "RULES_V4",
     "VQ_MAX",
     "ArchCol",
     "ArchLayout",
@@ -73,11 +75,13 @@ __all__ = [
     "for_2d",
     "hysteresis",
     "intent_matches",
+    "intent_version",
     "n_arch_cols",
     "pack_bits",
 ]
 
 INTENT_VERSION: Final = 3
+INTENT_VERSION_SPHERE: Final = 4  # the rule set of a sphere world (``RULES_V4``); thresholds provisional
 VQ_MAX: Final = 1 << 15  # clip of the quantised velocity components and speed (units of u/256)
 EVAL_BIT: Final = 1 << 30  # set in ``match_intent`` of every row that was evaluated (past intent warm-up)
 _INT32_MAX: Final = (1 << 31) - 1
@@ -106,6 +110,8 @@ _POST_V1_INERT: Final = {
     "floater_vz": 0,
     "sinker_lift": (0, 1),
     "sinker_vz": 0,
+    # version 4 (the sphere world, DESIGN §46.7): off
+    "sphere": False,
 }
 
 _I32 = mx.int32
@@ -136,23 +142,27 @@ class ArchLayout(NamedTuple):
     zpos: int | None  # round(256·z/H) (vertical)
     lift: int | None  # round(256·b·cap) (vertical): the lift fraction of ``buoyancy_max``
     width: int
+    vrad: int | None = None  # first of the two halves of the radial velocity (``rs.sphere``), else None
 
 
 def arch_layout(nd: int, rs: RuleSet | None = None) -> ArchLayout:
     """The archetype accumulator layout: the 5 + 2·nd columns of version 2 in place, then ``WIND`` under
     ``rs.wind_rel`` and ``ZPOS``, ``LIFT`` under ``rs.vertical`` (3D). ``rs=None`` is the version-2 layout."""
     col = N_ARCH_BASE + 2 * nd
-    wind = zpos = lift = None
+    wind = zpos = lift = vrad = None
     if rs is not None and rs.wind_rel:
         wind, col = col, col + 1
     if rs is not None and rs.vertical:
         zpos, lift, col = col, col + 1, col + 2
-    return ArchLayout(nd, N_ARCH_BASE, N_ARCH_BASE + nd, wind, zpos, lift, col)
+    if rs is not None and rs.sphere:  # the radial velocity, its own signed pair (the Cartesian halves stay)
+        vrad, col = col, col + 2
+    return ArchLayout(nd, N_ARCH_BASE, N_ARCH_BASE + nd, wind, zpos, lift, col, vrad)
 
 
 def n_arch_cols(nd: int, rs: RuleSet | None = None) -> int:
     """Archetype accumulator width: 9 in 2D, 11 in 3D (version 2); with ``wind_rel`` one more, with
-    ``vertical`` two more (10 and 14 for version 3 in 3D)."""
+    ``vertical`` two more (10 and 14 for version 3 in 3D), and a sphere (version 4) two more still: the
+    halves of the radial velocity."""
     return arch_layout(nd, rs).width
 
 
@@ -324,6 +334,11 @@ class RuleSet:
     floater_vz: int = 0
     sinker_lift: tuple[int, int] = (0, 1)
     sinker_vz: int = 0
+    # Version 4 (the sphere world, DESIGN §46.7): the velocity columns are the Cartesian planet-frame parts
+    # (the mean vector is rotation equivariant), the vertical speed of the Floater and Sinker is the radial
+    # component (two extra columns, ``arch_layout().vrad``) and ZPOS is the height above the planet. Needs
+    # ``vertical``; every threshold is version 3's, provisional until the sphere calibration (S7).
+    sphere: bool = False
 
     def __post_init__(self) -> None:
         def req(ok: bool, msg: str) -> None:
@@ -353,6 +368,8 @@ class RuleSet:
             "wind_rel and vertical are bools",
         )
         req(not self.vertical or self.wind_rel, "vertical needs wind_rel")
+        req(isinstance(self.sphere, bool), "sphere is a bool")
+        req(not self.sphere or self.vertical, "sphere (version 4) needs vertical")
         req(self.drifter_wind[0] == 0 or self.wind_rel, "the Drifter (drifter_wind) needs wind_rel")
         req(
             (self.drifter_wind[0] > 0) == (self.drifter_ratio[0] > 0),
@@ -392,6 +409,7 @@ class RuleSet:
             ("arch_slot.share", cfg.bonds.share_rate),
             *((("arch.wind", VQ_MAX),) if self.wind_rel else ()),  # |drift| is clipped at VQ_MAX
             *((("arch.zpos", 256), ("arch.lift", 256)) if self.vertical else ()),
+            *((("arch.vrad", VQ_MAX),) if self.sphere else ()),
         )
         intent = (
             ("intent.attack", 256),  # a flag enters as 256
@@ -419,6 +437,11 @@ class RuleSet:
                     )
         if self.vertical and not dims(cfg).d3:
             raise ValueError("RuleSet.check: vertical (the Floater and Sinker) needs a 3D world")
+        if self.sphere != dims(cfg).sph:
+            raise ValueError(
+                f"RuleSet.check: sphere = {self.sphere} for a world with geometry "
+                f"{cfg.world.geometry!r}: a sphere world runs RULES_V4, a box world RULES_V1 to V3"
+            )
         harvest_max = ec.harvest_max
         income = harvest_max + cfg.combat.attack_max + flow  # the largest windowed income
         ratios = (  # (field, largest compared mean), the int32 ratio tests of the archetype and intent rules
@@ -486,6 +509,15 @@ RULES_V3: Final = RuleSet(
     sinker_lift=(26, 1),
     sinker_vz=19,
 )
+# Version 4 (the sphere world, DESIGN §46.7): version 3's thresholds on the sphere's velocity and height
+# columns. Provisional: the held-out windows that calibrate the labels on a sphere are S7's, so no validity
+# row exists for it (``report.label_gate`` finds none: every sphere label is shown as unvalidated).
+RULES_V4: Final = dataclasses.replace(RULES_V3, sphere=True)
+
+
+def intent_version(rs: RuleSet) -> int:
+    """The ``INTENT_VERSION`` a rule set reports: 4 for the sphere's, else the box's ``INTENT_VERSION``."""
+    return INTENT_VERSION_SPHERE if rs.sphere else INTENT_VERSION
 
 
 def for_2d(rs: RuleSet) -> RuleSet:
@@ -539,7 +571,7 @@ def archetype_matches(
     lift, height and a small relative vertical speed; Sinker is little lift and a relative descent.
     """
     if lay is None:
-        extra = (1 if rs.wind_rel else 0) + (2 if rs.vertical else 0)
+        extra = (1 if rs.wind_rel else 0) + (2 if rs.vertical else 0) + (2 if rs.sphere else 0)
         lay = arch_layout((m6.shape[1] - N_ARCH_BASE - extra) // 2, rs)
     if m6.shape[1] != lay.width:
         raise ValueError(
@@ -583,7 +615,10 @@ def archetype_matches(
         )
     if rs.vertical:  # static: 3D, the layout then has ZPOS and LIFT
         zpos, lift = m6[:, lay.zpos].astype(_I64), m6[:, lay.lift].astype(_I64)
-        vz = (m6[:, lay.v_pos + nd - 1] - m6[:, lay.v_neg + nd - 1]).astype(_I64)
+        if rs.sphere:  # static: the radial velocity, not the planet-frame z component
+            vz = (m6[:, lay.vrad] - m6[:, lay.vrad + 1]).astype(_I64)
+        else:
+            vz = (m6[:, lay.v_pos + nd - 1] - m6[:, lay.v_neg + nd - 1]).astype(_I64)
         floater = (
             (rs.floater_lift[1] * lift >= rs.floater_lift[0])
             & (zpos >= rs.floater_z)

@@ -73,7 +73,13 @@ def param_specs(cfg: Config) -> dict[str, tuple[Param, ...]]:
         lo, hi = MENU[action].duration or (0, 0)
         return Param("duration", True, lo, hi)
 
-    size = cfg.world.size
+    size = actions.span(cfg)
+    # a place: the torus' [0, size) twice, or a sphere's longitude and latitude in degrees (DESIGN §46.7)
+    where = (
+        (Param("x", False, -180.0, 180.0), Param("y", False, -90.0, 90.0))
+        if actions.is_sphere(cfg)
+        else (Param("x", False, 0.0, size), Param("y", False, 0.0, size))
+    )
     patch = Param("patch", True, 0, cfg.fields.n_patches - 1)
     radius = Param("radius", False, *actions.radius_bounds(cfg))
     return {
@@ -83,8 +89,7 @@ def param_specs(cfg: Config) -> dict[str, tuple[Param, ...]]:
         "regen_pulse": (bound("regen_pulse", "mult"), duration("regen_pulse")),
         "immigration_pulse": (bound("immigration_pulse", "count", True),),
         "catastrophe": (
-            Param("x", False, 0.0, size),
-            Param("y", False, 0.0, size),
+            *where,
             radius,
             bound("catastrophe", "kill_p"),
         ),

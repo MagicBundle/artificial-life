@@ -181,7 +181,9 @@ def test_the_stream_records_the_decoder_knows_are_the_writers() -> None:
     assert {"STRC", "FSOL", "FSIG"} <= swift_tags
     for tag in getattr(sr, "EXT_TAGS", ()):
         assert tag in swift_tags, tag
-    assert set(getattr(sr, "ALL_TAGS", sr.TAGS)) <= swift_tags | {"FARS"}
+    # MAPH (the sphere's weather map, protocol 2) is the Swift decoder's S6 work, not yet in PlayRecords.swift
+    sphere_only = set(getattr(sr, "SPHERE_TAGS", ()))
+    assert set(getattr(sr, "ALL_TAGS", sr.TAGS)) - sphere_only <= swift_tags | {"FARS"}
     role = (CORE / "RoleColours.swift").read_text(encoding="utf-8")
     assert re.search(r'static let mode = "role"', role)
     assert tuple(getattr(sr, "EXT_COLOR_MODES", ("role",))) == ("role",)

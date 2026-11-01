@@ -125,6 +125,11 @@ def since_of(
     }
 
 
+def _z(fact: Mapping[str, Any]) -> dict[str, Any]:
+    """The planet-frame ``z`` of a fact's place on a sphere (the facts of a box have none)."""
+    return {"z": fact["z"]} if fact.get("z") is not None else {}
+
+
 def _entity_of(sheet: Mapping[str, Any], fact: Mapping[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     """The entities a cited fact names: ``(key, {kind, id, name, x, y})``. A thread and a group are kin
     groups (key ``K<kin id>``), a storm is ``S<id>``; the position is the one the fact holds (None if it holds
@@ -140,6 +145,7 @@ def _entity_of(sheet: Mapping[str, Any], fact: Mapping[str, Any]) -> list[tuple[
                     "name": fact["name"],
                     "x": fact.get("x"),
                     "y": fact.get("y"),
+                    **_z(fact),
                 },
             )
         ]
@@ -147,7 +153,14 @@ def _entity_of(sheet: Mapping[str, Any], fact: Mapping[str, Any]) -> list[tuple[
         return [
             (
                 f"S{fact['storm']}",
-                {"kind": "storm", "id": fact["storm"], "name": fact["name"], "x": fact["x"], "y": fact["y"]},
+                {
+                    "kind": "storm",
+                    "id": fact["storm"],
+                    "name": fact["name"],
+                    "x": fact["x"],
+                    "y": fact["y"],
+                    **_z(fact),
+                },
             )
         ]
     names = {e["ref"]: e.get("name") for e in sheet["entities"]}
@@ -162,6 +175,7 @@ def _entity_of(sheet: Mapping[str, Any], fact: Mapping[str, Any]) -> list[tuple[
                     "name": names.get(key),
                     "x": fact.get("x"),
                     "y": fact.get("y"),
+                    **_z(fact),
                 },
             )
         ]

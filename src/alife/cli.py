@@ -1097,6 +1097,7 @@ def _play_items(a: argparse.Namespace) -> list[str]:
 def _check_play_tick(cfg: Config) -> None:
     try:
         play.check_tick(play.world_tick(cfg))
+        play.check_cell_records(cfg)
     except ValueError as e:
         raise ConfigError(str(e)) from None
 
@@ -1493,7 +1494,6 @@ def _cmd_activity(a: argparse.Namespace) -> int:
     from alife.analysis import report  # local: host-only numpy analysis, kept off the simulation import path
 
     rd = RunDir.open(Path(a.run))
-    config_mod.require_box(rd.config(), "alife activity")  # the analysis reads torus positions (PR S5)
     out = Path(a.out) if a.out else rd.path / "activity"
     st = report.Settings(
         grid_every=a.grid,

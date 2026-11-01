@@ -33,14 +33,11 @@ def refused(*overrides: str, which: str = "tiny3s") -> str:
 # --- configuration ------------------------------------------------------------------------------------------
 
 
-def test_the_weather_layer_is_ready_on_a_sphere_and_the_rest_is_still_gated() -> None:
-    assert {"weather", "structures"} <= config.SPHERE_READY
+def test_the_weather_layer_is_ready_on_a_sphere_with_the_observers_and_the_director() -> None:
+    assert {"weather", "structures", "observers", "director"} <= config.SPHERE_READY
     assert "weather" in config.sphere_wanted(weather_cfg("tiny3s"))
-    for ov, name, pr in (
-        ("game.observe=true", "observers", "S5"),
-        ("director.enabled=true", "director", "S5"),
-    ):
-        assert f"{name} is not available on a sphere yet (PR {pr})" in refused(ov)
+    cfg = weather_cfg("tiny3s", "game.observe=true", "director.enabled=true")  # S5 converted both
+    assert {"weather", "observers", "director"} <= set(config.sphere_wanted(cfg))
     # weather with the built material is a valid combination since S3 converted the structures
     cfg = weather_cfg("tiny3s", "structures.enabled=true")
     assert cfg.weather.enabled and cfg.structures.enabled
@@ -75,7 +72,6 @@ def test_the_three_preset_geometries_validate_with_the_weather(which: str) -> No
         ("weather.wind_eddy_force=true", "not available on a sphere yet"),
         ("weather.H1=0", "rule"),
         ("weather.seed_gain=0.5", "seed_gain"),
-        ("run.wx_every=10", "wx_every"),
     ],
 )
 def test_the_sphere_weather_rules_name_their_problem(override: str, text: str) -> None:
@@ -239,7 +235,8 @@ def test_the_metrics_row_has_the_sphere_weather_block() -> None:
     ):
         assert k in blk, k
     assert abs(blk["mass_rel"]) < 1e-5 and json.dumps(row)  # plain JSON
-    assert "storm_proxy" not in blk and "jet_max_l2" not in blk  # S5
+    assert blk["storm_proxy"] == 0 and blk["vort_cells"] == 0.0  # S5: the cell graph's; calm at rest
+    assert "jet_max_l2" not in blk  # no zonal mean on a sphere
 
 
 # --- the spin-up --------------------------------------------------------------------------------------------

@@ -17,6 +17,7 @@ from alife import (
     arms,
     ext,
     fields,
+    geom,
     layout,
     niche,
     ops,
@@ -219,7 +220,7 @@ def _snapshot_3d(h: Mapping[str, np.ndarray], cfg: Config) -> dict[str, Any]:
     if not z.size:
         return dict.fromkeys(keys)
     vel = h["vel"][alive].astype(np.float64)
-    band = z_band(z, cfg.world.height)
+    band = z_band(z, geom.geometry(cfg).height_max)
     return {
         "height_mean": float(z.mean()),
         **_quantiles("height", z, (25, 50, 75)),

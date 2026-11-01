@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
+from alife import geom
 from alife.config import Config, is_3d
 from alife.director import llm, pacing
 from alife.director.actions import MENU
@@ -62,6 +63,13 @@ EFFECT_3D: Final = {
     "floor to the surface) once: founder effects, then recolonisation",
 }
 
+# The sphere's wording (DESIGN §46.7): the catastrophe is a cap of the planet, through the whole shell.
+EFFECT_SPHERE: Final = {
+    **EFFECT_3D,
+    "catastrophe": "kill a fraction of the agents inside a cap of the planet (a disc of the surface, from "
+    "the floor to the lid) once: founder effects, then recolonisation",
+}
+
 # The qualifier the 3D user message puts after the capacity estimate (§27.10): ``K_est`` counts each layer's
 # food by the share of the agents living in it, so it moves with where they are.
 K_NOTE_3D: Final = (
@@ -102,15 +110,23 @@ def _bound(p: llm.Param) -> str:
 
 def effects(cfg: Config) -> Mapping[str, str]:
     """The effect description of every menu action for ``cfg``'s world."""
+    if cfg.world.geometry == "sphere":
+        return EFFECT_SPHERE
     return EFFECT_3D if is_3d(cfg) else EFFECT
 
 
 def world_text(cfg: Config) -> str:
     """The sentence of the system message that describes the world's boundaries and the time unit."""
+    if cfg.world.geometry == "sphere":
+        return (
+            "The world is a planet with a surface and a lid at height "
+            f"{geom.geometry(cfg).height_max:g}; a place is x = longitude and y = latitude in degrees, "
+            "lengths are arc lengths on the surface; one step is one time unit."
+        )
     if is_3d(cfg):
         return (
             "The world is periodic in x and y, with a floor and a surface at height "
-            f"{cfg.world.height:g}; one step is one time unit."
+            f"{geom.geometry(cfg).height_max:g}; one step is one time unit."
         )
     return "The world is a torus; one step is one time unit."
 
@@ -315,7 +331,12 @@ def user_message(
     """The state at this boundary. ``entries`` is the decision log so far (the safety actions of this
     boundary are in ``taken`` and not repeated under the recent interventions)."""
     d3 = is_3d(cfg)  # the 3D world has a height, and K_est weighs each layer's food by its occupancy (§27.10)
-    size = f"{ctx.world_size:g} x {ctx.world_size:g}" + (f" x {cfg.world.height:g}" if d3 else "")
+    size = (
+        f"a planet of radius {cfg.world.radius:g} and height {geom.geometry(cfg).height_max:g}"
+        if ctx.sphere
+        else f"{ctx.world_size:g} x {ctx.world_size:g}"
+        + (f" x {geom.geometry(cfg).height_max:g}" if d3 else "")
+    )
     return "\n\n".join(
         [
             f"Step {ctx.t:,} of the run. World {size}, "
