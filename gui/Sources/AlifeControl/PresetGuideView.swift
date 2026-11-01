@@ -11,7 +11,8 @@ enum PresetSnapshotImages {
     private static let cache = NSCache<NSString, NSImage>()
 
     static func key(for url: URL) -> NSString? {
-        guard let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate else { return nil }
+        // (not `URL.resourceValues`: a URL value caches what it read once)
+        guard let date = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date else { return nil }
         return "\(url.path)|\(date.timeIntervalSinceReferenceDate)" as NSString
     }
 
