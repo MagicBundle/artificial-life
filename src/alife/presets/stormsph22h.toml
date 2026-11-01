@@ -7,9 +7,12 @@
 # Why. At `stormsph22`'s `storm_u0` 0.095 the storm kills 0.07 to 0.4 % of what kills an agent (0.02 % measured), so no
 # warning could pay for itself. The experiment's world makes the storm a real hazard, on purpose and knowingly (about a
 # thousand times more lethal than the shipped sphere worlds and the box's `storm160`, whose agent exposure is 6e-6 to
-# 9e-6; the box is not a precedent). The value below is a PLACEHOLDER: the pilot (P1, a sweep over 0.095, 0.075, 0.06,
-# 0.05 and a hazard-off control with `storm_p = 0`) picks the dial inside the bound "storm deaths 3 to 10 % of all deaths
-# among evolved agents" and this file is edited to the chosen value (a recorded amendment of the pre-registration).
+# 9e-6; the box is not a precedent). The value below is the PILOT's (step K5, `docs/RESULTS_CALLS.md`): P1 swept 0.095,
+# 0.075, 0.06, 0.05 and a hazard-off control (`storm_p = 0`), 80 000 steps each, one seed, `calls.far_xref` 0.7; storm
+# deaths were 0.07, 0.55, 1.8 and 4.3 % of all deaths of evolved agents in the last 20 000 steps, so only 0.05 meets the bound
+# "3 to 10 %" (and 3.7 % at `far_xref` 3.0, 3.1 % at 4.0), the lower edge of the band. The ladder was extended: 0.045 gives
+# 4.55 %, and 0.04 gives 6.13, 6.46 and 6.32 % in three lineages at `far_xref` 8.0, the middle of the band and inside it in
+# every window after the first. Recorded as amendment A0 of the pre-registration.
 #
 # A world overlay that names a planet: it fails validation on a planet other than `mini3s`, as `stormsph22` does.
 [weather]
@@ -20,5 +23,5 @@ seed_rate = 0.04
 pools = [50.265482, 33.510322, 24.0, 16.0, 1.0, -0.0048, 0.0, 150.796447, 33.510322, 24.0, 16.0, 1.0, -0.0048, 0.0, 251.327412, 33.510322, 24.0, 16.0, 1.0, -0.0048, 0.0, 0.0, -33.510322, 24.0, 16.0, 1.0, -0.0048, 0.0, 100.530965, -33.510322, 24.0, 16.0, 1.0, -0.0048, 0.0, 201.06193, -33.510322, 24.0, 16.0, 1.0, -0.0048, 0.0]
 rain_gain = 26000.0
 storm_p = 0.002
-storm_u0 = 0.06  # PLACEHOLDER (pilot P1 chooses; stormsph22 has 0.095)
+storm_u0 = 0.04  # pilot K5 (P1 extended, gate G1); stormsph22 has 0.095
 storm_span = 0.03

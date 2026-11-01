@@ -148,11 +148,15 @@ def test_the_overlays_load_on_the_experiment_world() -> None:
     cfg = load_config(preset="mini3s", overlays=["stormsph22h", "comm", "calls"], overrides=[])
     assert (cfg.comm.enabled, cfg.comm.width, cfg.comm.cost) == (True, 2, 32.0)
     assert (cfg.calls.enabled, cfg.calls.trigger, cfg.calls.events, cfg.calls.hold) == (True, True, 5, 4)
-    assert cfg.calls.far_range == 0.0 and cfg.calls.control == "none"
+    # the pilot's far hearing (step K5): range 18, gain 8.0; the oracle controls stay CLI-only
+    assert (cfg.calls.far_range, cfg.calls.far_xref, cfg.calls.control) == (18.0, 8.0, "none")
+    # the brain of the experiment: 84 + 5 (comm) + 6 (far block) inputs, token `calls2@1`
+    # (a launcher that loses `far_range` gets 89 and no complaint)
+    assert dims(cfg).lay.D_IN == 95 and ext.layout_features(cfg) == "comm2@1,calls2@1"
     base = load_config(preset="mini3s", overlays=["stormsph22"], overrides=[])
     wa, wb = (dataclasses.asdict(c.weather) for c in (cfg, base))
     assert {k for k in wa if wa[k] != wb[k]} == {"storm_u0"}  # the weather, hence the S4c statistics, as is
-    assert wb["storm_u0"] == 0.095 and 0.0 < wa["storm_u0"] < wb["storm_u0"]
+    assert wb["storm_u0"] == 0.095 and wa["storm_u0"] == 0.04  # the pilot's dial (gate G1)
     off = load_config(
         preset="mini3s", overlays=["stormsph22h", "comm", "calls"], overrides=["weather.storm_p=0"]
     )

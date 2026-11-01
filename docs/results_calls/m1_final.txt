@@ -1,0 +1,29 @@
+O1, last 20 000 steps; D21 storm rate 0.5768
+ F21 storm 0.1280 (-0.4487) hurt 0.4958 share 10.16 due 0.65 n 13020
+ F22 storm 0.4772 (-0.0995) hurt 0.6361 share 5.15 due 3.09 n 12511
+ F23 storm 0.4522 (-0.1246) hurt 0.9282 share 8.87 due 4.32 n 13723
+ F24 storm 0.5157 (-0.0610) hurt 0.3724 share 7.61 due 1.74 n 13475
+ F25 storm 0.0632 (-0.5136) hurt 0.0543 share 10.21 due 0.18 n 12066
+ F26 storm 0.9378 (+0.3610) hurt 0.0808 share 6.19 due 2.94 n 14578
+nofar storm       benefit of the voice, per lineage % [ 0.78  2.    1.32 -0.79 -1.26  4.5 ]  mean +1.09 sd 2.08 h 2.19 reduction +1.09 % lower95 -0.62 % t 1.28 p 0.1277
+nofar births      benefit of the voice, per lineage % [-1.06 -1.53 -7.58  0.82 -1.67 -1.75]  mean -2.13 sd 2.84 h 2.98 reduction -2.15 % lower95 -4.57 % t -1.84 p 0.9372
+nofar population  benefit of the voice, per lineage % [-0.38  1.12  0.18 -0.21 -0.14  1.54]  mean +0.35 sd 0.79 h 0.83 reduction +0.35 % lower95 -0.30 % t 1.09 p 0.1628
+nofar energy      benefit of the voice, per lineage % [ 0.15  0.36 -2.02 -2.34 -0.62 -1.16]  mean -0.94 sd 1.11 h 1.17 reduction -0.94 % lower95 -1.87 % t -2.07 p 0.9533
+decoy storm       benefit of the voice, per lineage % [ 0.29  4.71  2.87  1.44 -0.97  4.37]  mean +2.12 sd 2.27 h 2.38 reduction +2.10 % lower95 +0.25 % t 2.29 p 0.0354
+decoy births      benefit of the voice, per lineage % [ 0.   -1.18 -2.61 -0.2  -2.66  3.45]  mean -0.53 sd 2.26 h 2.37 reduction -0.53 % lower95 -2.42 % t -0.58 p 0.7057
+decoy population  benefit of the voice, per lineage % [-0.36 -0.86 -0.37 -0.36 -0.04 -1.53]  mean -0.59 sd 0.53 h 0.56 reduction -0.59 % lower95 -1.03 % t -2.72 p 0.9791
+decoy energy      benefit of the voice, per lineage % [ 0.16  0.63 -0.25 -1.41 -0.39  0.97]  mean -0.05 sd 0.84 h 0.88 reduction -0.05 % lower95 -0.75 % t -0.15 p 0.5552
+deaf  storm       benefit of the voice, per lineage % [ 0.43  5.57  5.72  0.63 -0.71  9.31]  mean +3.49 sd 3.96 h 4.16 reduction +3.43 % lower95 +0.23 % t 2.16 p 0.0416
+deaf  births      benefit of the voice, per lineage % [ -1.82  -3.1  -12.08  -0.89  -2.22  -1.64]  mean -3.63 sd 4.21 h 4.42 reduction -3.69 % lower95 -7.34 % t -2.11 p 0.9558
+deaf  population  benefit of the voice, per lineage % [-0.53  0.5   1.44  0.23 -0.32  0.58]  mean +0.32 sd 0.71 h 0.74 reduction +0.32 % lower95 -0.26 % t 1.11 p 0.1596
+deaf  energy      benefit of the voice, per lineage % [ 0.1  -0.09 -1.74 -5.01 -0.51 -0.56]  mean -1.30 sd 1.93 h 2.02 reduction -1.31 % lower95 -2.93 % t -1.66 p 0.9207
+Holm over 8
+ decoy storm       p 0.0354 x 8 = 0.2829 no
+ nofar storm       p 0.1277 x 7 = 0.8940 no
+ nofar population  p 0.1628 x 6 = 0.9769 no
+ decoy energy      p 0.5552 x 5 = 2.7759 no
+ decoy births      p 0.7057 x 4 = 2.8228 no
+ nofar births      p 0.9372 x 3 = 2.8117 no
+ nofar energy      p 0.9533 x 2 = 1.9067 no
+ decoy population  p 0.9791 x 1 = 0.9791 no
+total storm deaths {'none': 281102, 'nofar': 283087, 'deaf': 289802, 'decoy': 288488} ledger and diag {(21, 'none'): 262144, (22, 'none'): 262144, (23, 'none'): 262144, (24, 'none'): 262144, (25, 'none'): 262144, (26, 'none'): 262144}

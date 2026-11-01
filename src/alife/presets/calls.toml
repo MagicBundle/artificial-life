@@ -9,10 +9,15 @@
 # above 0, so this overlay validates on a weather world only (for example `mini3s` with `stormsph22h`, or a box with
 # `storm`).
 #
-# The call cost is the first value the pilot sweeps: 32 q per unit of intensity here (the comm overlay's 4 gave a
-# call rate of 98 % for 4 q, DESIGN section 39.14: no pressure to be economical), provisional, with {8, 32, 128}
-# the sweep. `hold` 4 is provisional too. Far hearing (`calls.far_range`, `calls.far_xref`) and the oracle controls
-# are step K2 and stay at their defaults.
+# The call cost is 32 q per unit of intensity here (the comm overlay's 4 gave a call rate of 98 % for 4 q, DESIGN
+# section 39.14: no pressure to be economical); the pilot (step K5, `docs/RESULTS_CALLS.md`) kept it (gate G3 holds at 32:
+# `comm_due_share`, the calls' share of the action heat, is 1.2 %; 8 and 128 were run as a sensitivity check). `hold` 4 is provisional.
+# Far hearing is on (step K2, DESIGN section 47.7): `far_range` 18 (the least the 4-column rule admits on `mini3s`
+# and `64k3s` is 17.9) and `far_xref` 8.0, the gain the pilot chose at `storm_u0` 0.04 (median heard of the audible rows in
+# evolved F worlds 0.41 / 0.44, 0.40 / 0.35 and 0.20 / 0.22 in three lineages; 3.0 saturates the storm channel at 0.92). The oracle
+# controls (`calls.control`) stay CLI-only and off. This overlay therefore needs a world where far hearing validates (the
+# 4-column rule and the world's reach): `mini3s` and `64k3s`; a tiny world needs `--set calls.far_range=0
+# --set calls.far_xref=1`.
 [comm]
 enabled = true
 width = 2
@@ -23,3 +28,5 @@ enabled = true
 trigger = true
 events = 5
 hold = 4
+far_range = 18.0
+far_xref = 8.0

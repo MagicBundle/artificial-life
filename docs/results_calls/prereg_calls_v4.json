@@ -1,0 +1,369 @@
+{
+ "file": "prereg_calls_v4.json",
+ "status": "FROZEN before any M1 step (amendment A0)",
+ "frozen": true,
+ "rules_version": 4,
+ "VOICE_ANALYSIS_VERSION": 4,
+ "spec": "SP/calls_spec/spec.md Revision 2 (sections 7.2, 7.3, 7.4); engine branch engine/calls-k5 on f960ceb (K2 head)",
+ "pilot": {
+  "results": "docs/RESULTS_CALLS.md, sections 0 to 15",
+  "world": "alife run --preset mini3s --overlay stormsph22h --overlay comm --overlay calls (the overlays now carry the values below), fresh founders, --weather-spinup 8000, seed 0 for the pilot runs",
+  "gpu_hours": {
+   "gpu_busy_wall_h": 2.38,
+   "plus_smoke_and_speed_h": 0.1,
+   "process_hours": 4.6,
+   "steps_total": 1680000,
+   "note": "two runs in parallel (about 101 steps/s each, 153 alone); 57 jobs"
+  }
+ },
+ "inputs": {
+  "weather.storm_u0": {
+   "value": 0.04,
+   "source": "P1 extended, gate G1",
+   "evidence": "three lineages at far_xref 8.0: 6.13, 6.46, 6.32 %; 0.05 gave 3.68 % at far_xref 3.0, the lower edge; 0.045 gave 4.55 %",
+   "note": "the hazard-off control is weather.storm_p=0; the shipped 0.095 is the second negative control"
+  },
+  "weather.storm_p": {
+   "value": 0.002,
+   "source": "stormsph22, unchanged"
+  },
+  "comm.cost": {
+   "value": 32.0,
+   "source": "P1b, gate G3",
+   "evidence": "comm_due_share at 0.04, far_xref 8.0, cost 32: 3.63, 2.65, 3.39 % (band 0.5 to 5 %)"
+  },
+  "calls.far_xref": {
+   "value": 8.0,
+   "source": "P1 extended",
+   "evidence": "median heard, storm channel, audible rows, three lineages, 60 000 / 80 000 steps: 0.41 / 0.44, 0.40 / 0.35, 0.20 / 0.22. At 0.04: 3.0 saturates (0.92), 6 gives 0.12 / 0.38, 10 gives 0.28 / 0.32",
+   "caveat": "one lineage of three is below [0.3, 0.7]; the statistic depends on the evolved world"
+  },
+  "calls.far_range": {
+   "value": 18.0,
+   "source": "spec 6 (least value the 4-column rule admits on mini3s is 17.9)",
+   "note": "the columns sit on the floor sphere: horizontal distances are stretched by 1.27 to 1.28 on average (mean altitude 12.8 to 13.4 of 24); see M3 in results.md. In the shell far_range 18 means about 14 (12 to 25 % less)",
+   "decision": "M3: kept on the floor sphere and recorded; every arm shares the geometry, the table is not rebuilt"
+  },
+  "calls.events": {
+   "value": 5,
+   "note": "hurt + storm, comm.width 2, D_IN 95, token calls2@1 (asserted by the launcher for every arm)"
+  },
+  "calls.hold": {
+   "value": 4,
+   "source": "unchanged; gate G2 holds: open share of alive rows (last 20 000 steps of the chosen run) hurt 10.4 %, storm 6.8 %, band 0.5 to 25 %"
+  },
+  "calls.food_q": {
+   "value": null,
+   "note": "no secondary event"
+  },
+  "calls.oracle_min": {
+   "value": 0.05,
+   "note": "R and Rn are quoted with this and with calls.oracle_gain 1.0 and far_xref 3.0"
+  },
+  "calls.oracle_gain": {
+   "value": 1.0
+  }
+ },
+ "noise": {
+  "source": "null forks of P1_u05_x3 at step 80 000, 20 000 steps, control none, run.seed 1 to 6 (SP/calls_pilot/null_out.txt, pnull_out.txt, paired6_out.txt)",
+  "unpaired_different_seed": {
+   "note": "the spec's null: different run.seed, which also changes the weather after the fork",
+   "cv_of_storm_death_rate_per_fork": {
+    "4_forks": 0.038,
+    "6_forks": 0.03
+   },
+   "h_95_relative_storm_deaths": {
+    "1v1": 0.108,
+    "2v2": 0.076,
+    "3v3": 0.062,
+    "4v4": 0.054,
+    "6v6": 0.0445,
+    "basis": "6 forks, t with 5 df, 20 000-step forks"
+   },
+   "h_leq_2p5_percent_needs": "about 19 forks of 20 000 steps (12.7 of 30 000) per arm, i.e. about 380 000 fork-steps per arm: not affordable"
+  },
+  "paired_same_seed": {
+   "note": "forks with the same run.seed share the weather exactly (verified: wind_max_l1 and rain_total identical); contrasts of the knock-out forks are paired by seed",
+   "pooled_seed_sd_of_a_paired_contrast_over_nofar_deaf_decoy_reflex_call": 0.014,
+   "df": 12,
+   "h_95_of_the_mean_of_m_seed_pairs_20k_steps": {
+    "1": 0.0304,
+    "2": 0.0215,
+    "3": 0.0176,
+    "4": 0.0152,
+    "6": 0.0124
+   },
+   "lower_bound_same_seed_perturbation": "comm.cost 32.001 against 32, six seeds: sd of the paired contrast 0.47 %, a lower bound (common random numbers keep the runs close)",
+   "h_leq_2p5_percent": "holds for 3 seed pairs of 20 000 steps (1.8 %), and is expected to hold for 3 pairs of 30 000 steps (about 1.4 %, scaling as T^-1/2, not measured)"
+  },
+  "rule_5_percent_valid_only_if_h_leq_2p5_percent": "FAILS for the unpaired null and for 3 lineages (h 8 %); holds within one lineage; needs about 9 lineages",
+  "between_lineages": {
+   "source": "forks of L10, L11, L12, 20 000 steps, seeds 1 and 2",
+   "sd_nofar": 0.0324,
+   "sd_decoy": 0.0452,
+   "sd_pair_within_lineage": 0.0108,
+   "h_95_nofar_sd": {
+    "3": 0.08,
+    "6": 0.034,
+    "9": 0.025
+   },
+   "caveat": "sd from three lineages at 80 000 steps is rough"
+  }
+ },
+ "smallest_effect_of_interest": {
+  "value_relative_reduction_of_storm_deaths_per_agent_step": 0.05,
+  "valid_under": "lineage as the unit of inference, n chosen by the rule in design",
+  "bands": {
+   "supported": ">= 15 %, lower 95 % bound > 0",
+   "supported_small": "5 % to 15 %, lower 95 % bound > 0",
+   "no_effect_of_interest": "< 5 %"
+  },
+  "pilot_reading_of_the_contrast_M1_will_test": {
+   "F_vs_nofar_6_seeds_paired_20k": "nofar has +1.91 % storm deaths per agent-step (per seed +1.6 +4.0 +3.1 +0.8 +2.2 -0.3; 95 % CI +0.29 to +3.53), i.e. F reduces them by 1.9 %, below 5 %. F is the 80 000-step evolved population of one seed",
+   "F_vs_decoy_6_seeds_paired_20k": "decoy +0.39 % (95 % CI -1.10 to +1.88)",
+   "F_vs_deaf_2_seeds": "deaf +3.74 % (+3.3, +4.2)"
+  },
+  "upper_bound_on_any_benefit": "storm deaths are 6.1 to 6.5 % of all deaths at the chosen values",
+  "pilot_reading_at_chosen_values": {
+   "nofar_storm": "+1.6 % (per lineage -1.5, +5.0, +1.3)",
+   "decoy_storm": "+7.1 % (per lineage +4.1, +12.3, +4.9), all six pairs positive; population not lower"
+  }
+ },
+ "block_structure": {
+  "source": "autocorrelation of storm deaths per 500 steps in the null forks (null_out.txt) and of the paired log-ratio (pnull_out.txt)",
+  "acf_across_fork_deviation_lags_1_to_6_of_500_steps": [
+   0.53,
+   0.25,
+   0.15,
+   0.1,
+   -0.01,
+   -0.11
+  ],
+  "acf_paired_log_ratio_lags_1_to_8": [
+   0.05,
+   -0.14,
+   0.04,
+   0.0,
+   -0.05,
+   0.0,
+   -0.1,
+   -0.03
+  ],
+  "recommended_block_length_steps": null,
+  "blocks_in_a_30000_step_fork": null,
+  "conservative_alternative_steps": 5000,
+  "holm_family": "4 readouts (storm death rate, population, births per agent-step, mean energy) x 2 contrasts (F vs nofar, F vs decoy) = 8",
+  "note": "the spec expected 4 to 6 blocks of 5 000 to 7 500 steps; the data decorrelate by about 2 500 steps. A stationary block bootstrap with mean block 2 500 is the alternative",
+  "decision": "the lineage is the unit of inference; one fork per lineage; blocks do not enter the interval, because they read 1.5 times less noise than seeds; 5 000-step blocks are reported only as a within-lineage description"
+ },
+ "oracle": {
+  "note": "R is an upper bound on exposure reduction, not on net benefit (Revision 2). Net-fitness readouts are in results.md. Quoted at far_xref 3.0, oracle_min 0.05, oracle_gain 1.0 unless stated; seeds 1 and 2; relative change against none (same seed), mean of the two",
+  "R_reflex": {
+   "storm_deaths": -0.755,
+   "n_alive": -0.592,
+   "births_per_agent_step": 0.021,
+   "mean_energy": 0.001,
+   "oracle_on_frac": 0.21
+  },
+  "R_reflex_vs_reflex_call": {
+   "storm_deaths": -0.758,
+   "n_alive": -0.588
+  },
+  "Rn_reflex_near": {
+   "storm_deaths": -0.284,
+   "n_alive": -0.024,
+   "births_per_agent_step": 0.083,
+   "mean_energy": -0.006,
+   "oracle_on_frac": 0.07
+  },
+  "R_curve_oracle_gain": {
+   "1.0": [
+    -0.755,
+    -0.592
+   ],
+   "0.5": [
+    -0.698,
+    -0.421
+   ],
+   "0.25": [
+    -0.419,
+    -0.196
+   ],
+   "0.1": [
+    -0.16,
+    -0.057
+   ],
+   "columns": "[storm deaths per agent-step, n_alive], relative to none"
+  },
+  "Rn_curve_oracle_gain": {
+   "1.0": [
+    -0.284,
+    -0.024
+   ],
+   "0.5": [
+    -0.113,
+    -0.001
+   ],
+   "0.25": [
+    0.025,
+    0.014
+   ],
+   "0.1": [
+    0.056,
+    0.018
+   ]
+  },
+  "R_curve_oracle_min_gain_1": {
+   "0.05": [
+    -0.755,
+    -0.592
+   ],
+   "0.2": [
+    -0.641,
+    -0.454
+   ],
+   "0.5": [
+    -0.424,
+    -0.283
+   ]
+  },
+  "reflex_call_control": {
+   "storm_deaths": 0.011,
+   "n_alive": -0.01,
+   "note": "calling at 0.5 with no force changes nothing measurable"
+  },
+  "refutation_clause": "no oracle setting lowers storm deaths by 20 % or more without a population cost, except reflex_near at gain 1 (-28 % storm deaths, population -2.4 %, births per agent-step +8 %); read the clause of 7.4 with that",
+  "at_chosen_values": {
+   "reflex": [
+    [
+     -0.307,
+     -0.801
+    ],
+    [
+     -0.272,
+     -0.793
+    ],
+    [
+     -0.531,
+     -0.692
+    ]
+   ],
+   "reflex_near": [
+    [
+     -0.323,
+     -0.042
+    ],
+    [
+     -0.274,
+     -0.029
+    ],
+    [
+     -0.259,
+     -0.102
+    ]
+   ],
+   "reflex_call": [
+    [
+     -0.03,
+     -0.002
+    ],
+    [
+     -0.069,
+     -0.014
+    ],
+    [
+     0.01,
+     -0.012
+    ]
+   ],
+   "columns": "[storm deaths per agent-step, n_alive] for L10, L11, L12, fork seed 1"
+  }
+ },
+ "gates": {
+  "G1": {
+   "result": "PASS, mid-band",
+   "value": "6.13, 6.46, 6.32 %"
+  },
+  "G2": {
+   "result": "PASS",
+   "value": "hurt 9.0 to 15.1 %, storm 14.6 to 14.7 %"
+  },
+  "G3": {
+   "result": "PASS",
+   "value": "2.65 to 3.63 %"
+  },
+  "G4": {
+   "result": "PASS",
+   "value": "ledger error 0 in every row of 57 runs, full_check OK on the P1 checkpoint and a reflex fork, no error bit of diag; the advisory WEATHER_WARN bit is set in every weather run"
+  },
+  "G5": {
+   "result": "PASS on the first clause; net fitness falls",
+   "value": "reflex -27 to -53 % storm deaths, n_alive -69 to -80 %; reflex_near -26 to -32 %, n_alive -3 to -10 %"
+  }
+ },
+ "amendments": [
+  {
+   "id": "A0",
+   "date": "2026-10-31 21:22 CET",
+   "what": "freeze",
+   "departures_from_spec": [
+    "storm_u0 0.04 and far_xref 8.0 from the pilot's extension",
+    "the lineage is the unit of inference: the seed rule with block intervals is replaced by the t over lineages, because the effect varies more between lineages (3.2 to 4.5 %) than within one (1.1 %) and blocks read 1.5 times less noise than seeds",
+    "the fitness clause uses no blocks (spec 7.3 item 3)",
+    "seeds may be added under stage_2_rule (spec 7.4: 'seeds added until it is')",
+    "M3: far table kept on the floor sphere, every arm shares the geometry"
+   ]
+  }
+ ],
+ "design": {
+  "owner_decision": "staged, owner's go of 2026-10-31",
+  "lineage_seeds": {
+   "stage_1": [
+    21,
+    22,
+    23
+   ],
+   "stage_2_in_order": [
+    24,
+    25,
+    26,
+    27,
+    28,
+    29
+   ]
+  },
+  "not_reused": "the pilot's lineages (seeds 0, 10, 11, 12) enter no M1 estimate",
+  "references": {
+   "D": "comm.control=deaf from step 0, seed 21, stage 1 only",
+   "hazard_off": "weather.storm_p=0, seed 21, stage 1 only"
+  },
+  "long_runs": "300 000 steps, checkpoints 100 000 / 200 000 / 300 000",
+  "forks": "from step 300 000 of each F lineage: none, nofar, deaf, decoy, 30 000 steps, run.seed = the lineage seed in every arm of that lineage, one fork per arm",
+  "stage_2_rule": {
+   "statistic": "sd over lineages of log(storm deaths per agent-step, arm / none) over the whole fork, for nofar and for decoy; the larger of the two",
+   "n": "the smallest n in 3..9 with t(0.975, n-1) * sd / sqrt(n) <= 0.025; 9 if none",
+   "blind": "the sd is used, never the mean or sign of a contrast",
+   "once": "applied once, after stage 1; lineages are added in the listed order and none is dropped",
+   "scope": "pre-authorised by the owner's go; M2 is not"
+  },
+  "reading": "O1 from the last 20 000 steps of each long run; O4 from the forks; O2 and O3 from voice logs replayed from the checkpoints once the K3 analysis exists, under this same file"
+ },
+ "frozen_at": "2026-10-31 21:22 CET",
+ "engine_commit": "06013f7 on engine/calls-k5",
+ "world": "alife run --preset mini3s --overlay stormsph22h --overlay comm --overlay calls --weather-spinup 8000 --metrics-every 500 --checkpoint-every 100000; every launch asserts D_IN 95, token calls2@1, storm_u0 0.04, far_xref 8.0",
+ "outcomes": {
+  "O1": "spec 7.4: calls_rate_storm of each F lineage above the D reference by at least 0.05, last 20 000 steps. A lineage that uses the hurt channel fails O1 and is reported as such. Hazard-off at the same rate as F means the rate is no response to the hazard",
+  "O2": "spec 7.4",
+  "O3": "spec 7.4",
+  "O4": {
+   "primary": "relative reduction of storm deaths per agent-step, F against nofar and F against decoy, reported separately; both must pass for a claim of meaning",
+   "estimate": "1 - exp(-m), m the mean log ratio over lineages",
+   "interval": "Student t over lineages, df n - 1, one-sided 95 % lower bound on the reduction above 0",
+   "bands": ">= 15 %: supported; 5 to 15 %: supported, small; below 5 %: no effect of interest",
+   "holm": "population, births per agent-step and mean energy with the storm rate: 4 readouts x 2 contrasts = 8, one-sided t p-values over lineages",
+   "validity": "the 5 % band is read as valid only if the final h <= 2.5 %; if n = 9 and h is still above, the result is reported with its h and the band is not claimed"
+  },
+  "refutation": "spec 7.4 Revision 2; at the chosen values the oracle's net fitness falls, so R licenses no refutation"
+ },
+ "sha256": "644ff74a8721fffbd57b3b1d2d5a430dac6e2ec4bdcfe3a3a4d910aa61a04616"
+}
