@@ -48,6 +48,13 @@ import Testing
         #expect(sentences[1] == WorldsGuide.flatHasNoPlanet && sentences.count == 2)
     }
 
+    @Test func aWorldThatDiedOutDoesNotSayItCanBecomeAPlanet() {
+        var dead = row(.research, state: .saved)
+        dead.diedOut = true
+        let sentences = DetailsGuide.whatItIs(dead, grownFor: "p")
+        #expect(sentences[1] == WorldsGuide.diedOutHasNoPlanet && sentences.count == 2 && !sentences.joined().contains("To play it"))
+    }
+
     @Test func aBranchSaysWhereItWasBranchedFrom() {
         let sentences = DetailsGuide.whatItIs(row(.research, parent: SourceRef(name: "a", step: 20_000)), grownFor: nil)
         #expect(sentences.last == "Branched from a at step 20,000.")

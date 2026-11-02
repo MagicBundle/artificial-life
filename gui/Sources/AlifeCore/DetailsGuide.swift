@@ -32,7 +32,9 @@ package enum DetailsGuide {
             }
         case .research:
             out.append("A research world. It grows by itself, and you watch it from outside; it cannot be played as it is.")
-            if row.shape == .flat {
+            if row.diedOut {
+                out.append(WorldsGuide.diedOutHasNoPlanet)
+            } else if row.shape == .flat {
                 out.append(WorldsGuide.flatHasNoPlanet)
             } else if let grownFor {
                 out.append("It is the grown world of \(grownFor). To play it, make a planet from it.")

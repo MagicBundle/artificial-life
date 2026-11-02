@@ -68,7 +68,7 @@ struct DetailsPage: View {
         section("What you can do") { doing(row, actions) }
         section("How it is doing") {
             Text(DetailsGuide.progress(row, now: Date())).fixedSize(horizontal: false, vertical: true)
-            if let ended = DetailsGuide.ended(status: reading?.status, played: row.kind == .played), row.state == .saved {
+            if let ended = DetailsGuide.ended(status: reading?.status, played: row.kind == .played), row.state == .saved, row.note == nil {
                 Text(ended).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if let note = row.note { Text(note).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }

@@ -264,7 +264,7 @@ struct ViewerCompactControls: View {
                         Button("-") { model.perform(.slower) }
                         Text("\(stream.control.every)").font(.callout.monospacedDigit()).frame(minWidth: 28)
                         Button("+") { model.perform(.faster) }
-                        Text("steps/frame").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Text("/frame").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                     .fixedSize()
                     .disabled(!live)
@@ -278,8 +278,9 @@ struct ViewerCompactControls: View {
                 .labelsHidden()
                 .frame(width: 110)
                 .help("Orbit turns about the target; Fly turns about the eye and the arrow keys move (o)")
-                Button("Reset view") { model.perform(.resetCamera) }.help("r")
+                Button("Reset view") { model.perform(.resetCamera) }.help("r").fixedSize()
                 Button("Snapshot") { model.perform(.snapshot) }
+                    .fixedSize()
                     .disabled(stream.frame == nil)
                     .help("Save a PNG under the world's media folder (s)")
             }
