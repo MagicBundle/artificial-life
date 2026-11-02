@@ -54,6 +54,11 @@ package enum QuitWording {
         "The run writes a save point first; continue it later from the Lab with Mode: Resume. If it has not finished that "
         + "after \(runWaitSeconds) s, it is stopped anyway and the steps since its last save point are lost."
 
+    /// The same in the `alife` window, where a stopped world is continued with *Keep growing* (docs/APP.md §5.4).
+    package static let confirmDetailShell =
+        "The run writes a save point first; continue it later with Keep growing. If it has not finished that "
+        + "after \(runWaitSeconds) s, it is stopped anyway and the steps since its last save point are lost."
+
     package static let confirmStop = "Stop and Quit"
     package static let confirmCancel = "Cancel"
 

@@ -19,11 +19,11 @@ import Testing
 
     // MARK: H1: two writers
 
-    @Test func aWorldTheLabIsWritingCannotBePlayedAndIsNeverTheNextStep() {
+    @Test func aWorldThisWindowIsGrowingCannotBePlayedAndIsNeverTheNextStep() {
         var catalog = PlayCatalog()
         catalog.worlds = [world("grown"), world("quiet")]
         let facts = WorldsGuide.Facts(folderExists: true, engineReady: true, catalog: catalog, growing: "grown")
-        #expect(WorldsGuide.reason(forPlaying: world("grown"), in: facts) == "Growing in the Lab")
+        #expect(WorldsGuide.reason(forPlaying: world("grown"), in: facts) == "Still growing")
         #expect(WorldsGuide.reason(forPlaying: world("quiet"), in: facts) == nil)
         #expect(WorldsGuide.nextStep(facts) == .play(world: "quiet"))
         var only = PlayCatalog()

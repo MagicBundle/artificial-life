@@ -70,10 +70,17 @@ import Testing
         }
     }
 
+    @Test func aFlatWorldIsNotWhatTheFirstPlanetIsMadeFrom() {
+        var flat = source("f")
+        flat.dims = 2
+        #expect(WorldsGuide.nextStep(facts(catalog(sources: [flat]))) == .makeFirstRun)
+        #expect(WorldsGuide.nextStep(facts(catalog(sources: [flat, source("p")]))) == .makePlanet(from: "p"))
+    }
+
     @Test func makingAPlanetSaysWhyItCannotBeDoneYet() {
         #expect(WorldsGuide.reasonToMakePlanet(facts(folder: false)) == "Folder not found: /x")
         #expect(WorldsGuide.reasonToMakePlanet(facts(engine: false)) == "Set up the engine first.")
-        #expect(WorldsGuide.reasonToMakePlanet(facts())?.contains("research run") == true)
+        #expect(WorldsGuide.reasonToMakePlanet(facts())?.contains("world with a save point") == true)
         #expect(WorldsGuide.reasonToMakePlanet(facts(open: "w"))?.hasPrefix("Close w first") == true)
         #expect(WorldsGuide.reasonToMakePlanet(facts(catalog(sources: [source("r")]))) == nil)
     }

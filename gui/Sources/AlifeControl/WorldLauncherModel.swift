@@ -158,7 +158,7 @@ final class WorldLauncherModel: ObservableObject {
     var housesMessage: String? {
         guard let source = selectedSource else { return nil }
         if planet.houses == .exact, !source.hasEvents { return "\(source.name) has no event record, so family lines cannot be rebuilt exactly." }
-        if planet.houses == .auto, !source.hasEvents { return "There is no event record, so family lines will be rebuilt from the clades, approximately." }
+        if planet.houses == .auto, !source.hasEvents { return "There is no event record, so family lines will be rebuilt roughly." }
         return nil
     }
 
@@ -179,8 +179,14 @@ final class WorldLauncherModel: ObservableObject {
 
     func startPlanet() {
         guard planetErrors.isEmpty else { return }
-        startedSpecs[planet.name.trimmingCharacters(in: .whitespaces)] = planet
-        launch(.planet(planet))
+        start(spec: planet)
+    }
+
+    /// Starts a planet that was set up elsewhere (the set-up page's pipeline): the spec is kept for the session, so that an unfinished build
+    /// can be made again.
+    func start(spec: PlanetSpec) {
+        startedSpecs[spec.name.trimmingCharacters(in: .whitespaces)] = spec
+        launch(.planet(spec))
     }
 
     /// The planets this session asked for, by name: what an unfinished build of this session was made with ("Make again with a new name").

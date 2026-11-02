@@ -886,6 +886,43 @@ unit (§37.4).
      the stamp's size, the 2 s settle rule, the lane's deadline and its not asking a stuck entry twice).
   14. Known, left as is: a card has no picture; selecting a world does not open a Details page (PR-F); Keep growing and Branch are PR-D; a
      research world cannot be watched yet (PR-F); a run written by another app is "in use" only while its `metrics.jsonl` moves (20 s).
+- **Click-through list for PR-D of the one-app program** (the owner's hands; `docs/APP.md` §3.2, §3.5, §5.2, §7.3; DESIGN §33.4.13, row I84; the same
+  `alife Preview.app`; what the scripted and real-bundle runs showed is in I84 and below; a real mouse, a lit display and a long wait are yours):
+  1. Open the app on a folder with no world (a new one). The Worlds page says **Start your first world**; press *Create a small planet*. The form has a name
+     (`planet-1`), the starting point, the goal, "Grow for 30000 steps" with "About 1 min 50 s, then about 10 s to make the planet", and one button. Read it as
+     someone who has never seen the app: is any word or choice there that you did not need? Press **Create** (or Cmd-R).
+  2. Watch the wait. The page shows *Growing planet-1*, the step, the time left, a bar, the clock, the three steps and what comes next. Go to Worlds and Activity:
+     the same bar is at the top; Worlds lists **planet-1** (Growing) with **planet-1-grow** under it; Activity shows the numbers of the run. About 1 min 50 s
+     after the press (measured: 1 min 53 s) the planet opens in Watch by itself if you stayed on the page or on Worlds; if you were on Activity the bar says
+     *planet-1 is ready* with *Watch*.
+  3. **Stop** (Cmd-period) in the first minute: the bar says it is stopping, then *Growing stopped at step N* with **Make planet from here**, **Keep growing**,
+     **Done**. Nothing starts by itself. *Make planet from here* makes it; *Keep growing* runs it on to its 30,000 steps and then makes the planet.
+  4. **Window away.** Start a run, switch to another app (or close the window with the Dock icon kept): when the run ends the Dock icon bounces once and the
+     bar (when you come back) says it finished while the window was not in front, with *Make planet*. Nothing was started behind your back. (Not exercised by
+     a person here: the session was locked; the window server never made the app active, so the real app parked every time, which is this rule seen.)
+  5. **Cancel** while the planet is made (the warm-up): it stops at once; the world is listed under Unfinished with its reason; planet-1-grow is kept.
+  6. **Quit** in the first minute: the question says "continue it later with Keep growing"; Stop and Quit. Launch again: nothing starts; the sidebar says
+     **Planet not made yet** under planet-1-grow and its card offers *Make planet...* and *Keep growing...*, with "Stopped at step N of 30,000".
+  7. **Names.** Create with `planet-1` taken (or `PLANET-1`, or the name of a link to a drive that is not connected, or a name whose `-grow` is taken): the form
+     says so and offers *Use planet-2*; nothing starts. Make a folder called `planet-1` by hand while a pipeline grows: the planet is not made over it.
+  8. **Flat world** (Starting point): the goal is research only, with the reason; Create makes one research world (60 s). **Bigger planet**: about 8 min, then 13 s.
+  9. **Advanced** (remembered): change Gravity or a season: the Changes box names it ("Gravity 0.03 to 0.09"), the command shows it, *Reset all* of the
+     remembered line puts it back. Start, then open a new form: the edit is back with a "remembered from last time" chip. A wrong value shows a plain message under
+     its row and the button is grey with the reason.
+  10. **Branch...**, **Keep growing...** and **Make planet...** on a card open the page on that world; Make planet keeps the Save point picker.
+      *Open in window* (toolbar) opens the same page in its own window; compose there beside a Watch.
+  10b. **Branch with a changed setting** from a research world: Advanced > *Mutation rate floor*; Branch runs one research world that continues from the newest
+      save point. A value the saved world cannot take (a floor above its animals' rates) is refused by the engine: the bar says so in plain words and no world is made.
+  10c. **A world that dies out.** Advanced > *Buoyancy upkeep* 5000 on a Small planet: the bar says *The population died out at step N* (a few seconds in), no planet is made,
+      and the library does not offer Make planet for it. **Make again with a new name** after a name was taken meanwhile closes the bar and opens the form with a free name.
+      **Open in window** while a Branch form is half filled: both windows show it, and it is still there after Worlds and back. A card's buttons are grey while a world is being made.
+  11. The Lab is gone from the window. Where its parts went is §3.8 and APP.md §7.3: numbers and autopilot of a run that grows are on Activity;
+      a card's **More** menu has *Watch in 3D viewer*, *Open Classic 2D Viewer* (flat worlds) and *Check world*. **No home until PR-F:** the numbers and the
+      autopilot journal of a run that is not growing.
+  What was **not** exercised and is yours: a lit display (the real app was run in a locked session, with the app's answers to "active" and "not occluded" forced
+  to yes by an injected library so that the unattended path could run), a real mouse on the sidebar and the cards, the Dock bounce, dark mode on screen at 13
+  inches, VoiceOver, a first run after an install (the engine compiles for longer), and the app on a folder of yours.
+
 - **3D viewer click-through checklist** (3D PR 5, to add to the checklist above; `gui/README.md`, DESIGN §27.12; not yet
   run by the owner; use the `tiny3d` preset, and `tiny` for the 2D items; run the GPU tests first with the GPU free:
   `cd gui && ALIFE_GPU_TESTS=1 swift test --filter GPURenderTests`, which prints where the PNGs went):

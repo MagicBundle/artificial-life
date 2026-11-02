@@ -153,7 +153,7 @@ struct ShellViewTests {
     @Test(arguments: [false, true])
     func theOtherPagesDraw(dark: Bool) async throws {
         guard everything || !dark else { return }
-        for (page, state) in [(ShellPage.watch, Folder.worlds), (.activity, .worlds), (.lab, .oneRun)] {
+        for (page, state) in [(ShellPage.watch, Folder.worlds), (.activity, .worlds), (.setup, .oneRun)] {
             let rep = try await draw(page, state: state, dark: dark, name: page.rawValue, minimumColours: page == .watch ? 2 : 12)
             // (Watch with no world is a card on a plain page: few colours, but not one)
             let n = colours(rep)

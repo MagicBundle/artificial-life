@@ -7,7 +7,7 @@ import Testing
     @Test func nothingRunningSaysWhereToGo() {
         #expect(ActivityGuide.items(.init()).isEmpty)
         #expect(ActivityGuide.sidebarDetail(.init()) == "Nothing running")
-        #expect(ActivityGuide.emptyAdvice.contains("Worlds") && ActivityGuide.emptyAdvice.contains("Lab"))
+        #expect(ActivityGuide.emptyAdvice.contains("Worlds") && ActivityGuide.emptyAdvice.contains("new"))
     }
 
     @Test func eachJobHasTheControlThatEndsIt() {

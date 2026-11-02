@@ -123,9 +123,9 @@ private struct ShellRig {
     }
 
     @Test func aRememberedPageComesBackExceptWatch() throws {
-        let lab = try ShellRig(page: .lab)
+        let lab = try ShellRig(page: .setup)
         defer { lab.finish() }
-        #expect(lab.shell.page == .lab)
+        #expect(lab.shell.page == .setup)
         let watch = try ShellRig(page: .watch)
         defer { watch.finish() }
         #expect(watch.shell.page == .worlds)
@@ -139,7 +139,7 @@ private struct ShellRig {
         rig.shell.select(.watch)
         #expect(rig.session.model.watchActive)
         #expect(rig.defaults.string(forKey: AppShell.pageKey) == "activity", "Watch is never the page to come back to")
-        rig.shell.select(.lab)
+        rig.shell.select(.setup)
         #expect(!rig.session.model.watchActive)
     }
 
@@ -232,11 +232,11 @@ private struct ShellRig {
     }
 
     @Test func aWorldIsNotPulledInFrontOfSomeoneWhoWentElsewhere() async throws {
-        let lab = try ShellRig(page: .lab)
+        let lab = try ShellRig(page: .setup)
         defer { lab.finish() }
         lab.start()  // nobody pressed Play
         #expect(await eventually { lab.play.phase == .live })
-        #expect(lab.shell.page == .lab)
+        #expect(lab.shell.page == .setup)
 
         let away = try ShellRig(page: .worlds)
         defer { away.finish() }
@@ -340,7 +340,7 @@ private struct ShellRig {
     }
 
     @Test func theFormRequestOfTheFileMenuShowsWorldsAndCountsOnce() throws {
-        let rig = try ShellRig(page: .lab)
+        let rig = try ShellRig(page: .setup)
         defer { rig.finish() }
         let before = rig.shell.planetFormRequests
         rig.shell.requestPlanetForm()

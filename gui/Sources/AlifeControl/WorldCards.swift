@@ -90,10 +90,17 @@ struct WorldCard: View {
     let play: CardAction
     let makePlanet: CardAction
     let isOpen: Bool
+    var keepGrowing = CardAction(label: "Keep growing…", reason: nil)
+    var branch = CardAction(label: "Branch…", reason: nil)
     let onSelect: () -> Void
     let onPlay: () -> Void
     let onWatch: () -> Void
     let onMakePlanet: () -> Void
+    var onKeepGrowing: () -> Void = {}
+    var onBranch: () -> Void = {}
+    var onOpen3D: () -> Void = {}
+    var onOpenClassic: () -> Void = {}
+    var onCheck: () -> Void = {}
     let onReveal: () -> Void
 
     var body: some View {
@@ -101,8 +108,12 @@ struct WorldCard: View {
             header
             info
             Spacer(minLength: 2)
-            buttons
-            ReasonLines(actions: isOpen ? [makePlanet] : [play, makePlanet])
+            if row.isPlaceholder {
+                Text("It opens in Watch when it is ready.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                buttons
+                ReasonLines(actions: reasons)
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
@@ -112,6 +123,16 @@ struct WorldCard: View {
         .onTapGesture(perform: onSelect)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(row.name), \(row.kind.title), \(row.state.title)")
+    }
+
+    /// The reasons under the buttons: only for the ones that are grey and that the card shows.
+    private var reasons: [CardAction] {
+        var out: [CardAction] = []
+        if row.kind == .played, !isOpen { out.append(play) }
+        out.append(makePlanet)
+        if row.kind == .research { out.append(keepGrowing) }
+        out.append(branch)
+        return out.filter { $0.reason != nil }
     }
 
     private var header: some View {
@@ -125,38 +146,66 @@ struct WorldCard: View {
 
     @ViewBuilder private var info: some View {
         Text(row.facts).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-        Text(savedLine).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-        if let note = row.note { Text(note).font(.caption).foregroundStyle(.secondary) }
-        if row.kind == .research {
+        if !row.isPlaceholder { Text(savedLine).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+        if let note = row.note { Text(note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+        if let planet = row.unmadePlanet {
+            Label("The planet \(planet) was not made. Make planet… finishes it.", systemImage: "arrow.right.circle")
+                .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+        } else if row.kind == .research {
             Text(researchLine).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
 
     private var buttons: some View {
-        HStack(spacing: 8) {
-            if row.kind == .played {
-                if isOpen {
-                    Button("Watch", action: onWatch).buttonStyle(.borderedProminent)
-                } else {
-                    Button("Play", action: onPlay).buttonStyle(.borderedProminent).disabled(play.reason != nil)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                if row.kind == .played {
+                    if isOpen {
+                        Button("Watch", action: onWatch).buttonStyle(.borderedProminent)
+                    } else {
+                        Button("Play", action: onPlay).buttonStyle(.borderedProminent).disabled(play.reason != nil)
+                    }
                 }
+                if row.kind == .research {
+                    Button("Make planet…", action: onMakePlanet).buttonStyle(.borderedProminent).disabled(makePlanet.reason != nil)
+                } else {
+                    Button("Make planet…", action: onMakePlanet).buttonStyle(.bordered).disabled(makePlanet.reason != nil)
+                }
+                Spacer(minLength: 0)
+                RevealButton(action: onReveal)
             }
-            if row.kind == .research {
-                Button("Make planet…", action: onMakePlanet).buttonStyle(.borderedProminent).disabled(makePlanet.reason != nil)
-            } else {
-                Button("Make planet…", action: onMakePlanet).buttonStyle(.bordered).disabled(makePlanet.reason != nil)
+            HStack(spacing: 8) {
+                if row.kind == .research {
+                    Button("Keep growing…", action: onKeepGrowing).disabled(keepGrowing.reason != nil)
+                }
+                Button("Branch…", action: onBranch).disabled(branch.reason != nil)
+                Spacer(minLength: 0)
+                if row.kind == .research { moreMenu }
             }
-            Spacer(minLength: 0)
-            RevealButton(action: onReveal)
         }
         .controlSize(.small)
+    }
+
+    /// The viewers and the check of a research world, until its Watch page has them (PR-F).
+    private var moreMenu: some View {
+        Menu {
+            Button("Watch in 3D viewer", action: onOpen3D)
+            if row.shape == .flat { Button("Open Classic 2D Viewer", action: onOpenClassic) }
+            Button("Check world", action: onCheck).disabled(row.state != .saved)
+        } label: { Label("More", systemImage: "ellipsis.circle") }
+            .menuStyle(.borderlessButton)
+            .labelStyle(.iconOnly)
+            .fixedSize()
+            .help("Watch it in the 3D viewer, open it in the classic 2D viewer, or check it")
+            .accessibilityLabel("More actions")
     }
 
     private var border: Color { selected ? Color.accentColor : Color.secondary.opacity(0.25) }
 
     private var researchLine: String {
+        if row.shape == .flat { return "A flat world is for study: it has no weather, so it cannot become a planet." }
         guard let parent = seedOf else { return "To play it, make a planet from it." }
-        return "The seed of \(parent). To play it, make a planet from it."
+        return "The grown world of \(parent). To play it, make a planet from it."
     }
 
     private var savedLine: String {

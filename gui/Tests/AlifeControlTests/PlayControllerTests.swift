@@ -299,7 +299,9 @@ import Testing
         controller.stop()
         #expect(await eventually(timeout: .seconds(10)) { !controller.hasProcess })
         #expect(ContinuousClock.now - began >= .milliseconds(500), "the ladder waited for each rung")
-        #expect(ContinuousClock.now - began < .seconds(8))
+        // The ladder is 0.6 s; the stand-in sleeps 30 s, so anything under that means the escalation ended it. The wall time includes the
+        // main actor being busy with the other suites (hundreds of main-actor tests run beside this one): 8 s was too tight for a full run.
+        #expect(ContinuousClock.now - began < .seconds(25))
     }
 
     @Test func aWorldThatQuitsOnItsOwnNeverGetsASignal() async throws {

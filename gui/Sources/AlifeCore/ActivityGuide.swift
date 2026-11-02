@@ -58,12 +58,20 @@ package enum ActivityGuide {
         package var id: String { kind.rawValue + ":" + title }
     }
 
+    /// "Research run planet-2"; the run that grows a planet's world is "Growing the world for planet-1" (its directory name is not for the page).
+    package static func runTitle(_ name: String) -> String {
+        if name.hasSuffix(SetupPlan.growSuffix), name.count > SetupPlan.growSuffix.count {
+            return "Growing the world for " + String(name.dropLast(SetupPlan.growSuffix.count))
+        }
+        return "Research run \(name)"
+    }
+
     package static func items(_ facts: Facts) -> [Item] {
         var out: [Item] = []
         if facts.runName != nil || facts.runStopping {
             let name = facts.runName ?? "a run"
             out.append(Item(
-                kind: .run, title: "Research run \(name)",
+                kind: .run, title: Self.runTitle(name),
                 detail: facts.runStopping ? "Stopping: it writes a save point first." : "Growing. Stop ends it at a save point.",
                 controls: facts.runStopping ? [.forceStop] : [.stop]))
         }
@@ -103,5 +111,5 @@ package enum ActivityGuide {
     }
 
     /// What the page says when there is nothing to list: where to go next.
-    package static let emptyAdvice = "Nothing is running. Start a world from Worlds, or a research run in the Lab."
+    package static let emptyAdvice = "Nothing is running. Play a world from Worlds, or make a new one."
 }

@@ -12,12 +12,13 @@ struct AppShellView: View {
     @ObservedObject var stream: StreamController
     @ObservedObject var model: WorldModel
     @ObservedObject var library: WorldLibrary
-    @StateObject private var launcher: WorldLauncherModel
+    @StateObject private var setup: SetupModel
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.openWindow) private var openWindow
     private let arguments: [String]
 
-    init(shell: ShellModel, controller: RunController, library: WorldLibrary, stream: StreamController = .shared,
+    /// `setup` is the app's set-up model (shared with the set-up window); without one the view makes its own (the tests').
+    init(shell: ShellModel, controller: RunController, library: WorldLibrary, setup: SetupModel? = nil, stream: StreamController = .shared,
          arguments: [String] = CommandLine.arguments) {
         self.shell = shell
         self.controller = controller
@@ -27,7 +28,7 @@ struct AppShellView: View {
         model = shell.session.model
         self.arguments = arguments
         let play = shell.session.play
-        _launcher = StateObject(wrappedValue: WorldLauncherModel.forApp(run: controller, play: play))
+        _setup = StateObject(wrappedValue: setup ?? SetupModel.forApp(controller: controller, play: play, library: library))
     }
 
     var body: some View {
@@ -35,9 +36,15 @@ struct AppShellView: View {
             sidebar
                 .navigationSplitViewColumnWidth(min: 190, ideal: 215, max: 280)
         } detail: {
-            ZStack {
-                WatchLayer(play: play, model: model, visible: shell.page == .watch)
-                page
+            VStack(spacing: 0) {
+                // The pipeline's bar is on every page but the one that shows it in full: the wait is never out of sight.
+                if showsStrip {
+                    PipelineStrip(coordinator: setup.coordinator) { shell.select(.setup) }
+                }
+                ZStack {
+                    WatchLayer(play: play, model: model, visible: shell.page == .watch)
+                    page
+                }
             }
         }
         .frame(minWidth: AppShell.minWidth, minHeight: AppShell.minHeight)
@@ -53,9 +60,10 @@ struct AppShellView: View {
             AppDelegate.current?.reopenMainWindow = { openWindow(id: AppShell.mainWindowID) }
             // A world that stopped while it was starting is an unfinished build; the library keeps what this session knows of it.
             shell.buildEnded = { [weak library] world, note in library?.note(note, forBuild: world) }
-            controller.pollsRunList = shell.page == .lab
-            // The Lab does not continue a played world, or a directory another process or this window is writing.
+            controller.pollsRunList = shell.page == .setup
+            // The set-up page does not continue a played world, or a directory another process or this window is writing.
             controller.resumeRefusal = { [weak library] name in library?.reasonNotToResume(name) }
+            wireSetup()
             library.update(live: liveFacts)
             applyCatalog()
             library.refresh()
@@ -67,10 +75,11 @@ struct AppShellView: View {
         .onChange(of: liveFacts) { _, facts in library.update(live: facts) }
         .onChange(of: library.state.catalog) { _, _ in applyCatalog() }
         .onChange(of: play.retiredWorlds) { _, _ in applyCatalog() }
-        // The Lab's pickers read the run list, which is polled only while the Lab is shown; the library scans on its own.
+        .onChange(of: setup.coordinator.pendingPlanets) { _, _ in library.update(live: liveFacts) }
+        // The set-up page checks names and sources against the run list, which is polled only while it is shown; the library scans on its own.
         .onChange(of: shell.page) { _, page in
-            controller.pollsRunList = page == .lab
-            if page == .lab { controller.refreshRuns() }
+            controller.pollsRunList = page == .setup
+            if page == .setup { controller.refreshRuns() }
         }
         .task {
             // `--world RUN` (a fresh launch): started once, through the same path as Play.
@@ -78,19 +87,24 @@ struct AppShellView: View {
         }
     }
 
+    /// The pipeline's bar is on every page but the one that shows it in full, and not on Watch once the planet it made is there to see.
+    private var showsStrip: Bool {
+        guard setup.coordinator.banner != nil, shell.page != .setup else { return false }
+        return !(shell.page == .watch && setup.coordinator.plan?.state == .live)
+    }
+
     @ViewBuilder private var page: some View {
         switch shell.page {
         case .watch:
             WatchChrome(shell: shell, play: play, model: model)
         case .worlds:
-            WorldsPage(shell: shell, controller: controller, play: play, model: launcher, library: library)
+            WorldsPage(shell: shell, controller: controller, play: play, setup: setup, library: library)
                 .navigationTitle("Worlds")
         case .activity:
             ActivityPage(shell: shell, controller: controller, play: play, stream: stream)
                 .navigationTitle("Activity")
-        case .lab:
-            LabPage(controller: controller) { shell.select($0) }
-                .navigationTitle("Lab")
+        case .setup:
+            SetupPage(model: setup, controller: controller, coordinator: setup.coordinator, library: library, launcher: setup.launcher)
         }
     }
 
@@ -131,18 +145,42 @@ struct AppShellView: View {
         }
         facts.growing = controller.runningRunName
         facts.saving = Set(play.retiredWorlds)
+        facts.pending = setup.coordinator.pendingPlanets
         return facts
     }
 
     /// The planet form's catalog is the library's (the scan ran off the main thread), and the worlds still saving are the play controller's.
     private func applyCatalog() {
-        launcher.apply(catalog: library.state.catalog, saving: Set(play.retiredWorlds))
+        setup.launcher.apply(catalog: library.state.catalog, saving: Set(play.retiredWorlds))
+    }
+
+    /// What the pipeline needs of the window: where to show things, and what other processes hold (from the library).
+    private func wireSetup() {
+        setup.show = { [weak shell] in shell?.select(.setup) }
+        setup.coordinator.hooks.playerStartsWorld = { [weak shell] in shell?.playerStartsWorld() }
+        setup.coordinator.hooks.showActivity = { [weak shell] in shell?.select(.activity) }
+        setup.coordinator.hooks.showWatch = { [weak shell] in shell?.select(.watch) }
+        setup.coordinator.hooks.dismissStartFailure = { [weak shell] in shell?.startFailure = nil }
+        setup.coordinator.hooks.openSetup = { [weak setup] intent, suggested in
+            switch intent {
+            case .create: setup?.openCreate()
+            case .branch(let w): setup?.openBranch(from: w)
+            case .keepGrowing(let w): setup?.openKeepGrowing(world: w)
+            case .makePlanet(let w): setup?.openMakePlanet(from: w, name: suggested)
+            }
+        }
+        setup.coordinator.elsewhere = { [weak library] in
+            let rows = library?.state.rows ?? []
+            return Set(rows.filter { $0.state == .inUseElsewhere }.map(\.name))
+        }
     }
 
     /// The second line of a sidebar row, and whether the row is marked (something there waits for the player).
     private func rowText(of page: ShellPage) -> (text: String?, marked: Bool) {
         switch page {
-        case .lab: return (nil, false)
+        case .setup:
+            guard let banner = setup.coordinator.banner else { return (nil, false) }
+            return (banner.title, banner.tone == .attention || banner.tone == .failure)
         case .worlds:
             if shell.startFailure != nil { return ("A world did not open", true) }
             return (nil, false)

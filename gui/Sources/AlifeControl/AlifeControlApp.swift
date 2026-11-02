@@ -12,7 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Holds the quit while a played world, a run or another job saves or ends (`TerminationGate`).
     let terminationGate = TerminationGate()
     /// Shown while the quit waits. Owned here, not by a scene, so that it exists when the last window has been closed.
-    let quitPanel = QuitPanel()
+    let quitPanel: QuitPanel
     var plan = LaunchMode.current().plan
     private let run: RunController
     private let play: PlayController
@@ -20,14 +20,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The delegate of the app: the shared controllers. The tests give it their own.
     override convenience init() { self.init(run: .shared, play: .shared) }
 
-    init(run: RunController, play: PlayController) {
+    /// `quitPanel` is the panel shown while the quit waits (the tests give one that is placed off every screen).
+    init(run: RunController, play: PlayController, quitPanel: QuitPanel = QuitPanel()) {
         self.run = run
         self.play = play
+        self.quitPanel = quitPanel
         super.init()
         Self.current = self
     }
     /// The question before a run is stopped by a quit (tests replace it, so that no alert is shown).
-    var confirmStopRun: (String) -> Bool = { QuitPanel.askToStopRun($0) }
+    var confirmStopRun: (String) -> Bool = { QuitPanel.askToStopRun($0, shell: LaunchMode.current().plan.isShell) }
     /// Why the quit was asked for: the reason of the quit Apple event being handled (none for a menu Quit). Tests replace it.
     var quitReason: () -> QuitReason = { AppDelegate.reason(of: NSAppleEventManager.shared().currentAppleEvent) }
     /// Ends the app through AppKit; tests replace it.
