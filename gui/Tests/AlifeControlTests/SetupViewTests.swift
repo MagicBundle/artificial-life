@@ -49,7 +49,7 @@ struct SetupViewTests {
             root = AnyView(AppShellView(shell: shell, controller: rig.controller, library: rig.library, setup: rig.setup, arguments: []))
         }
         let host = NSHostingView(rootView: root)
-        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: true)
+        let window = QuietWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: true)
         window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         window.contentView = host
         host.frame = NSRect(origin: .zero, size: size)

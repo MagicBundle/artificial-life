@@ -368,7 +368,8 @@ struct PipelineTests {
         let rig = try PipelineRig(mode: "ok:slow")
         defer { rig.finish() }
         #expect(await rig.create("planet-1").isEmpty)
-        #expect(await rig.waitForState { $0 == .making(cancelling: false) })
+        #expect(await rig.waitForState { $0 == .making(cancelling: false) },
+                "state \(String(describing: rig.coordinator.plan?.state)) play \(rig.play.phase) job \(String(describing: rig.controller.job))")
         #expect(await patiently { rig.coordinator.plan?.making.phase != .starting }, "the stand-in is listening")
         rig.looking = false
         rig.play.stop()   // what closing the window does to the world (PlayController.stop: a world being built is interrupted)

@@ -93,11 +93,40 @@ import Testing
         library.noteGone("goner")
         #expect(library.vanished == "goner" && library.selected == nil)
         #expect(await eventually { library.state.rows.map(\.name) == ["stays"] })
-        // the same thing found by a scan alone
+        // the same thing found by a scan alone. The watch on runs/ may still be reporting the first removal, and a scan it starts can meet the
+        // second one half done (a folder that is still there but is no world: the choice is dropped without being "gone", by design): let the
+        // first removal's events and scans end before the second half starts.
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(await eventually { !library.isScanning })
         library.select("stays")
         try FileManager.default.removeItem(at: runs.appendingPathComponent("stays"))
         library.refresh()
         #expect(await eventually { library.vanished == "stays" })
+    }
+
+    @Test func aWorldChosenBeforeTheFirstScanThatListsItIsNotSaidToHaveVanished() async throws {
+        // The Watch page chooses a run that has just started, before the next scan has seen its folder.
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let runs = try runs(scratch)
+        try LibraryTestFolders.research(runs, "old")
+        let library = library(runs)
+        library.refresh()
+        #expect(await eventually { library.hasScanned })
+        library.select("late")
+        library.refresh()
+        #expect(await eventually { !library.isScanning && library.scans >= 2 })
+        #expect(library.vanished == nil && library.selected == "late", "not listed yet is not gone")
+        let dir = try LibraryTestFolders.research(runs, "late")
+        library.refresh()
+        #expect(await eventually { library.state.row(named: "late") != nil })
+        #expect(library.vanished == nil && library.selected == "late")
+        // and once it has been listed, its going is said as before
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(await eventually { !library.isScanning })
+        try FileManager.default.removeItem(at: dir)
+        library.refresh()
+        #expect(await eventually { library.vanished == "late" })
     }
 
     @Test func aWorldInUseByAnotherAppIsSaidSoAndIsNotCalledMine() async throws {

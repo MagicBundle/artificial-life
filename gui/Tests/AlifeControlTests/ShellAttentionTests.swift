@@ -82,7 +82,7 @@ import Testing
         let rig = try Rig()
         defer { rig.finish() }
         var badge: String?
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.borderless], backing: .buffered, defer: true)
+        let window = QuietWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.borderless], backing: .buffered, defer: true)
         rig.session.model.observeWindow(window)  // installs the observers (and the dock tile's setBadge, which the next lines replace)
         rig.session.model.windowIsKey = { true }
         rig.session.model.requestAttention = {}
@@ -163,7 +163,7 @@ import Testing
     }
 
     private func window(_ id: String?) -> NSWindow {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.borderless], backing: .buffered, defer: true)
+        let window = QuietWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.borderless], backing: .buffered, defer: true)
         window.isReleasedWhenClosed = false
         window.identifier = id.map { NSUserInterfaceItemIdentifier($0) }
         window.setFrameOrigin(NSPoint(x: -20000, y: -20000))

@@ -51,7 +51,7 @@ private final class Rig {
         play.start(.resume(PlayResume(run: "r")), executable: script, directory: scratch.url,
                    arguments: [Repo.playFixtureURL(kind).path, commands.path])
         host = NSHostingView(rootView: WorldView(play: play))
-        window = NSWindow(contentRect: NSRect(origin: .zero, size: windowSize), styleMask: [.borderless], backing: .buffered, defer: false)
+        window = QuietWindow(contentRect: NSRect(origin: .zero, size: windowSize), styleMask: [.borderless], backing: .buffered, defer: false)
         window.contentView = host
         host.frame = NSRect(origin: .zero, size: windowSize)
         window.alphaValue = 0

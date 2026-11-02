@@ -26,9 +26,26 @@ final class QuitPanel {
     /// AppKit moves a titled window back onto a screen when it is ordered in; a panel that is meant to be off every screen says it is not.
     private let keepsOnScreen: Bool
 
-    init(place: @escaping (NSPanel) -> Void = { $0.center() }, keepsOnScreen: Bool = true) {
+    /// A process that is running tests never puts a panel on a display, whatever made the panel (`AppDelegate()`'s default one included): the
+    /// review of PR-F saw two floating panels inside the display during parallel runs.
+    static let runsUnderTests: Bool = {
+        let name = ProcessInfo.processInfo.processName
+        return name.contains("swiftpm-testing") || name.contains("xctest") || NSClassFromString("XCTestCase") != nil
+    }()
+
+    init(place: @escaping (NSPanel) -> Void = QuitPanel.defaultPlace, keepsOnScreen: Bool = !QuitPanel.runsUnderTests) {
         self.place = place
         self.keepsOnScreen = keepsOnScreen
+    }
+
+    /// The middle of the screen; under tests, far off every screen and invisible.
+    static let defaultPlace: (NSPanel) -> Void = { panel in
+        if runsUnderTests {
+            panel.alphaValue = 0
+            panel.setFrameOrigin(NSPoint(x: -20_000, y: -20_000))
+        } else {
+            panel.center()
+        }
     }
 
     private final class Panel: NSPanel {
@@ -71,11 +88,18 @@ final class QuitPanel {
         if !panel.isVisible {
             place(panel)
             panel.orderFrontRegardless()
+            // Ordering a titled window in puts it at AppKit's default place on the display, whatever `constrainFrameRect` says (measured: the
+            // panel placed at -20000 came out at (160, 800)). A panel that is meant to stay off every screen is put back at once, in the same
+            // turn of the run loop and invisible (the place of the tests sets alpha 0), so that nothing is ever drawn on the display.
+            if !keepsOnScreen { place(panel) }
             spinner.startAnimation(nil)
         }
         if needsKey {
             panel.makeFirstResponder(quitNowButton)
-            panel.makeKey()
+            // (Becoming key brings a titled window onto a screen, whatever `constrainFrameRect` says: seen in the parallel test runs, where the
+            // "off every screen" panel of the quit tests was drawn on the display at the moment the Quit now line appeared. A panel that is
+            // meant to stay off every screen does not take the key.)
+            if keepsOnScreen { panel.makeKey() }
         }
         panel.displayIfNeeded()
     }
@@ -97,6 +121,9 @@ final class QuitPanel {
         let panel = Panel(contentRect: NSRect(x: 0, y: 0, width: 420, height: 150),
                           styleMask: [.titled, .utilityWindow], backing: .buffered, defer: false)
         panel.keepsOnScreen = keepsOnScreen
+        // No fade: a window that fades out while the display sleeps keeps a dispatch thread blocked in `NSAnimation` for ever, and the panel is
+        // shown and hidden by every quit that waits (the tests' windows leaked enough of them to starve a whole run).
+        panel.animationBehavior = .none
         panel.title = "Quitting"
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false

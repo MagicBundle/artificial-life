@@ -251,6 +251,7 @@ final class PipelineRig {
 /// the timing tests of other suites then lag.
 @MainActor
 func patiently(timeout: Duration = .seconds(120), _ condition: @MainActor () -> Bool) async -> Bool {
+    TestProcess.unthrottled()
     let deadline = ContinuousClock.now + timeout
     while !condition() {
         if ContinuousClock.now > deadline { return false }

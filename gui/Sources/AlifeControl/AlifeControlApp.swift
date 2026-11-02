@@ -196,6 +196,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func mainWindowClosed(windows: (() -> [NSWindow])? = nil) {
         guard plan.isShell else { return }
         for window in (windows ?? windowsProvider)() where window.isVisible && !(window is NSPanel) && window.identifier?.rawValue != AppShell.mainWindowID {
+            window.animationBehavior = .none  // (a fade that blocks for ever while the display sleeps leaks a dispatch thread)
             window.close()
         }
         if plan.asksWhenClosingWithRun, keepsAliveForRun { closeWhatTheWindowNeeded() }

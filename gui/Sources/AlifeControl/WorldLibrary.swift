@@ -309,13 +309,22 @@ final class WorldLibrary: ObservableObject {
         recompute()
     }
 
+    /// Every folder name a scan has listed: a world that was never listed cannot have vanished (a run that has just started is chosen by the
+    /// Watch page before the next scan lists it).
+    private var everListed: Set<String> = []
+
     private func recompute() {
         let resolved = LibraryState.resolve(snapshot, live: live, notes: notes, noteTimes: noteTimes)
         if resolved != state { state = resolved }
+        if hasScanned { everListed.formUnion(snapshot.names) }
         if let chosen = selected, state.row(named: chosen) == nil, !state.unfinished.contains(where: { $0.name == chosen }) {
             // The chosen world is no longer listed. It is *gone* only when the folder is gone; a folder that is still there but is no longer a
             // world (its save points were pruned, a build was restarted) is just not chosen any more.
-            if hasScanned, !snapshot.names.contains(chosen) { vanished = chosen }
+            if hasScanned, !snapshot.names.contains(chosen) {
+                // A name no scan has listed yet is a world that is about to appear: it stays chosen, and is not "gone".
+                guard everListed.contains(chosen) else { return }
+                vanished = chosen
+            }
             selected = nil
         }
     }

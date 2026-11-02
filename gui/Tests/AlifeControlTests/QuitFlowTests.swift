@@ -180,6 +180,10 @@ import Testing
         #expect(!panel.texts.quitNowHidden)
         #expect(panel.texts.warning.contains("7 minutes"))
         let panelWindow = panel.window
+        // Not on any display after either show: becoming key (the Quit now line appearing) brought this panel onto the screen in the parallel runs.
+        let onADisplay = NSScreen.screens.contains { $0.frame.intersects(panelWindow?.frame ?? .zero) }
+        #expect(!onADisplay && panelWindow?.alphaValue == 0 && panelWindow?.isKeyWindow == false,
+                "the quit tests never put the panel on a display: \(String(describing: panelWindow?.frame)) alpha \(String(describing: panelWindow?.alphaValue)) screens \(NSScreen.screens.map(\.frame))")
         #expect(panelWindow is NSPanel && (panelWindow as? NSPanel)?.worksWhenModal == true)
         #expect(panelWindow?.styleMask.contains(.closable) == false, "no way to close it but the quit ending")
         panel.close()
@@ -363,7 +367,7 @@ import Testing
     /// A window that has a sheet, as the launcher sheet and the preset comparison are, without AppKit attaching one: a real sheet moves its
     /// window onto a screen (seen: both flew to the bottom-left corner of the display for half a second), and a test must never put a window
     /// on anyone's display. The quit code asks the window for its `sheets` and ends them with `endSheet`, which is all this stands in for.
-    private final class SheetHost: NSWindow {
+    private final class SheetHost: QuietWindow {
         var attached: [NSWindow] = []
         override var sheets: [NSWindow] { attached }
         override func endSheet(_ sheet: NSWindow) { attached.removeAll { $0 === sheet } }
@@ -372,7 +376,7 @@ import Testing
 
     private func windowWithSheet() -> (NSWindow, NSWindow) {
         let window = SheetHost(contentRect: NSRect(x: -20000, y: -20000, width: 300, height: 200), styleMask: [.borderless], backing: .buffered, defer: true)
-        let sheet = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 200, height: 100), styleMask: [.borderless], backing: .buffered, defer: true)
+        let sheet = QuietWindow(contentRect: NSRect(x: -20000, y: -20000, width: 200, height: 100), styleMask: [.borderless], backing: .buffered, defer: true)
         window.isReleasedWhenClosed = false
         sheet.isReleasedWhenClosed = false
         window.attached = [sheet]
@@ -449,7 +453,7 @@ import Testing
         let repo = try fakeRepo(scratch, engine: "exec sleep 30")
         let run = controller(repo)
         run.settings.name = "cmd-r"
-        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 1000, height: 800), styleMask: [.borderless], backing: .buffered, defer: true)
+        let window = QuietWindow(contentRect: NSRect(x: -20000, y: -20000, width: 1000, height: 800), styleMask: [.borderless], backing: .buffered, defer: true)
         window.isReleasedWhenClosed = false
         let host = NSHostingView(rootView: ContentView(controller: run).frame(width: 1000, height: 800))
         window.contentView = host

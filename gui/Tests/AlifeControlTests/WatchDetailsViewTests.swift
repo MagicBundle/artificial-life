@@ -150,7 +150,7 @@ struct WatchDetailsViewTests {
         shell.select(stage.page)
         let host = NSHostingView(rootView: AppShellView(shell: shell, controller: controller, library: library, observer: observer,
                                                         watchReader: watchReader, detailsReader: detailsReader, stream: stream, arguments: []))
-        let window = NSWindow(contentRect: NSRect(origin: .zero, size: stage.size), styleMask: [.borderless], backing: .buffered, defer: true)
+        let window = QuietWindow(contentRect: NSRect(origin: .zero, size: stage.size), styleMask: [.borderless], backing: .buffered, defer: true)
         window.appearance = NSAppearance(named: stage.dark ? .darkAqua : .aqua)
         window.contentView = host
         host.frame = NSRect(origin: .zero, size: stage.size)
@@ -184,7 +184,7 @@ struct WatchDetailsViewTests {
     private func drawView(_ view: some View, size: CGSize, dark: Bool, name: String) throws -> NSBitmapImageRep {
         let root = view.frame(width: size.width, height: size.height).background(Color(nsColor: .windowBackgroundColor))
         let host = NSHostingView(rootView: root)
-        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: true)
+        let window = QuietWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: true)
         window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         window.contentView = host
         host.frame = NSRect(origin: .zero, size: size)

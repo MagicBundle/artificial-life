@@ -68,10 +68,22 @@ import simd
         defer { play.shutdown() }
         let model = WorldModel(play: play, defaults: try #require(UserDefaults(suiteName: "alife-firstframe-\(UUID().uuidString)")))
         model.setFreeRect(free)
+        model.reduceMotion = { false }
+        // The view faces the populated side of **the first frame the model was handed**. The fixture plays on to step 104 and the organisms move,
+        // so a test that compared with the store's frame when it looked was comparing with a later one: it passed when it looked at once and
+        // failed when the run was slow enough for the rest of the stream to have been applied (found by the review of PR-F, which ran the
+        // suite serially).
+        var first: PlayFrame?
+        let hand = play.onDelivery
+        play.onDelivery = { changes in
+            if first == nil, changes.contains(.frame) { first = play.store.frame }
+            hand?(changes)
+        }
         play.start(.resume(PlayResume(run: "r")), executable: script, directory: scratch.url, arguments: [Repo.playFixtureURL("3d").path])
-        #expect(await eventually { play.store.header != nil && play.store.frame != nil })
-        let frame = try #require(play.store.frame)
+        #expect(await eventually { play.store.header != nil && play.store.frame != nil && first != nil })
+        let frame = try #require(first)
         let populated = try #require(WorldPose.populatedX(frame: frame, size: 48))
+        #expect(arrive(model), "the flight to the populated side ended")
         #expect(abs(Torus.wrapDelta(model.pose.x - populated, size: 48)) < 1e-3 && abs(model.pose.x - 24) > 0.01, "faces the organisms: \(model.pose.x) for \(populated)")
         #expect(model.cameraIsHome && !model.homeAwaitsFrame)
     }
