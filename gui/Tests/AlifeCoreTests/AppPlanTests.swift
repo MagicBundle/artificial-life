@@ -34,9 +34,9 @@ import Testing
         var asked: [String] = []
         _ = RepoPathStore.forApp(info: nil, environment: [:], standard: MemoryDomain(), suite: { asked.append($0); return nil })
         #expect(asked.isEmpty)
-        // ...a bundle that has it reads the two old apps' domains, by name, and never its own identifier as a suite.
+        // ...a bundle that has it reads the preview's and the two old apps' domains, by name, and never its own identifier as a suite.
         _ = RepoPathStore.forApp(info: "alife", environment: [:], standard: MemoryDomain(), suite: { asked.append($0); return nil })
-        #expect(asked == [RepoPathStore.stormDomain, RepoPathStore.labDomain])
+        #expect(asked == [RepoPathStore.previewDomain, RepoPathStore.stormDomain, RepoPathStore.labDomain])
         #expect(!asked.contains(AppPlan.bundleID))
     }
 

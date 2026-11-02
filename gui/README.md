@@ -93,8 +93,7 @@ The App Store would also need the engine embedded and sandboxed.
 The app is only a front end: it uses the repository's `.venv` at the configured alife folder (found in `~/artificial-life` or `~/alife` when none is set).
 The folder is kept in the app's own preferences, the domain `io.github.magicbundle.alife` that the Lab and Storm Worlds shared (`RepoPathStore`), so a
 folder they stored is already there. On the first launch of the bundle `PreferenceMigration` also reads the two old apps' domains
-(`io.github.magicbundle.alifecontrol`, `io.github.magicbundle.stormworlds`), only where the app has no value: the folder, and the 14 dock and
-display settings of the World window; it never writes them, never deletes, and runs once (`migrated.v1`). Window frames are not migrated. The
+(`io.github.magicbundle.alife.preview`, `io.github.magicbundle.stormworlds`, `io.github.magicbundle.alifecontrol`): the preview's folder when it exists is adopted ahead of the shared one, and the dock and display settings, the close answer, the autopilot's address and the set-up page's toggles are carried where the app has no value; it never writes them, never deletes, and runs once (`migrated.v1`). Window frames are not migrated. The
 bundle cannot open its own id as a suite, so its own domain is `UserDefaults.standard`. `swift run` is not a bundle and keeps its own
 preferences, separate from the installed app.
 

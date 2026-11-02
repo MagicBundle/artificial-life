@@ -112,7 +112,7 @@ import Testing
         suites.domains[RepoPathStore.labDomain] = lab
         suites.domains[RepoPathStore.stormDomain] = storm
         let store = RepoPathStore.forApp(info: "alife", environment: [:], standard: standard, suite: suites.open)
-        #expect(suites.asked == [RepoPathStore.stormDomain, RepoPathStore.labDomain], "never its own identifier as a suite")
+        #expect(suites.asked == [RepoPathStore.previewDomain, RepoPathStore.stormDomain, RepoPathStore.labDomain], "never its own identifier as a suite")
         #expect(store.load() == "/labs")
         #expect(standard.string(forKey: key) == "/labs", "copied into the app's own domain")
         store.save("/chosen")
@@ -168,7 +168,22 @@ import Testing
         #expect(standard.string(forKey: key) == nil)
     }
 
+    @Test func anOverrideThatNamesTheAppsOwnOrAnOlderDomainIsRefused() {
+        for name in [AppPlan.bundleID, RepoPathStore.previewDomain, RepoPathStore.stormDomain, RepoPathStore.labDomain] {
+            let env = [RepoPathStore.suiteOverrideEnvironment: name]
+            #expect(RepoPathStore.overrideProblem(environment: env)?.contains(name) == true, Comment(rawValue: name))
+        }
+        #expect(RepoPathStore.overrideProblem(environment: [RepoPathStore.suiteOverrideEnvironment: "alife-private-trial"]) == nil)
+        #expect(RepoPathStore.overrideProblem(environment: [:]) == nil)
+        // and the store never opens such a name as the override even if asked directly
+        let suites = Suites(), standard = MemoryDomain()
+        _ = RepoPathStore.forApp(info: "alife", environment: [RepoPathStore.suiteOverrideEnvironment: RepoPathStore.stormDomain],
+                                 standard: standard, suite: suites.open)
+        #expect(suites.asked == [RepoPathStore.previewDomain, RepoPathStore.stormDomain, RepoPathStore.labDomain], "only the read-only sources are opened")
+    }
+
     @Test func theNamesAreTheOnesTheBundlesUse() {
+        #expect(RepoPathStore.previewDomain == "io.github.magicbundle.alife.preview")
         #expect(RepoPathStore.key == "repoPath")  // unchanged: the Lab has always stored it under this key
         #expect(RepoPathStore.sharedSuite == "io.github.magicbundle.alife")
         #expect(RepoPathStore.stormDomain == "io.github.magicbundle.stormworlds")

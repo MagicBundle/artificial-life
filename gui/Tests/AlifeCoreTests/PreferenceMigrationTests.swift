@@ -125,8 +125,56 @@ import Testing
         var asked: [String] = []
         let m = PreferenceMigration.forApp(environment: [:], standard: MemoryDomain(), suite: { asked.append($0); return nil })
         #expect(m != nil)
-        #expect(asked == ["io.github.magicbundle.stormworlds", "io.github.magicbundle.alifecontrol"])
+        #expect(asked == ["io.github.magicbundle.alife.preview", "io.github.magicbundle.stormworlds", "io.github.magicbundle.alifecontrol"])
         #expect(!asked.contains(AppPlan.bundleID), "a bundle cannot open its own identifier as a suite")
+    }
+
+    @Test func thePreviewsFolderBeatsTheSharedOneWhenItExistsAndOnlyOnce() {
+        let own = MemoryDomain(), preview = MemoryDomain(), storm = MemoryDomain()
+        own.set("/shared", forKey: "repoPath")
+        preview.set("/previews", forKey: "repoPath")
+        storm.set("/storm", forKey: "repoPath")
+        func run(exists: Bool) -> Bool {
+            PreferenceMigration(own: own, preview: preview, storm: storm, lab: nil, folderExists: { _ in exists }).run()
+        }
+        #expect(run(exists: true))
+        #expect(own.string(forKey: "repoPath") == "/previews")
+        own.set("/chosen/later", forKey: "repoPath")
+        #expect(!run(exists: true) && own.string(forKey: "repoPath") == "/chosen/later", "once")
+        #expect(preview.string(forKey: "repoPath") == "/previews" && storm.string(forKey: "repoPath") == "/storm")
+    }
+
+    @Test func aPreviewFolderThatIsGoneIsNotAdoptedAndTheSharedOneStays() {
+        let own = MemoryDomain(), preview = MemoryDomain()
+        own.set("/shared", forKey: "repoPath")
+        preview.set("/gone", forKey: "repoPath")
+        PreferenceMigration(own: own, preview: preview, storm: nil, lab: nil, folderExists: { $0 == "/shared" }).run()
+        #expect(own.string(forKey: "repoPath") == "/shared")
+        // with nothing of its own, a gone preview folder is not taken either: the old apps' comes
+        let fresh = MemoryDomain(), storm = MemoryDomain()
+        storm.set("/storm", forKey: "repoPath")
+        PreferenceMigration(own: fresh, preview: preview, storm: storm, lab: nil, folderExists: { _ in false }).run()
+        #expect(fresh.string(forKey: "repoPath") == "/storm")
+    }
+
+    @Test func thePreviewsOtherSettingsComeAheadOfTheOldAppsAndPageIsNotCarried() {
+        let own = MemoryDomain(), preview = MemoryDomain(), storm = MemoryDomain()
+        preview.set("left", forKey: "world.dockSide")
+        storm.set("right", forKey: "world.dockSide")
+        storm.set(0.5, forKey: "world.exposure")
+        preview.set("keepRunning", forKey: "shell.closeWithRun")
+        preview.set(true, forKey: "setup.advanced")
+        preview.set("http://localhost:1234", forKey: "shell.autopilotURL")
+        preview.set("setup", forKey: "shell.page")
+        own.set(false, forKey: "setup.showCommand")  // already set: kept
+        preview.set(true, forKey: "setup.showCommand")
+        PreferenceMigration(own: own, preview: preview, storm: storm, lab: nil, folderExists: { _ in true }).run()
+        #expect(own.string(forKey: "world.dockSide") == "left" && own.object(forKey: "world.exposure") as? Double == 0.5)
+        #expect(own.string(forKey: "shell.closeWithRun") == "keepRunning" && own.object(forKey: "setup.advanced") as? Bool == true)
+        #expect(own.string(forKey: "shell.autopilotURL") == "http://localhost:1234")
+        #expect(own.object(forKey: "setup.showCommand") as? Bool == false)
+        #expect(own.object(forKey: "shell.page") == nil, "the page is not carried")
+        #expect(preview.all.count == 6, "read only")
     }
 
     @Test func aWholeLaunchOfTheFinalAppImportsFromBothOldAppsOnceAndLeavesThemAlone() {

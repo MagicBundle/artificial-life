@@ -6,7 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GUI_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # The bundle id is also the preferences domain the Lab and Storm Worlds shared, so the folder they stored is already there. The override
 # exists for a trial bundle that must have preferences of its own (its domain is then not the owner's).
-ALIFE_BUNDLE_ID="${ALIFE_BUNDLE_ID:-io.github.magicbundle.alife}"
+DEFAULT_BUNDLE_ID="io.github.magicbundle.alife"
+ALIFE_BUNDLE_ID="${ALIFE_BUNDLE_ID:-$DEFAULT_BUNDLE_ID}"
 VERSION="${VERSION:-0.2.0}"
 
 SIGN_ARG=""
@@ -74,6 +75,8 @@ is_running() {  # $1 = bundle ID, $2 = path of the installed executable
 
 # Fail early, before building, if the install cannot proceed.
 if [[ $INSTALL -eq 1 ]]; then
+  # A trial id is for a bundle that is looked at and thrown away: installed, it would replace the real alife.app with another id.
+  [[ "$ALIFE_BUNDLE_ID" == "$DEFAULT_BUNDLE_ID" ]] || die "--install needs the default bundle id ($DEFAULT_BUNDLE_ID); ALIFE_BUNDLE_ID=$ALIFE_BUNDLE_ID is for a trial bundle only."
   if [[ ! -d "$INSTALL_DIR" || ! -w "$INSTALL_DIR" ]]; then
     echo "error: $INSTALL_DIR is not writable (this script never uses sudo)." >&2
     echo "Try: $0 --install --install-dir ~/Applications" >&2
@@ -167,15 +170,38 @@ PLIST
 }
 
 install_app() {
-  local bundle="$BUILD_DIR/$A_DIR" dest="$INSTALL_DIR/$A_DIR"
+  local bundle="$BUILD_DIR/$A_DIR" dest="$INSTALL_DIR/$A_DIR" tmp="$INSTALL_DIR/.$A_DIR.new"
   echo "==> installing to $dest"
   # Re-check: it may have been launched during the build.
   if is_running "$A_ID" "$dest/Contents/MacOS/$A_EXEC"; then
     die "$dest is running. Quit it first."
   fi
-  if [[ -e "$dest" ]]; then rm -rf "$dest"; fi
-  ditto "$bundle" "$dest"
+  # Copied to a temporary name first and moved into place, so that a copy that fails leaves the installed app as it was.
+  rm -rf "$tmp"
+  ditto "$bundle" "$tmp" || { rm -rf "$tmp"; die "copying to $tmp failed; $dest was not touched."; }
+  local old="$INSTALL_DIR/.$A_DIR.old"
+  rm -rf "$old"
+  if [[ -e "$dest" ]]; then mv "$dest" "$old" || die "could not move $dest aside; nothing was changed (the new copy is at $tmp)."; fi
+  if ! mv "$tmp" "$dest"; then
+    [[ -e "$old" ]] && mv "$old" "$dest"
+    die "moving $tmp to $dest failed; the old app was put back."
+  fi
+  rm -rf "$old"
   echo "installed: $dest"
+}
+
+# The retired apps are never touched: if any is in the install directory their paths are printed with how to move them to the Trash.
+trash_note() {
+  local old=() name path
+  for name in "AlifeControl.app" "Storm Worlds.app" "alife Preview.app"; do
+    [[ -e "$INSTALL_DIR/$name" ]] && old+=("$INSTALL_DIR/$name")
+  done
+  [[ ${#old[@]} -gt 0 ]] || return 0
+  echo
+  echo "The retired apps are still installed, and were not touched (alife replaces them; its settings were read from theirs, never changed):"
+  for path in "${old[@]}"; do echo "  $path"; done
+  echo "To remove one, quit it, then drag it to the Trash in Finder, or run:"
+  for path in "${old[@]}"; do echo "  osascript -e 'tell application \"Finder\" to delete POSIX file \"$path\"'"; done
 }
 
 build_app
@@ -191,17 +217,7 @@ if [[ $INSTALL -eq 1 ]]; then
     die "$A_NAME ($A_ID) is running. Quit it first; nothing was installed."
   fi
   install_app
-  OLD=()
-  for name in "AlifeControl.app" "Storm Worlds.app" "alife Preview.app"; do
-    [[ -e "$INSTALL_DIR/$name" ]] && OLD+=("$INSTALL_DIR/$name")
-  done
-  if [[ ${#OLD[@]} -gt 0 ]]; then
-    echo
-    echo "The retired apps are still installed, and were not touched (alife replaces them; its settings were read from theirs, never changed):"
-    for path in "${OLD[@]}"; do echo "  $path"; done
-    echo "To remove one, quit it, then drag it to the Trash in Finder, or run:"
-    for path in "${OLD[@]}"; do echo "  osascript -e 'tell application \"Finder\" to delete POSIX file \"$path\"'"; done
-  fi
 else
   echo "built: $BUILD_DIR/$A_DIR (use --install to copy it to $INSTALL_DIR)"
 fi
+trash_note

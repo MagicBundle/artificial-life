@@ -25,6 +25,8 @@ package struct RepoPathStore: Sendable {
     package static let sharedSuite = AppPlan.bundleID
     /// The Lab's own bundle ID, a domain the stored folder is migrated from.
     package static let labDomain = "io.github.magicbundle.alifecontrol"
+    /// The preview's bundle ID (`alife Preview.app`), the newest source of the folder.
+    package static let previewDomain = "io.github.magicbundle.alife.preview"
     /// Storm Worlds' bundle ID, the other domain it is migrated from.
     package static let stormDomain = "io.github.magicbundle.stormworlds"
     /// Names a suite to use instead of the app's preferences, for trying a bundle without touching the owner's preferences: it is read
@@ -65,6 +67,18 @@ package struct RepoPathStore: Sendable {
         return value
     }
 
+    /// The domains an `ALIFE_PREFS_SUITE` may not name: the app's own (a bundle cannot open its own id as a suite: the override would be
+    /// ignored and the real domain written) and the preview's and the old apps' (the app would write them).
+    package static func isForbidden(suite name: String) -> Bool {
+        [AppPlan.bundleID, previewDomain, stormDomain, labDomain].contains(name)
+    }
+
+    /// Why this environment may not start the app, or nil: an `ALIFE_PREFS_SUITE` that names the app's own domain or an old one.
+    package static func overrideProblem(environment: [String: String]) -> String? {
+        guard let name = environment[suiteOverrideEnvironment], isForbidden(suite: name) else { return nil }
+        return "\(suiteOverrideEnvironment)=\(name) names a domain the app or an older app owns; the override must be a private name. Not starting."
+    }
+
     /// The store for a process. `info` is its bundle's `AppPlan.infoKey`: without it (unbundled, or a bundle from before the key) the
     /// app's own preferences are used alone. `suite` opens a preferences domain by name.
     package static func forApp(
@@ -72,13 +86,13 @@ package struct RepoPathStore: Sendable {
         standard: any PreferenceDomain = UserDefaults.standard,
         suite: (String) -> (any PreferenceDomain)? = { UserDefaults(suiteName: $0) }
     ) -> RepoPathStore {
-        if let name = environment[suiteOverrideEnvironment], !name.isEmpty, let override = suite(name) {
+        if let name = environment[suiteOverrideEnvironment], !name.isEmpty, !isForbidden(suite: name), let override = suite(name) {
             // `own` is the override too, so that a save never reaches `standard` (an installed app's `standard` is the owner's
             // domain); `standard` stays a read-only source for the first value.
             return RepoPathStore(shared: override, own: override, legacy: [standard])
         }
         guard info != nil else { return RepoPathStore(shared: standard, own: standard) }
-        // The app's domain is `standard` (the shared one): only the two old apps' domains are opened, by name, and only read.
-        return RepoPathStore(shared: standard, own: standard, legacy: [stormDomain, labDomain].compactMap { suite($0) })
+        // The app's domain is `standard` (the shared one): only the preview's and the two old apps' domains are opened, by name, and only read.
+        return RepoPathStore(shared: standard, own: standard, legacy: [previewDomain, stormDomain, labDomain].compactMap { suite($0) })
     }
 }

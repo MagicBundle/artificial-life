@@ -52,7 +52,8 @@ def test_the_bundle_id_is_the_preferences_domain_the_old_apps_shared() -> None:
     store = text(CORE / "RepoPathStore.swift")
     bundle_id = swift_constant(plan, "bundleID")
     assert bundle_id == "io.github.magicbundle.alife"
-    assert f'ALIFE_BUNDLE_ID="${{ALIFE_BUNDLE_ID:-{bundle_id}}}"' in script
+    assert f'DEFAULT_BUNDLE_ID="{bundle_id}"' in script
+    assert 'ALIFE_BUNDLE_ID="${ALIFE_BUNDLE_ID:-$DEFAULT_BUNDLE_ID}"' in script
     # RepoPathStore.sharedSuite is that same id (AppPlan.bundleID); the old apps' ids are only read.
     assert "sharedSuite = AppPlan.bundleID" in store
     assert swift_constant(store, "labDomain") == "io.github.magicbundle.alifecontrol"
@@ -78,13 +79,30 @@ def test_the_script_builds_one_app_named_alife_at_version_0_2_0() -> None:
 
 def test_install_replaces_alife_and_touches_no_old_app() -> None:
     script = text(SCRIPTS / "make-app.sh")
-    install = script[script.index("install_app()") :]
-    # The only path the install removes or copies to is alife.app's; the old apps are listed, never removed.
-    assert re.findall(r"rm -rf \"([^\"]+)\"", install) == ["$dest"]
+    install = script[script.index("install_app()") : script.index("trash_note()")]
+    # The install removes only temporary names (alife.app is moved aside first); old apps are listed only.
+    assert sorted(set(re.findall(r'rm -rf "([^"]+)"', install))) == ["$old", "$tmp"]
     assert 'dest="$INSTALL_DIR/$A_DIR"' in script
     for name in ("AlifeControl.app", "Storm Worlds.app", "alife Preview.app"):
         assert name in script
     assert "were not touched" in script and "Trash" in script
+    # the note is printed on a plain build as well as after an install
+    assert script.rstrip().endswith("trash_note")
+
+
+def test_install_is_atomic_and_refuses_a_trial_id() -> None:
+    script = text(SCRIPTS / "make-app.sh")
+    install = script[script.index("install_app()") : script.index("trash_note()")]
+    # copied to a temporary name, the old app moved aside and put back if the move fails
+    assert (
+        'ditto "$bundle" "$tmp"' in install
+        and 'mv "$tmp" "$dest"' in install
+        and 'mv "$old" "$dest"' in install
+    )
+    assert install.index("ditto") < install.index('mv "$dest" "$old"')
+    # --install with another ALIFE_BUNDLE_ID is refused before building
+    assert 'DEFAULT_BUNDLE_ID="io.github.magicbundle.alife"' in script
+    assert script.index("--install needs the default bundle id") < script.index("swift build -c release")
 
 
 def test_the_icon_script_has_the_alife_variant_and_the_script_asks_for_it() -> None:

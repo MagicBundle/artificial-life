@@ -2,11 +2,16 @@ import AlifeCore
 import AppKit
 import SwiftUI
 
-/// The entry point: the old apps' preferences are brought in once, before anything reads the folder setting, and the app starts.
+/// The entry point: the preview's and the old apps' preferences are brought in once, before anything reads the folder setting, and the app starts.
 /// `--launch-mode X` of the old apps is accepted and ignored (`AppPlan.ignoredArgument`): nothing reads it.
 @main
 enum AlifeEntry {
     static func main() {
+        // An `ALIFE_PREFS_SUITE` that names the app's own domain or an older app's would be ignored or would write that domain: refuse.
+        if let problem = RepoPathStore.overrideProblem(environment: ProcessInfo.processInfo.environment) {
+            FileHandle.standardError.write(Data(("alife: " + problem + "\n").utf8))
+            exit(2)
+        }
         // Only a bundle made by make-app.sh has its own preferences domain (the one the old apps shared): an unbundled run
         // (`swift run`) keeps whatever it had, as it always did.
         if Bundle.main.object(forInfoDictionaryKey: AppPlan.infoKey) != nil { PreferenceMigration.forApp()?.run() }

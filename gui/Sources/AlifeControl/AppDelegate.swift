@@ -188,7 +188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var windowsProvider: () -> [NSWindow] = { NSApp.windows }
 
     /// The main window closed: it is the app's window, so closing it is closing the last one. The other windows
-    /// it leaves (Settings, the 3D Viewer) go with it, which lets AppKit end the app as it does after any last window
+    /// it leaves (Settings, Help, the set-up window) go with it, which lets AppKit end the app as it does after any last window
     /// (`applicationShouldTerminateAfterLastWindowClosed`), through the question and the wait of the quit. `windows` is injectable.
     func mainWindowClosed(windows: (() -> [NSWindow])? = nil) {
         for window in (windows ?? windowsProvider)() where window.isVisible && !(window is NSPanel) && window.identifier?.rawValue != AppShell.mainWindowID {
