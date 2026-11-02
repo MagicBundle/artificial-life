@@ -119,6 +119,21 @@ struct PipelineTests {
         #expect(rig.researchStarts.count == 2, "making the planet is not a research run: Watch is told of nothing then")
     }
 
+    @Test func whileAWorldIsBeingMadeEveryButtonOfTheWorldsSaysSo() async throws {
+        let rig = try PipelineRig(mode: "long:ok")
+        defer { rig.finish() }
+        #expect(await rig.create("planet-1").isEmpty)
+        #expect(await rig.waitForGrowing())
+        await rig.scan()
+        let row = try #require(rig.library.state.row(named: "planet-1-grow"))
+        let a = WorldActionSet.make(row: row, controller: rig.controller, play: rig.play, library: rig.library, setup: rig.setup)
+        let busy = SetupRules.pipelineReason(.running)
+        #expect(busy != nil && a.makePlanet.reason == busy && a.branch.reason == busy && a.keepGrowing.reason == busy,
+                "\(String(describing: a.makePlanet.reason)) / \(String(describing: a.branch.reason))")
+        rig.coordinator.press(.stop)
+        #expect(await rig.waitForState { if case .parked = $0 { return true } else { return false } })
+    }
+
     @Test func aRefusedStartTellsWatchNothing() async throws {
         let rig = try PipelineRig(mode: "ok:ok")
         defer { rig.finish() }

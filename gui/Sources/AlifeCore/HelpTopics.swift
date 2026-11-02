@@ -42,7 +42,7 @@ package enum HelpTopics {
             "Details answers three questions about a world: what it is, how it is doing and what you can do with it. It shows the numbers and the autopilot's journal of any world, growing or not, the settings it was made with, where it came from and which worlds were branched from it.",
             "Open it by choosing a world in the sidebar, or with Details on a world's card. The engine's names (the folder, the keys) are in smaller type under the plain words.",
         ]),
-        HelpTopic(id: "actions", title: "Create, Branch, Keep growing, Make planet", symbol: "plus.circle", paragraphs: [
+        HelpTopic(id: "actions", title: "What the buttons do", symbol: "plus.circle", paragraphs: [
             "Create makes a new research world from a starting point. Branch copies a world from its newest save point and changes some settings. Keep growing continues a research world from where it stopped. Make planet makes a played world from a save point of a research world.",
             "Play opens a played world live. Check world asks the engine to verify a world. Close World saves the open world and closes it. Stop ends a growing run at a save point; Force stop ends it at once.",
         ]),

@@ -26,6 +26,10 @@ import Testing
         let sentences = DetailsGuide.whatItIs(row(.played, from: SourceRef(name: "p-grow", step: 30_000)), grownFor: nil)
         #expect(sentences[0].contains("A world you play") && sentences[0].contains("powers"))
         #expect(sentences[1] == "It was made from the grown world of p at step 30,000.")
+        // a planet made from the world that was grown for it
+        let own = DetailsGuide.whatItIs(row(.played, name: "p", from: SourceRef(name: "p-grow", step: 30_000)), grownFor: nil)
+        #expect(own[1] == "It was made from its grown world at step 30,000.")
+        #expect(DetailsGuide.whatItIs(row(.played, name: "P", from: SourceRef(name: "p-grow", step: nil)), grownFor: nil)[1] == "It was made from its grown world.")
         #expect(DetailsGuide.whatItIs(row(.played), grownFor: nil).count == 1)
     }
 
@@ -85,6 +89,9 @@ import Testing
         #expect(DetailsGuide.ended(status: "extinct")?.contains("died out") == true)
         #expect(DetailsGuide.ended(status: "violation")?.contains("Check world") == true)
         #expect(DetailsGuide.ended(status: "running") == nil && DetailsGuide.ended(status: nil) == nil)
+        // a played world is closed at a save point as a matter of course; only a death or a violation is news
+        #expect(DetailsGuide.ended(status: "interrupted", played: true) == nil && DetailsGuide.ended(status: "done", played: true) == nil)
+        #expect(DetailsGuide.ended(status: "extinct", played: true) != nil && DetailsGuide.ended(status: "violation", played: true) != nil)
     }
 
     @Test func theNumbersCaptionSaysWhyThereAreNone() {
@@ -155,5 +162,28 @@ import Testing
         s.mode = .live
         s.llmOn = true
         #expect(MadeWith.autopilot(s) == "Gardener, deciding every 1,000 steps, with a local model every 25,000 steps")
+    }
+}
+
+/// A research world's `meta.json` parent reaches its library row (the Branches list of Details reads it).
+@Suite struct LibraryParentTests {
+    private func record(_ name: String, played: Bool, parent: String?) -> LibraryRecord {
+        let cadence = PlayWorldFile.Cadence(metricsEvery: 1, heavyMetricsEvery: 1, checkpointEvery: 1, keepCheckpoints: 1)
+        let play = played ? PlayWorldFile(playVersion: 1, baseRate: 14.4, cadence: cadence, tick: 1, weather: nil, planet: nil) : nil
+        return LibraryRecord(
+            name: name, play: play, steps: [100], status: "done", parent: SourceRef.parse(parent), dims: 3, geometry: "sphere", worldSize: nil,
+            planetRadius: nil, planetShape: nil, weatherOn: false, hasEvents: true, directoryModified: Date(), lastSaved: Date(), hasContent: true,
+            looksUnfinished: false, buildMark: nil)
+    }
+
+    @Test func aResearchWorldKeepsItsParentAndAPlayedWorldDoesNot() {
+        var snapshot = LibrarySnapshot()
+        snapshot.records = [record("branch", played: false, parent: "runs/seed:20000"), record("seed", played: false, parent: nil),
+                            record("planet", played: true, parent: "runs/seed:20000")]
+        let state = LibraryState.resolve(snapshot)
+        #expect(state.row(named: "branch")?.parent == SourceRef(name: "seed", step: 20_000))
+        #expect(state.row(named: "seed")?.parent == nil)
+        #expect(state.row(named: "planet")?.parent == nil, "a played world says where it came from through its play file, not as a branch")
+        #expect(DetailsGuide.branches(of: "seed", in: state.rows) == ["branch"])
     }
 }

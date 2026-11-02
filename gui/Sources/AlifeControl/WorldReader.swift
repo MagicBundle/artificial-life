@@ -55,6 +55,8 @@ final class WorldReader: ObservableObject {
     /// The world followed (its name in `runs/`).
     private(set) var world: String?
 
+    /// Called with the world's name when a read of it has come back and before it is applied (the tests slow a read down here to change the world under it).
+    var afterRead: ((String) async -> Void)?
     private let runsDirectory: () -> URL?
     private let interval: Duration
     private var shown = 0
@@ -124,6 +126,7 @@ final class WorldReader: ObservableObject {
         let result = await Task.detached(priority: .utility) {
             WorldReadingIO.read(runDirectory: directory, world: name, memory: memory, includeMadeWith: includeMadeWith)
         }.value
+        await afterRead?(name)
         guard mine > applied, world == name else { return }
         applied = mine
         var shownReading = result

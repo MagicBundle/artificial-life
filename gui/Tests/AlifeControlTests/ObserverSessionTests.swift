@@ -112,4 +112,58 @@ struct ObserverSessionTests {
         rig.session.tryAgain()
         #expect(rig.session.failures == 0)
     }
+
+    /// A stream that goes live and stays (a stand-in engine that plays the committed fixture and then waits for `quit`).
+    private func goLive(_ rig: Rig, _ source: StreamSource) async throws {
+        let commands = rig.scratch.url.appendingPathComponent("commands.txt")
+        let script = try rig.scratch.script("live", "cat \"$1\"\nwhile IFS= read -r line; do echo \"$line\" >> \"$2\"; if [ \"$line\" = quit ]; then exit 0; fi; done\nexit 0")
+        rig.stream.start(source, executable: script, directory: rig.scratch.url, arguments: [Repo.streamFixtureURL("3d").path, commands.path])
+        #expect(await eventually { rig.stream.phase == .live })
+    }
+
+    @Test func leavingThePageEndsALiveStream() async throws {
+        let rig = try Rig()
+        defer { rig.stream.stop(); rig.scratch.cleanup() }
+        rig.session.show("w")
+        try await goLive(rig, StreamSource(run: "w", follow: false))
+        rig.session.leave()
+        #expect(rig.stream.phase == .idle && rig.stream.source == nil, "a stream has nothing to save: it ends with the page")
+    }
+
+    @Test func theSourcePickerDoesNothingWhenTheSourceIsAlreadyTheOneAsked() async throws {
+        let rig = try Rig(running: "w")
+        defer { rig.stream.stop(); rig.scratch.cleanup() }
+        rig.session.show("w")
+        let before = rig.started.starts.count
+        try await goLive(rig, StreamSource(run: "w", follow: true))
+        rig.session.choose(follow: true)
+        #expect(rig.started.starts.count == before, "following a followed run starts nothing")
+        rig.session.choose(follow: false)
+        #expect(rig.started.starts.count == before + 1)
+    }
+
+    @Test func aLivePictureClearsTheCountOfFailedStarts() async throws {
+        let rig = try Rig()
+        defer { rig.stream.stop(); rig.scratch.cleanup() }
+        rig.session.show("w")
+        let exe = try rig.scratch.script("fail", "exit 4")
+        rig.stream.start(StreamSource(run: "w", follow: false), executable: exe, directory: rig.scratch.url)
+        #expect(await eventually { if case .failed = rig.stream.phase { true } else { false } })
+        #expect(rig.session.failures == 1)
+        try await goLive(rig, StreamSource(run: "w", follow: false))
+        #expect(rig.session.failures == 0)
+    }
+
+    @Test func aDifferentWorldStartsTheCountOverAndTheSameWorldKeepsIt() async throws {
+        let rig = try Rig(savePoints: ["w", "v"])
+        defer { rig.stream.stop(); rig.scratch.cleanup() }
+        rig.session.show("w")
+        let exe = try rig.scratch.script("fail", "exit 4")
+        rig.stream.start(StreamSource(run: "w", follow: false), executable: exe, directory: rig.scratch.url)
+        #expect(await eventually { rig.session.failures == 1 })
+        rig.session.show("w")
+        #expect(rig.session.failures == 1, "the page appearing again for the same world does not forgive the failures")
+        rig.session.show("v")
+        #expect(rig.session.failures == 0 && rig.session.world == "v")
+    }
 }

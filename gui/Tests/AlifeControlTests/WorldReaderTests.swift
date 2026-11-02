@@ -110,13 +110,44 @@ struct WorldReaderTests {
         try rig.world("a", step: 111)
         try rig.world("b", step: 222)
         let r = reader(rig)
+        var inFlight = false
+        r.afterRead = { name in
+            if name == "a" {
+                inFlight = true
+                try? await Task.sleep(for: .milliseconds(200))  // (the read of a is back, and waits)
+            }
+        }
         r.follow("a")
-        let late = Task { await r.readNow() }  // (reads "a" off the main thread)
+        let late = Task { await r.readNow() }
+        #expect(await eventually { inFlight })
         r.follow("b")
         await late.value
-        #expect(r.reading == nil || r.reading?.world == "b", "the late read of a must not land: \(String(describing: r.reading?.world))")
+        #expect(r.reading == nil || r.reading?.world == "b", "the late read of a must not land under b: \(String(describing: r.reading?.world))")
+        r.afterRead = nil
         await r.readNow()
-        #expect(r.reading?.world == "b")
+        #expect(r.reading?.world == "b" && r.reading?.metrics?.step == 222)
+    }
+
+    @Test func twoReadsThatOverlapNeverLetTheOlderOverwriteTheNewer() async throws {
+        let rig = try Rig()
+        defer { rig.scratch.cleanup() }
+        let dir = try rig.world("a", step: 1)
+        let r = reader(rig)
+        var first = true
+        r.afterRead = { _ in
+            if first {
+                first = false
+                try? await Task.sleep(for: .milliseconds(200))  // the older read is slow to apply
+            }
+        }
+        r.follow("a")
+        let older = Task { await r.readNow() }
+        try await Task.sleep(for: .milliseconds(60))
+        try rig.row(step: 2, alive: 5).write(to: dir.appendingPathComponent("metrics.jsonl"), atomically: true, encoding: .utf8)
+        await r.readNow()
+        #expect(r.reading?.metrics?.step == 2)
+        await older.value
+        #expect(r.reading?.metrics?.step == 2, "the older read finished later and must not show step 1 again")
     }
 
     @Test func theFeatureKeysThatOnlySomeRowsCarryKeepTheirLastValue() async throws {
@@ -202,6 +233,45 @@ struct WorldReaderTests {
         #expect(await eventually { r.reading?.metrics?.step == 1 })
         r.follow("b")
         #expect(await eventually { r.reading?.metrics?.step == 2 && r.reading?.world == "b" })
+    }
+
+    @Test func followingTheSameWorldAgainKeepsWhatWasRead() async throws {
+        let rig = try Rig()
+        defer { rig.scratch.cleanup() }
+        try rig.world("a", step: 5)
+        let r = reader(rig)
+        r.follow("a")
+        await r.readNow()
+        r.follow("a")
+        #expect(r.reading?.metrics?.step == 5, "a page that appears again must not blank the numbers")
+    }
+
+    @Test func changingTheWorldWhileItIsShownReadsTheNewOneAtOnceNotAtTheNextPoll() async throws {
+        let rig = try Rig()
+        defer { rig.scratch.cleanup() }
+        try rig.world("a", step: 1)
+        try rig.world("b", step: 2)
+        let r = WorldReader(runsDirectory: { rig.runs }, interval: .seconds(30))
+        r.retain()
+        defer { r.release() }
+        r.follow("a")
+        #expect(await eventually(timeout: .seconds(5)) { r.reading?.metrics?.step == 1 })
+        r.follow("b")
+        #expect(await eventually(timeout: .seconds(5)) { r.reading?.metrics?.step == 2 }, "the poll is thirty seconds away: only the immediate read can show it")
+    }
+
+    @Test func aFolderThatGoesAwayClearsTheReading() async throws {
+        let rig = try Rig()
+        defer { rig.scratch.cleanup() }
+        try rig.world("a", step: 1)
+        var folder: URL? = rig.runs
+        let r = WorldReader(runsDirectory: { folder }, interval: .milliseconds(30))
+        r.follow("a")
+        await r.readNow()
+        #expect(r.reading != nil)
+        folder = nil
+        await r.readNow()
+        #expect(r.reading == nil)
     }
 
     @Test func noFolderMeansNothingToRead() async {

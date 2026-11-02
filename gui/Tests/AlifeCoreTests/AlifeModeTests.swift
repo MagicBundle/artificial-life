@@ -52,6 +52,11 @@ import Testing
         #expect(Set(ShellPage.allCases.map(\.title)).count == ShellPage.allCases.count)
     }
 
+    @Test func theWatchAndDetailsPagesAreNeverRestoredBecauseTheyHaveNoWorldToShowAtALaunch() {
+        #expect(ShellPage.restored(from: "details") == .worlds && ShellPage.restored(from: "watch") == .worlds)
+        #expect(ShellPage.restored(from: "activity") == .activity && ShellPage.restored(from: "setup") == .setup && ShellPage.restored(from: nil) == .worlds)
+    }
+
     @Test func theNamesAreTheSpecsOnes() {
         #expect(ShellPage.allCases.map(\.title) == ["Worlds", "Watch", "Activity", "New world", "Details"])
         // Resume, Home and Continue are not page names; "Watch" is the picture

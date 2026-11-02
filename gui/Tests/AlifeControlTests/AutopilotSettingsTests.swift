@@ -156,21 +156,34 @@ struct AutopilotSettingsTests {
         #expect(rig.settings.check == .idle)
     }
 
-    @Test func theTestHasAReasonWhenItCannotRun() throws {
+    @Test func theTestHasAReasonWhenItCannotRun() async throws {
         let noEngine = try Rig(engine: false)
         defer { noEngine.finish() }
         #expect(noEngine.settings.testReason == "Set up the engine first.")
         noEngine.settings.test()
-        #expect(noEngine.asked.calls.isEmpty)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(noEngine.asked.calls.isEmpty && noEngine.settings.check == .idle, "a test that cannot run does not start")
         let rig = try Rig()
         defer { rig.finish() }
         rig.settings.url = "nothing"
         #expect(rig.settings.testReason == "Type an http or https address and a model name.")
         rig.settings.test()
-        #expect(rig.asked.calls.isEmpty)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(rig.asked.calls.isEmpty && rig.settings.check == .idle)
         rig.settings.url = "http://x/y"
         rig.settings.model = ""
         #expect(rig.settings.testReason != nil)
+    }
+
+    @Test func theDefaultsButtonKnowsEitherFieldDiffers() throws {
+        let rig = try Rig()
+        defer { rig.finish() }
+        #expect(rig.settings.isDefault)
+        rig.settings.model = "another-model"
+        #expect(!rig.settings.isDefault, "the model alone differs")
+        rig.settings.useDefaults()
+        rig.settings.url = "http://127.0.0.1:9/x"
+        #expect(!rig.settings.isDefault, "the address alone differs")
     }
 
     @Test func theDomainsOfTheOtherAppsAreNeverNamed() {

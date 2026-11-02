@@ -26,7 +26,9 @@ package enum DetailsGuide {
         case .played:
             out.append("A world you play. It runs live in Watch, and you can use powers, read its chronicle and its reports.")
             if let from = row.madeFrom {
-                out.append("It was made from \(SetupIntent.shown(from.name))" + (from.step.map { " at step \(WorldsGuide.grouped($0))." } ?? "."))
+                // (a planet made from the world that was grown for it says "its grown world", not "the grown world of" itself)
+                let source = NameFolding.same(from.name, row.name + SetupPlan.growSuffix) ? "its grown world" : SetupIntent.shown(from.name)
+                out.append("It was made from \(source)" + (from.step.map { " at step \(WorldsGuide.grouped($0))." } ?? "."))
             }
         case .research:
             out.append("A research world. It grows by itself, and you watch it from outside; it cannot be played as it is.")
@@ -77,10 +79,12 @@ package enum DetailsGuide {
     // MARK: Words for the numbers
 
     /// The status the engine wrote in `meta.json`, as a sentence; nil for `running` (the state says it) and for what is not known.
-    package static func ended(status: String?) -> String? {
+    package static func ended(status: String?, played: Bool = false) -> String? {
         switch status {
-        case "done": return "It reached the step it was asked to grow to."
-        case "interrupted": return "It was stopped before its last step, at a save point."
+        // (a played world is closed at a save point as a matter of course: that is not news)
+        case "done" where !played: return "It reached the step it was asked to grow to."
+        case "interrupted" where !played: return "It was stopped before its last step, at a save point."
+        case "done", "interrupted": return nil
         case "extinct": return "Everything in it died out."
         case "violation": return "The engine's own checks found a problem in it. Check world says more."
         default: return nil

@@ -153,10 +153,11 @@ struct WorldCommands: Commands {
                 Divider()
                 Button("Stop") { controller.stop() }
                     .keyboardShortcut(".", modifiers: .command)
-                    .disabled(!shell.runGoing)
+                    .disabled(!Self.canStop(runGoing: shell.runGoing))
                 Button("Check World") { check(world) }
+                    .disabled(!Self.canCheck(runGoing: shell.runGoing, repoReady: controller.repoReady))
                 Button("Open Classic 2D Viewer") { controller.openClassicViewer(world: world) }
-                    .disabled(shell.observedShape != .flat || !controller.repoReady)
+                    .disabled(!Self.canOpenClassic(shape: shell.observedShape, repoReady: controller.repoReady))
             }
         }
     }
@@ -173,6 +174,11 @@ struct WorldCommands: Commands {
         case nil: break
         }
     }
+
+    /// Stop ends a run this app grows; Check World needs the engine and no job; the classic viewer shows flat worlds only.
+    static func canStop(runGoing: Bool) -> Bool { runGoing }
+    static func canCheck(runGoing: Bool, repoReady: Bool) -> Bool { !runGoing && repoReady }
+    static func canOpenClassic(shape: WorldShape?, repoReady: Bool) -> Bool { shape == .flat && repoReady }
 
     /// Whether the World menu's items work: only on the Watch page, and only when Watch shows something.
     static func itemsAreEnabled(page: ShellPage, form: WatchForm?) -> Bool { page == .watch && form != nil }

@@ -85,4 +85,24 @@ import Testing
         #expect(WorldTitle.subtitle(header: planet) == "forked from runs/example:500000" && WorldTitle.subtitle(header: preset) == nil)
         #expect(WorldTitle.window(world: nil, header: nil) == "World" && WorldTitle.window(world: "p0", header: planet) == "Planet p0")
     }
+
+    @Test func theNewWindowsSubtitleNamesTheGrownWorldNotTheDirectoryOrTheEnginesWord() throws {
+        let planet = try WorldFixtures.store("3d").header?.play  // (made from runs/example:500000)
+        let preset = try WorldFixtures.store("2d").header?.play
+        #expect(WorldTitle.plainSubtitle(world: "p0", header: planet) == "made from example")
+        #expect(WorldTitle.plainSubtitle(world: "example", header: planet) == "made from its grown world" || WorldTitle.plainSubtitle(world: "example", header: planet) == "made from example")
+        #expect(WorldTitle.plainSubtitle(world: "p0", header: preset) == nil && WorldTitle.plainSubtitle(world: nil, header: nil) == nil)
+        for text in [WorldTitle.plainSubtitle(world: "p0", header: planet) ?? ""] { #expect(!text.contains("runs/") && !text.contains("forked") && !text.contains(":")) }
+    }
+
+    @Test func aPlanetMadeFromItsOwnGrownWorldSaysSo() {
+        // (the world "planet-1" made from "runs/planet-1-grow:30000": the default path's planet)
+        #expect(WorldTitle.plainSubtitle(world: "planet-1", source: "runs/planet-1-grow:30000") == "made from its grown world")
+        #expect(WorldTitle.plainSubtitle(world: "PLANET-1", source: "runs/planet-1-grow:30000") == "made from its grown world", "capitals do not tell worlds apart")
+        // another planet's grown world, and a world the player named, are named as they are
+        #expect(WorldTitle.plainSubtitle(world: "planet-2", source: "runs/planet-1-grow:30000") == "made from the grown world of planet-1")
+        #expect(WorldTitle.plainSubtitle(world: "p", source: "runs/tiny3s_seed1") == "made from tiny3s_seed1")
+        #expect(WorldTitle.plainSubtitle(world: " ", source: "runs/planet-1-grow") == "made from the grown world of planet-1")
+        #expect(WorldTitle.plainSubtitle(world: "p", source: nil) == nil && WorldTitle.plainSubtitle(world: "p", source: "") == nil)
+    }
 }

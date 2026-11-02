@@ -19,7 +19,7 @@ struct HelpView: View {
             List(HelpTopics.all, selection: Binding(get: { Optional(model.topic) }, set: { if let id = $0 { model.topic = id } })) { topic in
                 Label(topic.title, systemImage: topic.symbol).tag(topic.id)
             }
-            .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 260)
+            .navigationSplitViewColumnWidth(min: 240, ideal: 260, max: 300)
         } detail: {
             if let topic = HelpTopics.topic(model.topic) {
                 ScrollView {

@@ -433,6 +433,16 @@ private struct ShellRig {
         }
     }
 
+    @Test func theObserverMenusExtraItemsKnowWhenTheyCanWork() {
+        #expect(WorldCommands.canStop(runGoing: true) && !WorldCommands.canStop(runGoing: false))
+        #expect(WorldCommands.canCheck(runGoing: false, repoReady: true))
+        #expect(!WorldCommands.canCheck(runGoing: true, repoReady: true), "a run holds the engine's one job")
+        #expect(!WorldCommands.canCheck(runGoing: false, repoReady: false))
+        #expect(WorldCommands.canOpenClassic(shape: .flat, repoReady: true))
+        #expect(!WorldCommands.canOpenClassic(shape: .planet, repoReady: true) && !WorldCommands.canOpenClassic(shape: .box, repoReady: true))
+        #expect(!WorldCommands.canOpenClassic(shape: nil, repoReady: true) && !WorldCommands.canOpenClassic(shape: .flat, repoReady: false))
+    }
+
     @Test func aMenuItemGoesToTheWorldOrToTheViewerAccordingToItsForm() {
         var world: [WorldAction] = [], viewer: [ViewerAction] = []
         for form in [WatchForm.played, .research] {
