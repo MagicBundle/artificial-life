@@ -187,7 +187,8 @@ import Testing
         shell.select(.setup)
         library.query = "zzz"
         SidebarItem.world("p").choose(shell: shell, library: library)
-        #expect(shell.page == .worlds && library.selected == "p" && library.query == "", "a search that would hide the world is cleared")
+        #expect(shell.page == .details && library.selected == "p" && library.query == "", "a world's row opens its Details; a search that would hide it is cleared")
+        #expect(SidebarItem.current(page: shell.page, library: library) == .world("p"), "and the row stays chosen while Details is shown")
         SidebarItem.page(.worlds).choose(shell: shell, library: library)
         #expect(library.selected == nil && shell.page == .worlds)
         SidebarItem.unfinished.choose(shell: shell, library: library)

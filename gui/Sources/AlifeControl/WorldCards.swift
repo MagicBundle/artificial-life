@@ -92,13 +92,16 @@ struct WorldCard: View {
     let isOpen: Bool
     var keepGrowing = CardAction(label: "Keep growing…", reason: nil)
     var branch = CardAction(label: "Branch…", reason: nil)
+    /// Watch a research world as an observer (a played world is watched while it plays: its Watch button is the open world's).
+    var watch = CardAction(label: "Watch", reason: nil)
     let onSelect: () -> Void
     let onPlay: () -> Void
     let onWatch: () -> Void
     let onMakePlanet: () -> Void
     var onKeepGrowing: () -> Void = {}
     var onBranch: () -> Void = {}
-    var onOpen3D: () -> Void = {}
+    var onWatchResearch: () -> Void = {}
+    var onDetails: () -> Void = {}
     var onOpenClassic: () -> Void = {}
     var onCheck: () -> Void = {}
     let onReveal: () -> Void
@@ -129,6 +132,7 @@ struct WorldCard: View {
     private var reasons: [CardAction] {
         var out: [CardAction] = []
         if row.kind == .played, !isOpen { out.append(play) }
+        if row.kind == .research { out.append(watch) }
         out.append(makePlanet)
         if row.kind == .research { out.append(keepGrowing) }
         out.append(branch)
@@ -167,11 +171,14 @@ struct WorldCard: View {
                     }
                 }
                 if row.kind == .research {
-                    Button("Make planet…", action: onMakePlanet).buttonStyle(.borderedProminent).disabled(makePlanet.reason != nil)
-                } else {
-                    Button("Make planet…", action: onMakePlanet).buttonStyle(.bordered).disabled(makePlanet.reason != nil)
+                    Button("Watch", action: onWatchResearch).buttonStyle(.borderedProminent).disabled(watch.reason != nil)
                 }
+                Button("Make planet…", action: onMakePlanet).buttonStyle(.bordered).disabled(makePlanet.reason != nil)
                 Spacer(minLength: 0)
+                Button(action: onDetails) { Label("Details", systemImage: "info.circle") }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .help("Details: what this world is, how it is doing, and what you can do with it")
                 RevealButton(action: onReveal)
             }
             HStack(spacing: 8) {
@@ -186,17 +193,16 @@ struct WorldCard: View {
         .controlSize(.small)
     }
 
-    /// The viewers and the check of a research world, until its Watch page has them (PR-F).
+    /// The classic viewer of a flat world, and the check of a research world.
     private var moreMenu: some View {
         Menu {
-            Button("Watch in 3D viewer", action: onOpen3D)
             if row.shape == .flat { Button("Open Classic 2D Viewer", action: onOpenClassic) }
             Button("Check world", action: onCheck).disabled(row.state != .saved)
         } label: { Label("More", systemImage: "ellipsis.circle") }
             .menuStyle(.borderlessButton)
             .labelStyle(.iconOnly)
             .fixedSize()
-            .help("Watch it in the 3D viewer, open it in the classic 2D viewer, or check it")
+            .help("Open it in the classic 2D viewer (a flat world), or check it")
             .accessibilityLabel("More actions")
     }
 
@@ -282,8 +288,9 @@ extension SidebarItem {
             if page == .worlds { library.selected = nil }
             shell.select(page)
         case .world(let name):
-            library.select(name)
-            shell.select(.worlds)
+            // A world's row opens its Details (docs/APP.md §2.4); the Worlds page's card is a click away.
+            library.select(name, scroll: false)
+            shell.select(.details)
         case .allWorlds:
             library.filter = .all
             library.query = ""

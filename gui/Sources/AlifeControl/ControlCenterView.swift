@@ -121,7 +121,7 @@ struct ControlCenterView: View {
         HStack(spacing: 8) {
             if !collapsed {
                 Text(WorldTitle.heading(world: play.world, header: play.store.play)).font(.headline).lineLimit(1)
-                if let subtitle = WorldTitle.subtitle(header: play.store.play) {
+                if let subtitle = model.plainNames ? WorldTitle.plainSubtitle(world: play.world, header: play.store.play) : WorldTitle.subtitle(header: play.store.play) {
                     Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer()

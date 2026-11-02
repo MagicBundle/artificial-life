@@ -13,6 +13,12 @@ struct AlifeApp: App {
     @StateObject private var switcher: WorldSwitcher
     /// The Dock icon's progress bar for a run, and the badge and bounce when it ends (D3).
     @StateObject private var dock: DockTileController
+    /// The observer of the research form of Watch, the readers of a world's files (the Run panel's and Details'), Settings > Autopilot and Help.
+    @StateObject private var observer: ObserverSession
+    @StateObject private var watchReader: WorldReader
+    @StateObject private var detailsReader: WorldReader
+    @StateObject private var autopilot: AutopilotSettings
+    @StateObject private var help = HelpModel()
     private let appName = (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? LaunchMode.alife.plan.appName
 
     init() {
@@ -22,8 +28,15 @@ struct AlifeApp: App {
         let setup = SetupModel.forApp(controller: .shared, play: PlayController.shared, library: library)
         _setup = StateObject(wrappedValue: setup)
         _switcher = StateObject(wrappedValue: WorldSwitcher.forApp(controller: .shared, play: PlayController.shared))
-        // The run's target: the pipeline's when it grows the run, else the `run.steps` of the run's own config.
         let controller = RunController.shared
+        _observer = StateObject(wrappedValue: ObserverSession(controller: controller))
+        let runs: () -> URL? = { RunController.shared.repoReady ? RunController.shared.repoURL.appendingPathComponent("runs", isDirectory: true) : nil }
+        _watchReader = StateObject(wrappedValue: WorldReader(runsDirectory: runs))
+        _detailsReader = StateObject(wrappedValue: WorldReader(runsDirectory: runs))
+        let autopilot = AutopilotSettings(controller: controller)
+        _autopilot = StateObject(wrappedValue: autopilot)
+        controller.autopilotDefaults = { director in autopilot.apply(to: &director) }
+        // The run's target: the pipeline's when it grows the run, else the `run.steps` of the run's own config.
         let coordinator = setup.coordinator
         _dock = StateObject(wrappedValue: DockTileController(controller: controller, surface: SystemDockTile()) {
             if let plan = coordinator.plan, case .growing = plan.state, let target = plan.targetSteps { return target }
@@ -34,13 +47,16 @@ struct AlifeApp: App {
 
     var body: some Scene {
         Window(appName, id: AppShell.mainWindowID) {
-            AppShellView(shell: shell, controller: controller, library: library, setup: setup, switcher: switcher)
+            AppShellView(shell: shell, controller: controller, library: library, setup: setup, switcher: switcher, observer: observer,
+                         watchReader: watchReader, detailsReader: detailsReader)
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 1280, height: 800)
         .commands {
             QuitCommands(appName: appName)
             ShellCommands(shell: shell, controller: controller, library: library, setup: setup)
+            WorldCommands(shell: shell, observer: observer, controller: controller, library: library, setup: setup)
+            HelpCommands(help: help)
         }
 
         // The set-up page in a window of its own, so that a form can be composed beside a Watch (docs/APP.md §3.7). One instance.
@@ -50,11 +66,15 @@ struct AlifeApp: App {
         .windowResizability(.contentMinSize)
         .defaultSize(width: 820, height: 760)
 
-        // The 3D viewer of a research world's card ("Watch in 3D viewer") opens this window until PR-F makes the observer a form of Watch.
-        Viewer3DScene()
+        // Help: short topics, and World Controls (the key tables).
+        Window("alife Help", id: AppShell.helpWindowID) {
+            HelpView(model: help, shell: shell)
+        }
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 860, height: 600)
 
         Settings {
-            GeneralSettingsView(controller: controller)
+            GeneralSettingsView(controller: controller, autopilot: autopilot)
         }
     }
 }
@@ -101,5 +121,87 @@ struct ShellCommands: Commands {
             }
             Divider()
         }
+    }
+}
+
+
+/// The World menu (docs/APP.md §2.4): the actions of the Watch in view, listed from its key table (`ControlTables`). The menu follows the form:
+/// a played world's items, or an observer's. A letter is never a key equivalent (it would fire while a text field has the focus): the key is
+/// text in the title, and the keys work on the Watch page itself. The items act only while the Watch page is shown. It observes the shell only
+/// (not the play controller or the stream, which publish with every frame: a menu rebuilt that often is unusable).
+struct WorldCommands: Commands {
+    @ObservedObject var shell: ShellModel
+    let observer: ObserverSession
+    let controller: RunController
+    let library: WorldLibrary
+    let setup: SetupModel
+
+    var body: some Commands {
+        CommandMenu("World") {
+            let form = shell.watchForm
+            let enabled = Self.itemsAreEnabled(page: shell.page, form: form)
+            if let form {
+                Section(form == .played ? "Playing" : "Observing") {
+                    ForEach(ControlTables.menu(form)) { entry in
+                        Button(entry.menuTitle) { perform(entry) }.disabled(!enabled)
+                    }
+                }
+            } else {
+                Text("Nothing is open in Watch").disabled(true)
+            }
+            if form == .research, let world = shell.observed {
+                Divider()
+                Button("Stop") { controller.stop() }
+                    .keyboardShortcut(".", modifiers: .command)
+                    .disabled(!shell.runGoing)
+                Button("Check World") { check(world) }
+                Button("Open Classic 2D Viewer") { controller.openClassicViewer(world: world) }
+                    .disabled(shell.observedShape != .flat || !controller.repoReady)
+            }
+        }
+    }
+
+    private func perform(_ entry: ControlEntry) {
+        Self.dispatch(entry, world: { shell.session.model.perform($0) }, observer: { observer.viewer.perform($0) })
+    }
+
+    /// A menu item does what its key does, in its own form: a played world's action goes to the world, an observer's to the viewer.
+    static func dispatch(_ entry: ControlEntry, world: (WorldAction) -> Void, observer: (ViewerAction) -> Void) {
+        switch entry.action {
+        case .world(let action)?: world(action)
+        case .observer(let action)?: observer(action)
+        case nil: break
+        }
+    }
+
+    /// Whether the World menu's items work: only on the Watch page, and only when Watch shows something.
+    static func itemsAreEnabled(page: ShellPage, form: WatchForm?) -> Bool { page == .watch && form != nil }
+
+    private func check(_ world: String) {
+        guard controller.repoReady, controller.job == nil else {
+            shell.launchNote = controller.repoReady ? "Another job is running. Wait for it to finish, then check \(world)." : "Set up the engine first."
+            shell.select(.worlds)
+            return
+        }
+        controller.inspect(world: world)
+        shell.select(.activity)
+    }
+}
+
+/// The Help menu: alife Help, and World Controls, which opens the same window on the page with the key tables.
+struct HelpCommands: Commands {
+    let help: HelpModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(replacing: .help) {
+            Button("alife Help") { open(HelpTopics.all[0].id) }
+            Button("World Controls") { open(HelpTopics.controlsID) }
+        }
+    }
+
+    private func open(_ topic: String) {
+        help.show(topic)
+        openWindow(id: AppShell.helpWindowID)
     }
 }

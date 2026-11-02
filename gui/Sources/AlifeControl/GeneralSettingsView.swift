@@ -5,6 +5,8 @@ import SwiftUI
 /// folder form as the Worlds page's first card; the old apps keep their own Settings until they are retired.
 struct GeneralSettingsView: View {
     @ObservedObject var controller: RunController
+    /// Settings > Autopilot; nil in a window that has none (the tests').
+    var autopilot: AutopilotSettings?
     /// What closing the window does while a run is going (D3), and whether a world paused by leaving Watch continues when the player comes
     /// back (D4). The app's own preferences; the question's "Remember my choice" sets the first.
     @AppStorage(AppShell.closeWithRunKey) private var closeWithRun = ClosePreference.ask.rawValue
@@ -63,6 +65,10 @@ struct GeneralSettingsView: View {
             }
             .formStyle(.grouped)
             .tabItem { Label("General", systemImage: "gearshape") }
+            if let autopilot {
+                AutopilotSettingsView(settings: autopilot)
+                    .tabItem { Label("Autopilot", systemImage: "wand.and.stars") }
+            }
         }
         .frame(width: 540, height: 620)
     }

@@ -139,6 +139,10 @@ final class WorldModel: ObservableObject {
     @Published private(set) var level = WorldLevel.planet
     /// The one-line hint of the controls is on screen (the first World window, and View > Controls…); any input takes it away.
     @Published var hintVisible = false
+    /// The `alife` window's words (docs/APP.md §2.5): the camera button is *Overview*, the hint says so, and a planet made from the world that was
+    /// grown for it is "made from its grown world". The two old apps keep Home and "forked from runs/...".
+    var usesOverviewWord = false
+    var plainNames = false
 
     /// The part of the window the map is drawn into (the window less the dock), in the window's coordinates: the camera's
     /// aspect and every pixel rule are its.

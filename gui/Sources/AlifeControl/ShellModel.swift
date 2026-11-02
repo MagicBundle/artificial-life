@@ -21,7 +21,7 @@ final class ShellModel: ObservableObject {
     @Published var page: ShellPage {
         didSet {
             guard page != oldValue else { return }
-            session.model.setWatchActive(page == .watch)
+            refreshWatchActive()
             if page != .watch { defaults.set(page.rawValue, forKey: AppShell.pageKey) }
         }
     }
@@ -41,6 +41,16 @@ final class ShellModel: ObservableObject {
     @Published private(set) var planetFormRequests = 0
     /// The last request the Worlds page opened the form for (the page may not exist when the request is made).
     var planetFormHandled = 0
+    /// The research world Watch shows (the observer form) when no played world is open; nil when none was chosen. A world that goes live clears it.
+    @Published private(set) var observed: String?
+    /// Which Watch the page shows (docs/APP.md §3.4): the World menu, the keys and Help follow it. Nil when there is nothing to watch.
+    @Published private(set) var watchForm: WatchForm?
+    /// This app grows a research run now, and the shape of the world Watch observes: what the World menu needs without watching the controllers
+    /// (they publish with every frame). Set by the window.
+    @Published var runGoing = false
+    @Published private(set) var observedShape: WorldShape?
+    /// The shape of a world by name, from the library (set by the window).
+    var shapeOf: (String) -> WorldShape? = { _ in nil }
 
     /// Called when a world that was being started ended before it was live: its directory name and a sentence for the Unfinished card
     /// . Set by the window; the library keeps it for the session.
@@ -67,7 +77,10 @@ final class ShellModel: ObservableObject {
         previousPhase = session.play.phase
         worldIsOpen = session.play.isActive
         page = ShellPage.restored(from: defaults.string(forKey: AppShell.pageKey))
-        session.model.setWatchActive(page == .watch)
+        watchForm = Self.form(of: session.play.phase, observed: nil)
+        refreshWatchActive()
+        session.model.usesOverviewWord = true  // (the hint on the map says Overview, as the toolbar does; the two old apps say Home)
+        session.model.plainNames = true  // (a planet made from "planet-1-grow" is "made from its grown world")
         phaseObserver = session.play.$phase.sink { [weak self] phase in
             MainActor.assumeIsolated { self?.phaseChanged(to: phase) }
         }
@@ -80,11 +93,50 @@ final class ShellModel: ObservableObject {
         }
     }
 
+    /// Which Watch a play phase and an observed world make (`WatchGuide.form`).
+    static func form(of phase: PlayPhase, observed: String?) -> WatchForm? {
+        var ended = false
+        if case .ended = phase { ended = true }
+        if case .failed = phase { ended = true }
+        return WatchGuide.form(worldOpen: phase == .starting || phase == .live, worldEnded: ended, observed: observed)
+    }
+
+    /// The played world's keys, drawing and attention follow the Watch page *and* the played form: with a research world in view the world
+    /// model has nothing on the page.
+    private func refreshWatchActive() {
+        let form = Self.form(of: session.play.phase, observed: observed)
+        if form != watchForm { watchForm = form }
+        session.model.setWatchActive(page == .watch && form != .research)
+    }
+
+    /// Watch shows `world` as an observer (a research world): the card's or Details' Watch, or a run just started. A played world that is
+    /// open is what Watch shows, so the caller has checked `WatchGuide.reasonToWatch`.
+    func observe(_ world: String) {
+        guard !session.play.isActive else { return }
+        observed = world
+        observedShape = shapeOf(world)
+        refreshWatchActive()
+        select(.watch)
+    }
+
+    /// A research run was started from the set-up page: Watch follows it, and the person who pressed the button is taken there. Nothing moves
+    /// a person who went on to another page, and a world that is open stays what Watch shows.
+    func researchStarted(_ world: String) {
+        guard !session.play.isActive else { return }
+        observed = world
+        observedShape = shapeOf(world)
+        refreshWatchActive()
+        if page == .setup { select(.watch) }
+    }
+
     private func phaseChanged(to phase: PlayPhase) {
         let was = previousPhase
         previousPhase = phase
         let open = phase == .starting || phase == .live
         if open != worldIsOpen { worldIsOpen = open }
+        // A world that opens is what Watch shows; the research world seen before is not brought back behind it.
+        if phase == .starting { observed = nil }
+        refreshWatchActive()
         switch phase {
         case .starting:
             startFailure = nil

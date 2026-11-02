@@ -43,7 +43,7 @@ struct WatchChrome: View {
             notes
         }
         .navigationTitle(play.world == nil ? "Watch" : WorldTitle.window(world: play.world, header: play.store.play))
-        .navigationSubtitle(WorldTitle.subtitle(header: play.store.play) ?? "")
+        .navigationSubtitle((model.plainNames ? WorldTitle.plainSubtitle(world: play.world, header: play.store.play) : WorldTitle.subtitle(header: play.store.play)) ?? "")
         .toolbar {
             ToolbarItemGroup {
                 Picker("Dock", selection: $sideRaw) {
@@ -51,6 +51,7 @@ struct WatchChrome: View {
                 }
                 .pickerStyle(.segmented)
                 .help("Dock the control center on the left, the right or the bottom")
+                if play.phase != .idle { WatchFormChip(form: .played) }
                 Button { model.home() } label: { Label("Overview", systemImage: "globe") }
                     .help(play.isActive ? "Fly to the overview: the whole width of the world, north up (H)" : "No world is open.")
                     .disabled(!play.isActive)
@@ -91,7 +92,7 @@ struct WatchChrome: View {
         VStack(spacing: 12) {
             Image(systemName: "eye.slash").font(.system(size: 34)).foregroundStyle(.secondary)
             Text("No world is open").font(.title2.weight(.semibold))
-            Text("Watch shows the world you are playing. Choose a world to play, or make a planet, on the Worlds page.")
+            Text("Watch shows the world you are playing, or a research world you chose to watch. Choose one on the Worlds page, or make a planet.")
                 .foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 420)
             Button("Go to Worlds") { shell.select(.worlds) }.buttonStyle(.borderedProminent)
         }

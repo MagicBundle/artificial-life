@@ -104,6 +104,29 @@ struct PipelineTests {
         #expect(rig.controller.logText.contains("resume runs/planet-1-grow"))
     }
 
+    @Test func watchIsToldOfTheResearchRunAtItsStartAndAtEveryKeepGrowing() async throws {
+        let rig = try PipelineRig(mode: "long:ok")
+        defer { rig.finish() }
+        #expect(await rig.create("planet-1").isEmpty)
+        #expect(rig.researchStarts == ["planet-1-grow"], "the world Watch follows is the run's, named as the folder")
+        #expect(await rig.waitForGrowing())
+        rig.coordinator.press(.stop)
+        #expect(await rig.waitForState { if case .parked = $0 { return true } else { return false } })
+        rig.mode = "ok:ok"
+        rig.coordinator.press(.keepGrowing)
+        #expect(rig.researchStarts == ["planet-1-grow", "planet-1-grow"])
+        #expect(await rig.waitForState { $0 == .live })
+        #expect(rig.researchStarts.count == 2, "making the planet is not a research run: Watch is told of nothing then")
+    }
+
+    @Test func aRefusedStartTellsWatchNothing() async throws {
+        let rig = try PipelineRig(mode: "ok:ok")
+        defer { rig.finish() }
+        rig.controller.settings.name = "bad name"
+        _ = await rig.create("bad name")
+        #expect(rig.researchStarts.isEmpty)
+    }
+
     @Test func cancelInStageOneDoesNothingBecauseStopIsItsWord() async throws {
         let rig = try PipelineRig(mode: "long:ok")
         defer { rig.finish() }

@@ -1,20 +1,36 @@
 import AlifeCore
 import SwiftUI
 
-/// The numbers of the run that grows (docs/APP.md §3.8 row 18), every one the Lab's Status showed, with plain labels and the engine's name in
-/// the tooltip. They live on the Activity page until the Run panel of the research Watch (PR-F) takes them.
+/// The numbers of a world (docs/APP.md §3.8 row 18), every one the Lab's Status showed, with plain labels and the engine's name in the tooltip.
+/// The Run panel of the research Watch and Details show them; they come from the world's own file (`WorldReader`), so a world that is not growing
+/// has them too. `clock` is the run's elapsed time and its stop timer, only for the world this app grows now.
 struct RunNumbersView: View {
-    @ObservedObject var controller: RunController
+    struct Clock: Equatable {
+        var elapsed: TimeInterval
+        var remaining: TimeInterval?
+    }
+
+    var metrics: MetricsSnapshot?
+    var clock: Clock?
+    /// What to say when there is no row yet.
+    var emptyText = "No numbers yet. The first appear a few seconds after the engine starts."
+    /// The box has a title of its own ("Numbers"); the panel's tab already says it.
+    var titled = true
 
     var body: some View {
-        GroupBox("Numbers") {
+        if titled { GroupBox("Numbers") { content } } else { content }
+    }
+
+    private var content: some View {
             VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("Elapsed \(formatDuration(controller.elapsed))")
-                    if let remaining = controller.remaining { Text("| stops in \(formatDuration(remaining))") }
+                if let clock {
+                    HStack {
+                        Text("Elapsed \(formatDuration(clock.elapsed))")
+                        if let remaining = clock.remaining { Text("| stops in \(formatDuration(remaining))") }
+                    }
+                    .font(.callout.monospacedDigit())
                 }
-                .font(.callout.monospacedDigit())
-                if let m = controller.metrics {
+                if let m = metrics {
                     Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 4) {
                         GridRow {
                             stat("Step", String(m.step), "step")
@@ -55,12 +71,11 @@ struct RunNumbersView: View {
                         .font(.callout)
                     }
                 } else {
-                    Text("No numbers yet. The first appear a few seconds after the engine starts.").foregroundStyle(.secondary)
+                    Text(emptyText).foregroundStyle(.secondary)
                 }
             }
             .padding(6)
             .frame(maxWidth: .infinity, alignment: .leading)
-        }
     }
 
     private func stat(_ title: String, _ value: String, _ key: String) -> some View {

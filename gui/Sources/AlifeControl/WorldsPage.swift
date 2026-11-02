@@ -16,14 +16,8 @@ struct WorldsPage: View {
 
     private var model: WorldLauncherModel { setup.launcher }
     private var worldModel: WorldModel { shell.session.model }
-    @Environment(\.openWindow) private var openWindow
 
-    private var facts: WorldsGuide.Facts {
-        WorldsGuide.Facts(
-            folderExists: controller.repoFolderExists, folderProblem: Self.folderSentence(controller), engineReady: controller.repoReady,
-            catalog: library.state.catalog, openWorld: play.isActive ? play.world : nil, openWorldIsStarting: play.phase == .starting,
-            saving: Set(play.retiredWorlds), growing: controller.runningRunName)
-    }
+    private var facts: WorldsGuide.Facts { WorldActionSet.worldsFacts(controller: controller, play: play, library: library) }
 
     /// What the page says about a folder that is not there: what the folder is for. (The form below says what is wrong with the one
     /// chosen, in the words of the Lab's Repository box.)
@@ -74,12 +68,7 @@ struct WorldsPage: View {
         setup.openMakePlanet(from: name)
     }
 
-    // The viewers and the check of a research world, until its Watch page has them (PR-F).
-    private func open3D(_ row: LibraryRow) {
-        controller.openViewer3D(world: row.name, follow: row.state == .growing)
-        openWindow(id: AppWindow.viewer3d.rawValue)
-    }
-
+    // Watch (the observer) is a page now; the classic viewer of a flat world and the check stay on the card's menu.
     private func openClassic(_ row: LibraryRow) { controller.openClassicViewer(world: row.name) }
 
     /// The check runs as the engine's one job at a time: when another job holds it, the page says so instead of jumping to Activity.
@@ -92,22 +81,9 @@ struct WorldsPage: View {
         shell.select(.activity)
     }
 
-    /// Play and Make planet are the player's own action: the world that goes live from them is shown (`ShellModel.playerStartsWorld`).
+    /// Play is the player's own action: the world that goes live from it is shown (`ShellModel.playerStartsWorld`).
     private func playWorld(_ name: String) {
-        // The folder is looked at off the main thread with a deadline; an answer that does not come does not stop the play (the engine says).
-        Task {
-            guard await library.checkThere(name) != .gone else { return library.noteGone(name) }
-            guard let world = library.state.catalog.worlds.first(where: { $0.name == name }) else { return }
-            // (The reason is read again at the moment of the click: another process may have taken the world since the card was drawn.)
-            guard WorldsGuide.reason(forPlaying: world, in: facts) == nil else { return }
-            let start: @MainActor () -> Void = {
-                shell.playerStartsWorld()
-                model.resume(world)
-            }
-            // Another world is open: the sheet stops it first (it is saved), then this one starts (R5).
-            if let switcher, switcher.ask(.play(name), then: start) { return }
-            start()
-        }
+        Task { await WorldOpener(shell: shell, library: library, launcher: model, switcher: switcher).play(name, facts: facts) }
     }
 
     // MARK: Notices
@@ -365,13 +341,15 @@ struct WorldsPage: View {
                         isOpen: f.openWorld == row.name,
                         keepGrowing: CardAction(label: "Keep growing…", reason: SetupRules.reason(.keepGrowing, on: row, in: ruleFacts)),
                         branch: CardAction(label: "Branch…", reason: SetupRules.reason(.branch, on: row, in: ruleFacts)),
+                        watch: CardAction(label: "Watch", reason: WatchGuide.reasonToWatch(row, openWorld: f.openWorld, runGrowing: controller.runningRunName)),
                         onSelect: { library.select(row.name, scroll: false) },
                         onPlay: { playWorld(row.name) },
                         onWatch: { shell.select(.watch) },
                         onMakePlanet: { library.select(row.name, scroll: false); openPlanetForm(from: row.name) },
                         onKeepGrowing: { library.select(row.name, scroll: false); setup.openKeepGrowing(world: row.name) },
                         onBranch: { library.select(row.name, scroll: false); setup.openBranch(from: row.name) },
-                        onOpen3D: { open3D(row) },
+                        onWatchResearch: { library.select(row.name, scroll: false); shell.observe(row.name) },
+                        onDetails: { library.select(row.name, scroll: false); shell.select(.details) },
                         onOpenClassic: { openClassic(row) },
                         onCheck: { check(row) },
                         onReveal: { Task { await library.reveal(row.name) } })

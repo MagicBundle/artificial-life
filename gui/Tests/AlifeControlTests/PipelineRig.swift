@@ -26,6 +26,7 @@ final class PipelineRig {
     var playerStarts = 0
     var activityShown = 0
     var dismissedFailures = 0
+    var researchStarts: [String] = []
     var opened: [(SetupIntent, String?)] = []
     private var ownsScratch: Bool
 
@@ -64,6 +65,7 @@ final class PipelineRig {
         coordinator.hooks.bounce = { [unowned self] in bounces += 1 }
         coordinator.hooks.playerStartsWorld = { [unowned self] in playerStarts += 1 }
         coordinator.hooks.showActivity = { [unowned self] in activityShown += 1 }
+        coordinator.hooks.researchStarted = { [unowned self] world in researchStarts.append(world) }
         coordinator.hooks.dismissStartFailure = { [unowned self] in dismissedFailures += 1 }
         coordinator.hooks.openSetup = { [unowned self] intent, name in opened.append((intent, name)) }
         coordinator.isQuitting = { false }

@@ -374,7 +374,7 @@ final class WorldLibrary: ObservableObject {
     /// File > Reveal in Finder: the chosen world while the Worlds page is the one in view (a world that is gone is told, and nothing else is
     /// shown instead), else `fallback` (the Lab's run, or the alife folder).
     func revealFromMenu(page: ShellPage, fallback: () -> Void) async {
-        if page == .worlds, let name = selected {
+        if page == .worlds || page == .details, let name = selected {
             await reveal(name)
             return
         }
@@ -446,7 +446,7 @@ extension SidebarItem {
     /// the world chosen on the Worlds page, else the page.
     @MainActor
     static func current(page: ShellPage, library: WorldLibrary) -> SidebarItem {
-        if page == .worlds {
+        if page == .worlds || page == .details {
             if let anchor = library.sidebarAnchor {
                 switch anchor {
                 case .allWorlds where library.filter == .all && library.selected == nil && library.query.isEmpty: return anchor

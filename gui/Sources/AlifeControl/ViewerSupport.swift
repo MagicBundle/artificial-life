@@ -22,40 +22,6 @@ enum CameraMode: String, CaseIterable, Identifiable, Sendable {
     var id: String { rawValue }
 }
 
-// MARK: - Keys
-
-/// What a key does. The keys follow the 2D viewer (DESIGN §20.2) where there is an equivalent.
-enum ViewerAction: Equatable, Sendable {
-    case togglePause, step, faster, slower
-    case cycleColor, toggleFields, fieldLayerDown, fieldLayerUp
-    case snapshot
-    case toggleAgents, toggleBonds, toggleFrame
-    case toggleCameraMode, resetCamera
-}
-
-enum ViewerKeys {
-    /// The action of a key, from `NSEvent.charactersIgnoringModifiers`; nil for a key that does nothing.
-    static func action(for characters: String) -> ViewerAction? {
-        switch characters.lowercased() {
-        case " ": return .togglePause
-        case ".": return .step
-        case "+", "=": return .faster
-        case "-", "_": return .slower
-        case "c": return .cycleColor
-        case "f", "4": return .toggleFields
-        case "[": return .fieldLayerDown
-        case "]": return .fieldLayerUp
-        case "s", "p": return .snapshot
-        case "1": return .toggleAgents
-        case "2": return .toggleBonds
-        case "3": return .toggleFrame
-        case "o": return .toggleCameraMode
-        case "r": return .resetCamera
-        default: return nil
-        }
-    }
-}
-
 // MARK: - Speed
 
 /// The stream's frame period (`every K`): K steps of the simulation per frame. Doubling and halving within [1, 1024],
