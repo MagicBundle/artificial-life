@@ -927,25 +927,33 @@ unit (§37.4).
   asleep and the app never active, so a lit display, a real Dock click, the bounce and Command-W are yours:
   1. **Close with a run going.** Create a Small planet with Grow for 30,000. After 20 s close the window (red button, then again with Command-W). The question
      says what each button does; **Keep Running** is the default (Return), Escape is Cancel. *Cancel*: the window and the run are as they were. *Keep Running*:
-     the window goes, the Dock icon shows a bar with a percentage, the app is still in the menu bar.
+     the window goes, the Dock icon shows a bar with a percentage, the app is still in the menu bar. The checkbox remembers only Keep Running (Stop and Quit
+     cannot be remembered, on purpose); Settings shows it with *Ask me again*. Also: a short run that ends while the question is up: the answer then
+     closes the window and quits, it does not leave an empty app.
   2. **Windowless.** Leave it alone until the run ends (about 2 min). The icon bounces once if another app is in front and shows the badge **Done**.
      Click the Dock icon: the window comes back on the same page, the bar says the world finished growing and that the planet was **not** started behind your
-     back; nothing is running; the badge is gone. Press *Make planet*. (Also: a menu command such as New World... with no window opens the window.)
+     back, on the page you left (Watch becomes Worlds only if a world was closed; the note about that world is over whatever page it is); nothing is running;
+     the badge is gone. Press *Make planet*. (Also: a menu command such as New World... with no window opens the window; minimise the window, then click
+     the Dock icon: it comes out of the Dock.)
   3. **Stop and Quit** at the question: the window stays while the run writes its save point, the quit panel appears if it takes more than a moment, the app
      ends; the run's folder has a save point and *Keep growing* continues it. **Remember my choice** with Keep Running: the next close asks nothing (Settings
      shows it; "Ask me" brings the question back).
   4. **Quit from the Dock with no window and a run going**: PR-A's question; Cancel keeps both. **Close with only a world open**: no question (it is saved
-     and the app quits, as before): is that what you expect, or should it ask too?
+     and the app quits, as before; the quit panel shows if the save is slow). **This is an open question for you: the reviewer and I kept it silent; overrule
+     it if you want it to ask.** **Close while a planet is being made** (after its run, about 10 s): "Stop making 'X' and quit?" with Cancel (default) and Stop
+     and Quit; Stop and Quit leaves an Unfinished build and no process.
   5. **Leave Watch.** Play a world; go to Worlds, Activity or New world: the sidebar says "paused: you left", Activity and the world's card say the same, the
      world's step does not move. Come back to Watch: it runs again at its rate (Settings: *Pick up where I left off*). Turn the setting off: back on Watch it
      says "Paused when you left this page" with **Run**. Cmd-Tab to another app and back: nothing pauses, the Dock badge and bounce for alerts work as before.
   6. **What must not run.** Pause the world yourself (Space), leave and come back: still paused. Let a chapter end (Max rate, about 2 min on a small planet;
      the card appears), leave and come back: still stopped, the card still there. (The scripted run did this with the world already at its chapter stop.)
   7. **Switching worlds.** With a world open (running or paused), press *Play* on another world: one sheet, "Stop 'A' to play 'B'?", the reason, "about N
-     seconds"; **Keep Playing** is the default. *Stop and Play*: A is saved, then B opens in Watch. Try it with the 686 MB planet: is N honest (the estimate is
+     seconds"; **Keep Playing** is the default. *Stop and Play*: A is saved, then B opens in Watch (with a big world the sheet shows "Saving..." and **Close Panel**,
+     which only closes the panel: click Play again and it comes back; if the window is closed meanwhile, B is not opened and a note says so). Try it with the 686 MB planet: is N honest (the estimate is
      3 s + 0.01 s/MB, 0.05 s/MB compressed)? Try Make planet from a card or from a parked pipeline's button while a world is open: the same sheet. Press Cmd-Q
      with the sheet up: it goes, and the quit saves the world.
-  8. **A run and a world together** say "A run is using the GPU; the world may be slower." on Watch, Activity and the open world's card. Is it too quiet?
+  8. **A run and a world together** say "A run is using the GPU; the world may be slower." on Watch, Activity and the open world's card. Is it too quiet? The
+     two notes on Watch (this one and "Paused when you left this page") sit at the top of the map: check they do not cover the HUD at 13 inches (not seen lit).
   What was **not** exercised and is yours: the question and the sheet on a lit display (the pictures are the same views drawn off screen: `app_e_shots`),
   Command-W (the menu item was disabled with the window not key), a real Dock click and the bounce, the "Saving" state of the sheet with a big save (the
   unit tests run it with a slow engine), VoiceOver.
