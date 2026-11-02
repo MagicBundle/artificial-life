@@ -117,9 +117,16 @@ struct WatchDetailsViewTests {
             controller.forceStop()
             for _ in 0..<400 where controller.job != nil { spin() }
         }
-        // (the dock's preferences are the test process's own: other suites may have left the dock collapsed or on a side)
-        for key in ["world.dockCollapsed"] { UserDefaults.standard.set(false, forKey: key) }
-        UserDefaults.standard.set(DockSide.right.rawValue, forKey: "world.dockSide")
+        // The pictures to look at need the dock open on the right; the test process's own preferences may say otherwise (other suites leave the
+        // dock collapsed or on a side). Only a run that writes pictures sets them, and puts them back: a normal run touches nothing that a
+        // suite running beside it reads.
+        let dockKeys = ["world.dockCollapsed", "world.dockSide"]
+        let kept = dockKeys.map { UserDefaults.standard.object(forKey: $0) }
+        if everything {
+            UserDefaults.standard.set(false, forKey: "world.dockCollapsed")
+            UserDefaults.standard.set(DockSide.right.rawValue, forKey: "world.dockSide")
+        }
+        defer { if everything { for (key, value) in zip(dockKeys, kept) { UserDefaults.standard.set(value, forKey: key) } } }
         let suite = "alife-wd-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }

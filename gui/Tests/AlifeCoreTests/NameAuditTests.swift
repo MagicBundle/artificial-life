@@ -49,6 +49,7 @@ import Testing
         ("Try again", "retry-viewer"),
         ("alife Help", "open-help"),
         ("World Controls", "open-world-controls"),
+        ("What can I do here?", "open-help-watch"),
         ("Overview", "camera-overview"),
         ("Set up engine", "set-up-engine"),
         ("Check again", "check-engine"),

@@ -18,7 +18,7 @@ struct AlifeApp: App {
     @StateObject private var watchReader: WorldReader
     @StateObject private var detailsReader: WorldReader
     @StateObject private var autopilot: AutopilotSettings
-    @StateObject private var help = HelpModel()
+    @StateObject private var help = HelpModel.shared
     private let appName = (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? LaunchMode.alife.plan.appName
 
     init() {

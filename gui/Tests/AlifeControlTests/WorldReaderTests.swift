@@ -216,8 +216,9 @@ struct WorldReaderTests {
         #expect(!r.isPolling)
         r.release()
         #expect(!r.isPolling, "an extra release does nothing")
+        try await Task.sleep(for: .milliseconds(200))  // (a read that was already on its way when the last page left may still land)
         try rig.row(step: 30, alive: 5).write(to: dir.appendingPathComponent("metrics.jsonl"), atomically: true, encoding: .utf8)
-        try await Task.sleep(for: .milliseconds(150))
+        try await Task.sleep(for: .milliseconds(300))
         #expect(r.reading?.metrics?.step == 20, "nothing reads while nobody shows it")
     }
 

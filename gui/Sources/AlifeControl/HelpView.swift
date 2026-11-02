@@ -4,6 +4,8 @@ import SwiftUI
 /// Which page of Help is open. The Help menu sets it before it opens the window, so *World Controls* opens on its page.
 @MainActor
 final class HelpModel: ObservableObject {
+    /// The one Help of the app (the Help menu and the pages that point to a topic share it).
+    static let shared = HelpModel()
     @Published var topic = HelpTopics.all[0].id
     func show(_ id: String) { topic = HelpTopics.topic(id) == nil ? HelpTopics.all[0].id : id }
 }

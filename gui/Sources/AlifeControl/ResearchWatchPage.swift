@@ -30,6 +30,7 @@ struct ResearchWatchPage: View {
     @ObservedObject var library: WorldLibrary
     @ObservedObject var reader: WorldReader
     @ObservedObject var setup: SetupModel
+    @Environment(\.openWindow) private var openWindow
     @AppStorage("world.dockSide") private var sideRaw = DockSide.right.rawValue
     @AppStorage("world.dockExtent") private var sideExtent = Double(DockLayout.defaultExtent)
     @AppStorage("world.dockExtentBottom") private var bottomExtent = Double(DockLayout.defaultBottomExtent)
@@ -141,6 +142,13 @@ struct ResearchWatchPage: View {
             Image(systemName: "eye").foregroundStyle(.secondary).accessibilityHidden(true)
             Text(WatchGuide.note(forShape: row?.shape)).font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            Button("What can I do here?") {
+                HelpModel.shared.show("watch")
+                openWindow(id: AppShell.helpWindowID)
+            }
+            .buttonStyle(.link)
+            .font(.caption)
+            .help("What a research world can and cannot do in Watch (Help)")
             Spacer(minLength: 8)
             if let row, row.shape != .flat {
                 let actions = WorldActionSet.make(row: row, controller: controller, play: shell.session.play, library: library, setup: setup)
