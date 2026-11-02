@@ -92,11 +92,21 @@ struct AppShellView: View {
             applyCatalog()
             library.refresh()
             library.startTimer()
+            // Welcome: a launch without a working engine opens on Worlds, where the card says what to do (a remembered page would hide it).
+            shell.welcome.refresh(controller)
+            if shell.welcome.step(controller) != nil, shell.page != .worlds, !shell.session.play.isActive { shell.select(.worlds) }
         }
         // The library follows the folder, what this app does with its worlds, and the planet form follows the library.
         .onChange(of: controller.runningRunName) { _, run in shell.runningRun = run }
-        .onChange(of: controller.repoReady) { _, _ in library.refresh() }
-        .onChange(of: controller.repoPath) { _, _ in library.refresh() }
+        .onChange(of: controller.repoReady) { _, _ in
+            library.refresh()
+            shell.welcome.refresh(controller)
+        }
+        .onChange(of: controller.repoPath) { _, _ in
+            library.refresh()
+            shell.welcome.refresh(controller)
+        }
+        .onChange(of: controller.setupTrouble) { _, _ in shell.welcome.refresh(controller) }
         .onChange(of: liveFacts) { _, facts in library.update(live: facts) }
         .onChange(of: library.state.catalog) { _, _ in applyCatalog() }
         .onChange(of: play.retiredWorlds) { _, _ in applyCatalog() }
@@ -241,14 +251,16 @@ struct AppShellView: View {
 
     private var engineStatus: some View {
         HStack(spacing: 6) {
-            Circle().fill(controller.repoReady ? Color.green : Color.orange).frame(width: 8, height: 8)
-            Text(controller.repoReady ? "Engine ready" : (controller.repoFolderExists ? "Engine not set up" : "alife folder not found"))
+            let broken: Bool = { if case .failed = shell.welcome.health { true } else { false } }()
+            Circle().fill(controller.repoReady && !broken ? Color.green : Color.orange).frame(width: 8, height: 8)
+            Text(broken ? "Engine does not start"
+                 : controller.repoReady ? "Engine ready" : (controller.repoFolderExists ? "Engine not set up" : "alife folder not found"))
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .help(controller.repoReady ? controller.repoPath : "Open Worlds or Settings to fix it.")
+        .help(controller.repoReady ? controller.repoPath : "Worlds says what to do.")
     }
 }
 

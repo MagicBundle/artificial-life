@@ -64,17 +64,22 @@ import Testing
         ("Run", "run-clock"),
         ("Close Panel", "close-switch-panel"),
         ("Dismiss", "dismiss"),
+        ("Set up again", "setup-engine-again"),
+        ("Copy log", "copy-log"),
+        ("Copy these lines", "copy-fetch-steps"),
+        ("Copy this line", "copy-uv-command"),
+        ("Open the uv page", "open-uv-page"),
     ]
 
     /// The page sources that are new in PR-B (the Lab page is `LabPage.swift`).
     static let sources = ["WorldsPage.swift", "ActivityPage.swift", "WatchPage.swift", "GeneralSettingsView.swift", "AppShellView.swift",
                           "AlifeApp.swift", "WorldCards.swift", "WorldLibrary.swift", "SetupPage.swift", "SetupModel.swift", "PipelineViews.swift",
                           "PipelineCoordinator.swift", "RunNumbersView.swift", "WorldSwitcher.swift", "DockTileController.swift", "DetailsPage.swift",
-                          "RunPanel.swift", "ResearchWatchPage.swift", "AutopilotSettings.swift", "HelpView.swift", "WorldActionSet.swift", "ControlCenterView.swift"]
+                          "RunPanel.swift", "ResearchWatchPage.swift", "AutopilotSettings.swift", "HelpView.swift", "WorldActionSet.swift", "ControlCenterView.swift", "WelcomeCard.swift"]
     static let coreSources = ["WorldsGuide.swift", "ActivityGuide.swift", "WatchCue.swift", "ShellPage.swift", "WorldLibraryState.swift",
                               "LibraryScanner.swift", "Recipe.swift", "PipelinePlan.swift", "SetupPlan.swift", "SetupSettings.swift",
                               "DirectoryGuard.swift", "SessionRules.swift", "WorldSwitch.swift", "AwayPause.swift", "DockProgress.swift", "WatchGuide.swift",
-                              "DetailsGuide.swift", "HelpTopics.swift"]
+                              "DetailsGuide.swift", "HelpTopics.swift", "WelcomeGuide.swift"]
 
     /// The words §2.5 retires or reserves, and the engine's own names, which a page of the new window does not show to the user.
     static let banned = ["Resume", "Checkpoint", "Fork", "Home", "spin-up", "Spin-up", "director.enabled", "Storm Worlds", "Source",

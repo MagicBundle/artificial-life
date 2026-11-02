@@ -33,10 +33,18 @@ struct WorldsPage: View {
                     if let failure = shell.startFailure { failureCard(failure) }
                     if let gone = library.vanished { goneNote(gone) }
                     // (while a world is being made the bar says so, and the card would offer to start another)
-                    if !setup.coordinator.isActive { nextStepCard }
+                    if !setup.coordinator.isActive {
+                        // Without a folder, an engine or its answer, Welcome is the whole card (PR-G).
+                        if let welcome = shell.welcome.step(controller) {
+                            WelcomeCard(model: shell.welcome, controller: controller, step: welcome)
+                        } else {
+                            nextStepCard
+                        }
+                    }
                     if play.phase == .starting, !setup.coordinator.isActive { startingBox }
                     // With no folder or no engine the card above says what to do, and that is all the page needs to say.
-                    if controller.repoReady, showsLibrary { librarySection }
+                    // (and while Welcome is asking about the engine, the list of worlds waits)
+                    if controller.repoReady, showsLibrary, shell.welcome.step(controller) == nil { librarySection }
                 }
                 .padding(24)
                 .frame(maxWidth: 860, alignment: .leading)
@@ -137,31 +145,9 @@ struct WorldsPage: View {
         let step = WorldsGuide.nextStep(facts)
         VStack(alignment: .leading, spacing: 10) {
             switch step {
-            case .chooseFolder(let problem):
+            case .chooseFolder, .setUpEngine:
+                // (Welcome above says it; this is only reached while a world is open and the folder is gone)
                 header("folder.badge.questionmark", "Where is alife?")
-                Text(problem).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                RepoFolderForm(controller: controller)
-                Text("You can change it later in Settings (Command-comma).").font(.caption).foregroundStyle(.secondary)
-            case .setUpEngine:
-                header("wrench.and.screwdriver", "Set up the engine")
-                Text("The folder \(controller.repoPath) has no engine yet (.venv/bin/alife is missing). Setting it up installs the packages with uv; it takes a minute or two and removes nothing.")
-                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                HStack {
-                    Button("Set up engine") { controller.setupEnvironment() }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(controller.job != nil)
-                    Button("Check again") { controller.refreshRepo() }
-                    if controller.job == .setup {
-                        ProgressView().controlSize(.small)
-                        Text("Setting up. Progress is in Activity.").font(.caption).foregroundStyle(.secondary)
-                        Button("Show Activity") { shell.select(.activity) }.buttonStyle(.link)
-                    } else if controller.job != nil {
-                        Text("Another job is running; wait for it or stop it in Activity.").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                RepoFolderForm(controller: controller)
-                Text("uv is needed. If Set up engine reports that it is missing, install it from docs.astral.sh/uv and press Check again.")
-                    .font(.caption).foregroundStyle(.secondary)
             case .makeFirstRun:
                 header("sparkles", "Start your first world")
                 Text("alife grows a small planet for you and then opens it. It takes about two minutes, and you see how far it has got all the time.")
