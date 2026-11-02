@@ -43,8 +43,8 @@ struct WorldsPage: View {
                     }
                     if play.phase == .starting, !setup.coordinator.isActive { startingBox }
                     // With no folder or no engine the card above says what to do, and that is all the page needs to say.
-                    // (and while Welcome is asking about the engine, the list of worlds waits)
-                    if controller.repoReady, showsLibrary, shell.welcome.step(controller) == nil { librarySection }
+                    // (the list stays under a failure card: a check that failed, or timed out, never hides the worlds)
+                    if controller.repoReady, showsLibrary { librarySection }
                 }
                 .padding(24)
                 .frame(maxWidth: 860, alignment: .leading)

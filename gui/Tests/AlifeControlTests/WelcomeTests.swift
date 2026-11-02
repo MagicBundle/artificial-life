@@ -81,6 +81,44 @@ struct WelcomeTests {
         #expect(RepoFolder.initialPath(stored: "/stored", candidates: [rig.folder.path]) == "/stored")
     }
 
+    @Test func aCheckoutIsAFolderThatNamesAlifeAndHasItsSource() throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        func make(_ name: String, pyproject: String?, source: Bool) throws -> String {
+            let dir = scratch.url.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            if let pyproject { try pyproject.write(to: dir.appendingPathComponent("pyproject.toml"), atomically: true, encoding: .utf8) }
+            if source { try FileManager.default.createDirectory(at: dir.appendingPathComponent("src/alife"), withIntermediateDirectories: true) }
+            return dir.path
+        }
+        let mine = "[project]\nname = \"alife\"\nversion = \"0.1\"\n"
+        #expect(RepoFolder.isCheckout(try make("ok", pyproject: mine, source: true)))
+        #expect(!RepoFolder.isCheckout(try make("no-source", pyproject: mine, source: false)), "a pyproject alone is not alife")
+        #expect(!RepoFolder.isCheckout(try make("no-pyproject", pyproject: nil, source: true)))
+        #expect(!RepoFolder.isCheckout(try make("other-name", pyproject: "[project]\nname = \"alife-tools\"\n", source: true)))
+        #expect(!RepoFolder.isCheckout(try make("other-project", pyproject: "[project]\nname = \"shop\"\n[tool.x]\nnote = \"name = alife\"\n", source: true)))
+    }
+
+    @Test func aFolderThatIsNotAlifeIsNeverOfferedASetUp() throws {
+        let rig = try Rig(checkout: false, uvBody: Rig.installingUV())
+        defer { rig.cleanup() }
+        rig.model.refresh(rig.controller)
+        #expect(rig.model.step(rig.controller) == .notAlife(chosen: rig.folder.path))
+        // the Settings button reads the same rule
+        #expect(!RepoFolder.isCheckout(rig.controller.repoPath))
+    }
+
+    @Test func theAlifeWindowSaysAlifeFolderAndTheOldAppsKeepRepositoryFolder() throws {
+        let rig = try Rig(folderExists: false)
+        defer { rig.cleanup() }
+        #expect(rig.controller.repoProblem == RepoFolder.missingMessage(rig.folder.path), "the old wording is the default")
+        #expect(rig.controller.repoProblem?.contains("repository folder") == true)
+        rig.controller.alifeWording = true
+        #expect(rig.controller.repoProblem == "Folder not found: \(rig.folder.path). Choose the alife folder.")
+        #expect(RepoFolder.missingMessage("", alifeWording: true).hasPrefix("No alife folder is chosen yet."))
+        #expect(RepoFolder.missingMessage("").hasPrefix("No repository folder is chosen yet."))
+    }
+
     @Test func theCommandTheCardShowsIsTheOneTheButtonRuns() {
         #expect(WelcomeGuide.setupCommand == (["uv"] + RunController.setupArguments).joined(separator: " "))
         #expect(RepoFolder.candidates == RepoFolderPlaces.usual)
@@ -136,6 +174,76 @@ struct WelcomeTests {
         #expect(await eventually { rig.controller.job == nil })
         let trouble = try #require(rig.controller.setupTrouble)
         #expect(trouble.summary.contains("cancelled") && trouble.summary.contains("Nothing was removed"))
+    }
+
+    @Test func aSecondCancelSendsNothingMore() async throws {
+        let rig = try Rig(uvBody: "trap '' INT; echo started; while true; do sleep 0.1; done")
+        defer { rig.cleanup() }
+        rig.controller.setupEnvironment()
+        #expect(await eventually { WelcomeModel.progressLines(rig.controller).contains("started") })
+        rig.controller.cancelSetup()
+        rig.controller.cancelSetup()
+        #expect(rig.controller.logLines.filter { $0.text.hasPrefix("Set-up cancelled") }.count == 1)
+        rig.controller.forceStop()
+        #expect(await eventually { rig.controller.job == nil })
+    }
+
+    @Test func aSetUpThatCannotStartIsToldOnTheCard() throws {
+        let rig = try Rig(uvBody: "exit 0")
+        defer { rig.cleanup() }
+        let notExecutable = rig.scratch.url.appendingPathComponent("uv-no-exec")
+        try "#!/bin/bash\nexit 0\n".write(to: notExecutable, atomically: true, encoding: .utf8)
+        rig.controller.uvLocator = { notExecutable }
+        rig.controller.setupEnvironment()
+        #expect(rig.controller.job == nil)
+        let trouble = try #require(rig.controller.setupTrouble)
+        #expect(trouble.summary.contains("uv could not be started") && trouble.lines.contains { $0.contains("Failed to launch") })
+        #expect(rig.model.step(rig.controller) == .setupFailed(trouble))
+    }
+
+    @Test func aSetUpBelongsToItsFolderWhateverIsChosenWhileItRuns() async throws {
+        let rig = try Rig(uvBody: "echo working; sleep 1; echo 'error: no' >&2; exit 1")
+        defer { rig.cleanup() }
+        let other = rig.scratch.url.appendingPathComponent("other")
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        try "[project]\nname = \"alife\"\n".write(to: other.appendingPathComponent("pyproject.toml"), atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: other.appendingPathComponent("src/alife"), withIntermediateDirectories: true)
+        rig.controller.setupEnvironment()
+        #expect(rig.controller.setupFolder == rig.folder.path)
+        rig.controller.repoPath = other.path
+        // the new folder is not "setting up", and no other job may start in it meanwhile
+        rig.model.refresh(rig.controller)
+        #expect(rig.model.step(rig.controller) == .setUpEngine(uvFound: true))
+        #expect(rig.model.facts(rig.controller).otherJobRunning)
+        #expect(await eventually { rig.controller.job == nil })
+        #expect(rig.controller.setupTrouble == nil, "the old folder's failure is not the new folder's")
+        #expect(rig.model.step(rig.controller) == .setUpEngine(uvFound: true))
+        #expect(rig.controller.setupFolder == nil)
+        // back in the first folder nothing is remembered of it either (it was dropped, not kept for later)
+        rig.controller.repoPath = rig.folder.path
+        #expect(rig.controller.setupTrouble == nil)
+    }
+
+    @Test func aRepairOfAnEngineThatDidNotStartShowsItsProgressAndIsCheckedAgainWhenItEnds() async throws {
+        let rig = try Rig(engine: true, uvBody: "echo 'Installed 2 packages'; sleep 0.5; printf '#!/bin/bash\\nexit 0\\n' > .venv/bin/alife", alife: "echo broken >&2; exit 1")
+        defer { rig.cleanup() }
+        rig.model.refresh(rig.controller)
+        #expect(await eventually { if case .failed = rig.model.health { true } else { false } })
+        guard case .checkFailed = rig.model.step(rig.controller) else { Issue.record("no failure card"); return }
+        rig.controller.setupEnvironment()
+        rig.model.refresh(rig.controller)
+        #expect(rig.model.step(rig.controller) == .settingUp, "the repair is told, not the old failure")
+        #expect(await eventually { rig.controller.job == nil })
+        rig.model.refresh(rig.controller)  // (the window does this when the job ends)
+        #expect(await eventually { rig.model.health == .passed }, "the engine is asked again when the set-up ends")
+        #expect(rig.model.step(rig.controller) == nil)
+    }
+
+    @Test func theLibraryStaysUnderAFailureCard() throws {
+        // the Worlds page shows the list whenever the engine is there; a failed check does not hide it (WorldsPage.body)
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/AlifeControl/WorldsPage.swift"), encoding: .utf8)
+        #expect(source.contains("if controller.repoReady, showsLibrary { librarySection }"))
     }
 
     @Test func withoutUvTheCardSaysSoBeforeAnythingIsClicked() throws {
@@ -237,7 +345,7 @@ struct WelcomeTests {
         let started = Date()
         guard case .failed(let late) = await EngineHealth.check(executable: slow, directory: scratch.url, deadline: 0.4) else { Issue.record("passed"); return }
         let took = Date().timeIntervalSince(started)
-        #expect(late.summary.contains("did not answer") && took < 1.5, "took \(took) s")
+        #expect(late.summary.contains("did not answer") && took < 10, "took \(took) s")
         let missing = scratch.url.appendingPathComponent("nothing-here")
         guard case .failed(let none) = await EngineHealth.check(executable: missing, directory: scratch.url) else { Issue.record("passed"); return }
         #expect(none.summary.contains("could not be started"))

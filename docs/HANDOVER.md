@@ -997,7 +997,9 @@ unit (§37.4).
   4. **uv missing** (rename `uv` away from every place in `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin` and `PATH`, or do this on a Mac without it): the
      card says so before anything is clicked, with `brew install uv`, *Copy this line*, *Open the uv page* and *Check again*; install it and press Check again.
   5. **A failing engine** (`chmod -x` or break `.venv/bin/alife`): "The engine does not start", with what it printed, *Set up again*, *Check again*, *Copy log*;
-     the sidebar says "Engine does not start" and the list of worlds waits.
+     the sidebar says "Engine does not start" and **the list of worlds stays under the card**. *Set up again* shows "Setting up the engine" with Cancel (not the
+     old failure), and when it ends the engine is asked again by itself: the card goes away if it now starts. A folder that is not alife (any other project)
+     says "This is not the alife folder" and offers no set-up.
   6. **A failed set-up** (disconnect the network on a cold folder): the last lines of uv, *Set up again*, *Copy log*.
   7. **Launch on another page**: with Welcome unsatisfied, a launch opens on Worlds even if Activity was the remembered page (not exercised in a scripted run).
   8. **Light and dark, 1,100 x 700**: pictures of every state are in `SP/app_g_shots` (session scratch) and drawn by `WelcomeViewTests`.

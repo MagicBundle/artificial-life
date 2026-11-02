@@ -5,9 +5,9 @@ import Testing
 
 /// Welcome (docs/APP.md §3.1, PR-G): which card a person without a working engine sees, the checklist, and the words.
 @Suite struct WelcomeGuideTests {
-    private func facts(folder: Bool = true, engine: Bool = true, uv: Bool = true, running: Bool = false, failure: WelcomeGuide.Trouble? = nil,
+    private func facts(folder: Bool = true, checkout: Bool = true, engine: Bool = true, uv: Bool = true, running: Bool = false, failure: WelcomeGuide.Trouble? = nil,
                        health: WelcomeGuide.Health = .passed, announced: Bool = false, path: String = "/Users/x/alife") -> WelcomeGuide.Facts {
-        WelcomeGuide.Facts(folderPath: path, folderExists: folder, engineReady: engine, uvFound: uv, setupRunning: running, setupFailure: failure,
+        WelcomeGuide.Facts(folderPath: path, folderExists: folder, isCheckout: checkout, engineReady: engine, uvFound: uv, setupRunning: running, setupFailure: failure,
                            health: health, announced: announced)
     }
 
@@ -23,6 +23,24 @@ import Testing
         // a set-up that runs again hides the old failure
         #expect(WelcomeGuide.step(facts(engine: false, running: true, failure: trouble)) == .settingUp)
         #expect(WelcomeGuide.step(facts(health: .failed(trouble))) == .checkFailed(trouble))
+    }
+
+    @Test func aFolderThatIsNotAlifeGetsNoSetUpAndAnEngineThatIsThereNeedsNoCheckout() {
+        #expect(WelcomeGuide.step(facts(checkout: false, engine: false)) == .notAlife(chosen: "/Users/x/alife"))
+        #expect(WelcomeGuide.explanation(.notAlife(chosen: "/x")).contains("does not look like alife"))
+        #expect(WelcomeGuide.checklist(facts(checkout: false, engine: false)).map(\.mark) == [.current, .waiting, .waiting], "the folder is not found yet")
+        #expect(WelcomeGuide.step(facts(checkout: false, engine: true)) == nil, "an engine that is there is not second-guessed")
+        // a missing folder is still the folder question
+        #expect(WelcomeGuide.step(facts(folder: false, checkout: false, engine: false)) == .chooseFolder(chosen: "/Users/x/alife"))
+    }
+
+    @Test func aSetUpThatRunsOrFailedIsToldBeforeTheEnginesAnswer() {
+        let trouble = WelcomeGuide.Trouble(summary: "s")
+        let old = WelcomeGuide.Health.failed(.init(summary: "old"))
+        #expect(WelcomeGuide.step(facts(running: true, health: old)) == .settingUp, "a repair shows its progress")
+        #expect(WelcomeGuide.step(facts(failure: trouble, health: old)) == .setupFailed(trouble))
+        #expect(WelcomeGuide.step(facts(running: true, health: .passed)) == .settingUp)
+        #expect(WelcomeGuide.checklist(facts(running: true, health: old)).map(\.mark) == [.done, .current, .waiting])
     }
 
     @Test func theCheckIsToldOnlyToSomeoneWhoWasAlreadyShownWelcome() {
@@ -46,7 +64,7 @@ import Testing
 
     @Test func everyCardHasATitleAndASentenceAndNoneUsesARetiredWord() {
         let trouble = WelcomeGuide.Trouble(summary: "It stopped.", lines: [])
-        let steps: [WelcomeGuide.Step] = [.chooseFolder(chosen: nil), .chooseFolder(chosen: "/x"), .setUpEngine(uvFound: true), .setUpEngine(uvFound: false),
+        let steps: [WelcomeGuide.Step] = [.chooseFolder(chosen: nil), .chooseFolder(chosen: "/x"), .notAlife(chosen: "/x"), .setUpEngine(uvFound: true), .setUpEngine(uvFound: false),
                                           .settingUp, .setupFailed(trouble), .checking, .checkFailed(trouble)]
         var texts = [WelcomeGuide.fetchExplanation, WelcomeGuide.fetchSteps()]
         for step in steps {
@@ -61,9 +79,11 @@ import Testing
 
     @Test func theInstructionsAreCopyableAndNameTheCommandTheButtonRuns() {
         let steps = WelcomeGuide.fetchSteps().split(separator: "\n").map(String.init)
-        #expect(steps == ["brew install git uv", "git clone <the address you were given> ~/artificial-life", "cd ~/artificial-life",
+        #expect(steps == ["brew install git uv", "git clone https://github.com/MagicBundle/artificial-life ~/artificial-life", "cd ~/artificial-life",
                           "uv sync --inexact --extra viewer --extra video"])
-        #expect(WelcomeGuide.fetchSteps(into: "~/alife").contains("git clone <the address you were given> ~/alife"))
+        #expect(!WelcomeGuide.fetchSteps().contains("<"), "nothing in the lines is shell syntax to be replaced")
+        #expect(WelcomeGuide.fetchExplanation.contains("access"))
+        #expect(WelcomeGuide.fetchSteps(into: "~/alife").contains("artificial-life ~/alife"))
         #expect(WelcomeGuide.setupCommand == "uv " + ["sync", "--inexact", "--extra", "viewer", "--extra", "video"].joined(separator: " "))
         #expect(URL(string: WelcomeGuide.uvPage)?.host == "docs.astral.sh")
     }

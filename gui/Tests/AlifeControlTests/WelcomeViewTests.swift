@@ -14,7 +14,7 @@ struct WelcomeViewTests {
     private var out: URL? { ProcessInfo.processInfo.environment["ALIFE_WELCOME_SHOTS_OUT"].map { URL(fileURLWithPath: $0) } }
 
     enum Situation: String, CaseIterable {
-        case noFolder, missingFolder, setUp, noUV, settingUp, setupFailed, checking, checkFailed
+        case noFolder, missingFolder, notAlife, setUp, noUV, settingUp, setupFailed, checking, checkFailed
     }
 
     /// The whole window on the Worlds page, over a scratch folder in `situation`.
@@ -25,7 +25,7 @@ struct WelcomeViewTests {
         case .setupFailed: "echo 'Resolved 41 packages in 12ms'; echo 'error: Failed to download `mlx==0.30.1`' >&2; echo '  Caused by: error sending request for url (https://files.pythonhosted.org/mlx)' >&2; exit 2"
         default: "exit 0"
         }
-        let rig = try WelcomeTests.Rig(engine: situation == .checking || situation == .checkFailed, checkout: situation != .noFolder,
+        let rig = try WelcomeTests.Rig(engine: situation == .checking || situation == .checkFailed, checkout: situation != .noFolder && situation != .notAlife,
                                        uvBody: uvBody, folderExists: situation != .noFolder && situation != .missingFolder)
         defer { rig.cleanup() }
         let controller = situation == .noFolder

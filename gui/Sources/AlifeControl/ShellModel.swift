@@ -62,6 +62,8 @@ final class ShellModel: ObservableObject {
     var buildEnded: ((String, String) -> Void)?
 
     let session: WorldSession
+    /// The window chose its first page for Welcome (once per launch).
+    var welcomeShownAtLaunch = false
     /// Welcome: `uv`, the engine's answer and whether the card was shown. The Worlds page reads it; its changes are this object's.
     let welcome: WelcomeModel
     private let defaults: UserDefaults

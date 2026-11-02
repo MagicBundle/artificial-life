@@ -93,8 +93,13 @@ struct AppShellView: View {
             library.refresh()
             library.startTimer()
             // Welcome: a launch without a working engine opens on Worlds, where the card says what to do (a remembered page would hide it).
+            controller.alifeWording = true
             shell.welcome.refresh(controller)
-            if shell.welcome.step(controller) != nil, shell.page != .worlds, !shell.session.play.isActive { shell.select(.worlds) }
+            // (once per launch: not again when the window comes back from the Dock, and not over a person who went to fix the folder)
+            if !shell.welcomeShownAtLaunch {
+                shell.welcomeShownAtLaunch = true
+                if shell.welcome.step(controller) != nil, shell.page != .worlds, !shell.session.play.isActive { shell.select(.worlds) }
+            }
         }
         // The library follows the folder, what this app does with its worlds, and the planet form follows the library.
         .onChange(of: controller.runningRunName) { _, run in shell.runningRun = run }
@@ -107,6 +112,7 @@ struct AppShellView: View {
             shell.welcome.refresh(controller)
         }
         .onChange(of: controller.setupTrouble) { _, _ in shell.welcome.refresh(controller) }
+        .onChange(of: controller.job) { _, _ in shell.welcome.refresh(controller) }
         .onChange(of: liveFacts) { _, facts in library.update(live: facts) }
         .onChange(of: library.state.catalog) { _, _ in applyCatalog() }
         .onChange(of: play.retiredWorlds) { _, _ in applyCatalog() }

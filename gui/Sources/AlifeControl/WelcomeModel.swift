@@ -90,15 +90,20 @@ final class WelcomeModel: ObservableObject {
     var open: (URL) -> Void = { NSWorkspace.shared.open($0) }
     private var checkedPath: String?
     private var running: Task<Void, Never>?
+    private var setupWasRunning = false
+
+    /// A set-up runs in the chosen folder (one that runs in another folder is not this folder's).
+    private func setupRuns(_ controller: RunController) -> Bool { controller.job == .setup && controller.setupFolder == controller.repoPath }
 
     func facts(_ controller: RunController) -> WelcomeGuide.Facts {
         WelcomeGuide.Facts(
             folderPath: controller.repoPath.trimmingCharacters(in: .whitespacesAndNewlines),
             folderExists: controller.repoFolderExists,
+            isCheckout: controller.repoFolderExists && RepoFolder.isCheckout(controller.repoPath),
             engineReady: controller.repoReady,
             uvFound: uvFound,
-            setupRunning: controller.job == .setup,
-            otherJobRunning: controller.job != nil && controller.job != .setup,
+            setupRunning: setupRuns(controller),
+            otherJobRunning: controller.job != nil && !setupRuns(controller),
             setupFailure: controller.setupTrouble,
             health: health,
             announced: announced)
@@ -112,12 +117,16 @@ final class WelcomeModel: ObservableObject {
         let found = controller.uvLocator() != nil
         if found != uvFound { uvFound = found }
         let path = controller.repoURL.path
+        // A set-up that ended (it may have mended an engine that did not start): the engine is asked again.
+        let setupRunning = controller.job == .setup
+        if setupWasRunning, !setupRunning { checkedPath = nil }
+        setupWasRunning = setupRunning
         if !controller.repoReady {
             running?.cancel()
             running = nil
             checkedPath = nil
             if health != .unchecked { health = .unchecked }
-        } else if checkedPath != path {
+        } else if checkedPath != path, !setupRunning {
             startCheck(controller, path: path)
         }
         if !announced, step(controller) != nil { announced = true }

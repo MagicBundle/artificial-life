@@ -36,7 +36,7 @@ struct WelcomeCard: View {
 
     private var symbol: String {
         switch step {
-        case .chooseFolder: "folder.badge.questionmark"
+        case .chooseFolder, .notAlife: "folder.badge.questionmark"
         case .setUpEngine(let uvFound): uvFound ? "wrench.and.screwdriver" : "shippingbox"
         case .settingUp, .checking: "hourglass"
         case .setupFailed, .checkFailed: "exclamationmark.triangle.fill"
@@ -95,7 +95,7 @@ struct WelcomeCard: View {
 
     @ViewBuilder private var actions: some View {
         switch step {
-        case .chooseFolder:
+        case .chooseFolder, .notAlife:
             RepoFolderForm(controller: controller)
             HStack {
                 Button("Check again") { model.checkAgain(controller) }

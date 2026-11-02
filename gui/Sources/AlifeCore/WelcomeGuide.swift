@@ -28,6 +28,8 @@ package enum WelcomeGuide {
         /// The folder field as typed (trimmed); empty when nothing is chosen.
         package var folderPath: String
         package var folderExists: Bool
+        /// The folder looks like a checkout of alife (`RepoFolder.isCheckout`): set-up is offered only in one.
+        package var isCheckout: Bool
         package var engineReady: Bool
         package var uvFound: Bool
         /// `uv sync` runs now.
@@ -40,10 +42,11 @@ package enum WelcomeGuide {
         /// already in order (a launch with a working folder never shows Welcome).
         package var announced: Bool
 
-        package init(folderPath: String, folderExists: Bool, engineReady: Bool, uvFound: Bool = true, setupRunning: Bool = false,
+        package init(folderPath: String, folderExists: Bool, isCheckout: Bool = true, engineReady: Bool, uvFound: Bool = true, setupRunning: Bool = false,
                      otherJobRunning: Bool = false, setupFailure: Trouble? = nil, health: Health = .unchecked, announced: Bool = false) {
             self.folderPath = folderPath
             self.folderExists = folderExists
+            self.isCheckout = isCheckout
             self.engineReady = engineReady
             self.uvFound = uvFound
             self.setupRunning = setupRunning
@@ -57,6 +60,8 @@ package enum WelcomeGuide {
     /// What the card shows; nil when the engine is there and answers (the Worlds page goes on without it).
     package enum Step: Equatable, Sendable {
         case chooseFolder(chosen: String?)
+        /// The folder exists and has no engine, and it does not look like alife: nothing is installed in it.
+        case notAlife(chosen: String)
         case setUpEngine(uvFound: Bool)
         case settingUp
         case setupFailed(Trouble)
@@ -66,9 +71,12 @@ package enum WelcomeGuide {
 
     package static func step(_ facts: Facts) -> Step? {
         if !facts.folderExists { return .chooseFolder(chosen: facts.folderPath.isEmpty ? nil : facts.folderPath) }
+        // (a set-up that runs, or that failed, is told before the engine's answer: a repair of an engine that does not start shows its progress,
+        // and the old failure is not shown beside it)
+        if facts.setupRunning { return .settingUp }
+        if let failure = facts.setupFailure { return .setupFailed(failure) }
         if !facts.engineReady {
-            if facts.setupRunning { return .settingUp }
-            if let failure = facts.setupFailure { return .setupFailed(failure) }
+            if !facts.isCheckout { return .notAlife(chosen: facts.folderPath) }
             return .setUpEngine(uvFound: facts.uvFound)
         }
         switch facts.health {
@@ -90,17 +98,16 @@ package enum WelcomeGuide {
 
     /// The three things, in order, each done, current or waiting for the one before.
     package static func checklist(_ facts: Facts) -> [Item] {
-        let folder = Item(
-            title: "Find the alife folder",
-            detail: facts.folderExists ? facts.folderPath : nil,
-            mark: facts.folderExists ? .done : .current)
+        let found = facts.folderExists && (facts.isCheckout || facts.engineReady)
+        let folder = Item(title: "Find the alife folder", detail: found ? facts.folderPath : nil, mark: found ? .done : .current)
         let engine: Item = {
-            if !facts.folderExists { return Item(title: "Set up the engine", detail: nil, mark: .waiting) }
+            if !found { return Item(title: "Set up the engine", detail: nil, mark: .waiting) }
+            if facts.setupRunning { return Item(title: "Set up the engine", detail: "Installing now", mark: .current) }
             if facts.engineReady { return Item(title: "Set up the engine", detail: "Installed in the folder", mark: .done) }
             return Item(title: "Set up the engine", detail: facts.setupRunning ? "Installing now" : nil, mark: .current)
         }()
         let check: Item = {
-            guard facts.engineReady else { return Item(title: "Check that it starts", detail: nil, mark: .waiting) }
+            guard facts.engineReady, !facts.setupRunning else { return Item(title: "Check that it starts", detail: nil, mark: .waiting) }
             if facts.health == .passed { return Item(title: "Check that it starts", detail: "It answers", mark: .done) }
             return Item(title: "Check that it starts", detail: nil, mark: .current)
         }()
@@ -112,6 +119,7 @@ package enum WelcomeGuide {
     package static func title(_ step: Step) -> String {
         switch step {
         case .chooseFolder: "Where is alife?"
+        case .notAlife: "This is not the alife folder"
         case .setUpEngine(let uvFound): uvFound ? "Set up the engine" : "uv is needed first"
         case .settingUp: "Setting up the engine"
         case .setupFailed: "The engine could not be set up"
@@ -129,6 +137,9 @@ package enum WelcomeGuide {
             }
             return "alife did not find its folder in the usual places (\(RepoFolderPlaces.usual.joined(separator: ", "))). "
                 + "Choose the folder that holds alife (the one you cloned)."
+        case .notAlife(let chosen):
+            return "\(chosen) does not look like alife (it has no pyproject.toml of alife and no src/alife), so nothing is installed in it. "
+                + "Choose the folder you cloned."
         case .setUpEngine(let uvFound):
             return uvFound
                 ? "This folder has no engine yet (.venv/bin/alife is missing). Setting it up installs the packages with uv. It takes a minute or two, "
@@ -158,7 +169,7 @@ package enum WelcomeGuide {
     package static func fetchSteps(into folder: String = "~/artificial-life") -> String {
         """
         brew install git uv
-        git clone <the address you were given> \(folder)
+        git clone https://github.com/MagicBundle/artificial-life \(folder)
         cd \(folder)
         \(setupCommand)
         """
@@ -166,7 +177,7 @@ package enum WelcomeGuide {
 
     package static let fetchExplanation =
         "alife is a folder you fetch once. In Terminal, run these four lines (skip what you already have), then choose the folder here. "
-        + "Replace the part in angle brackets with the address you were given."
+        + "If git asks for a login or says it cannot find the project, you need access to it first: ask whoever gave you alife."
 
     /// What the card's Copy button puts on the clipboard for a failure: the sentence and the last lines.
     package static func report(for failure: Trouble) -> String {
@@ -188,9 +199,14 @@ package enum WelcomeGuide {
             summary = "The set-up was cancelled. Nothing was removed; press Set up again to carry on."
         } else {
             summary = "uv stopped with exit code \(status), so the engine is not complete. The last lines it printed are below; "
-                + "a network that is down is the usual cause."
+                + "a network that is down is a common cause."
         }
         return Trouble(summary: summary, lines: tail(lines))
+    }
+
+    /// For a set-up that could not even start (uv is not executable, say).
+    package static func setupFailure(summary: String, lines: [String]) -> Trouble {
+        Trouble(summary: summary, lines: tail(lines))
     }
 
     /// The sentence for `alife --help` that did not answer well.

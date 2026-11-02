@@ -49,9 +49,11 @@ struct GeneralSettingsView: View {
                               systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                         HStack {
                             Button("Set up engine") { controller.setupEnvironment() }
-                                .disabled(!controller.repoFolderExists || controller.job != nil)
+                                .disabled(!controller.repoFolderExists || !RepoFolder.isCheckout(controller.repoPath) || controller.job != nil)
                             if !controller.repoFolderExists {
                                 Text("It needs an existing folder.").font(.caption).foregroundStyle(.secondary)
+                            } else if !RepoFolder.isCheckout(controller.repoPath) {
+                                Text("This folder does not look like alife.").font(.caption).foregroundStyle(.secondary)
                             } else if controller.job == .setup {
                                 Text("Setting up. Progress is in Activity.").font(.caption).foregroundStyle(.secondary)
                             } else if controller.job != nil {
