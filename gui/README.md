@@ -1,8 +1,10 @@
-# Alife Control
+# alife
 
-A small native macOS app (SwiftUI) for starting, stopping, resuming and forking runs of the `alife` engine, with
-live status and a log. It launches `<repo>/.venv/bin/alife` directly as a subprocess; it has no third-party
-dependencies and no Python code of its own.
+The native macOS app (SwiftUI) for the `alife` engine: **one window** with a sidebar of *Worlds* (choose, make or continue a world),
+*Watch* (the live picture), *Activity* (what runs, and the log) and *New world* (one set-up flow: Create, Branch, Keep growing, Make
+planet; every research lever is under its *Advanced*). Details opens from a world's row. It launches `<repo>/.venv/bin/alife` directly as
+a subprocess; it has no third-party dependencies and no Python code of its own. The design is `docs/APP.md`; the research Lab and
+Storm Worlds, the two apps it replaced (PR-H), are gone.
 
 ## Requirements
 
@@ -10,29 +12,28 @@ dependencies and no Python code of its own.
 - A Swift 6 toolchain: Xcode 16 or later, or the command line tools that ship with it
   (`xcode-select --install`). The package builds in Swift 6 language mode (strict concurrency).
 - The engine environment in the repository: `uv sync --extra viewer --extra video`
-  (the app can run `uv sync --inexact --extra viewer --extra video` for you with **Set up environment** if
+  (the app sets it up for you from **Welcome** on the Worlds page with `uv sync --inexact --extra viewer --extra video` if
   `.venv/bin/alife` is missing; `--inexact` installs what is missing and removes nothing, where a plain `uv sync`
   is exact and uninstalls every package outside the requested extras, such as the `analysis` extra; it looks for `uv`
-  in `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin` and `PATH`)
+  in `/opt/homebrew/bin`, `/opt/local/bin`, `/usr/local/bin`, `~/.local/bin`, `~/.cargo/bin` and `PATH`)
 
 ## Build and run
 
 ```bash
 cd gui
-swift run            # debug build, opens the window
+swift run            # debug build, opens the window (unbundled: its own preferences)
 swift build -c release   # optional; binary in .build/release/AlifeControl
 ```
 
 Or open it in Xcode: `cd gui && open Package.swift`, select the `AlifeControl` scheme and run.
 
-On first launch the app looks for the repository in `~/artificial-life` and then `~/alife` (the first that holds
-`.venv/bin/alife`); with none of them it names no folder and says so: "No repository folder is chosen yet. Choose the folder
-that holds .venv/bin/alife". The choice is remembered. A remembered folder is never replaced behind your back, whether or not
-it exists (a deleted git worktree, a drive that is not connected): the Repository box (and Storm Worlds' folder page) says
-"Folder not found: <path>. Choose the repository folder.", offers a button "Use <detected folder> instead" when one of the two
-usual places holds the engine, and "Choose..." for any other; Start and **Set up environment** log that message instead of
-launching anything. A remembered folder that exists is kept. While Start is grey a line beside it says why (the folder, the
-missing engine, or the first thing wrong with the settings); **Command-R** starts the run.
+On first launch the app looks for the alife folder in `~/artificial-life` and then `~/alife` (the first that holds
+`.venv/bin/alife`); with none of them it names no folder and says so ("No alife folder is chosen yet. Choose the folder
+that holds .venv/bin/alife"). The choice is remembered. A remembered folder is never replaced behind your back, whether or not
+it exists (a deleted git worktree, a drive that is not connected): the folder field (Settings, and Welcome) says
+"Folder not found: <path>. Choose the alife folder.", offers a button "Use <detected folder> instead" when one of the two
+usual places holds the engine, and "Choose..." for any other; Create logs that message instead of launching anything. A remembered
+folder that exists is kept. While Create is grey a line beside it says why; **Command-R** creates the world.
 
 **Quitting.** With a research run going, Quit (Command-Q, the Dock, closing the last window) first asks "Stop 'X' and quit?";
 Cancel changes nothing. Stop and Quit sends the run its one SIGINT and waits for it to write its save point, as it does for a
@@ -40,96 +41,70 @@ played world, with a small panel ("Saving ...", the elapsed time, what is waited
 at the limit); after 10 s it offers **Quit now without saving** (also Option-Command-Q). The wait is at most 120 s for a run
 and 40 s for a played world, an environment setup or a check (these get the SIGINT too, and no question); then what is left is
 ended with SIGTERM before the app quits, so no run is left behind, and a run loses the steps since its last save point. At the
-end of a session (log out, restart, shut down) nothing is asked: the same stop and wait, within the limit. Both apps do this.
-With a sheet open (Storm Worlds' launcher, the Lab's preset comparison) AppKit ignores `terminate`, so the app's own Quit command
+end of a session (log out, restart, shut down) nothing is asked: the same stop and wait, within the limit.
+With a sheet open (the preset comparison) AppKit ignores `terminate`, so the app's own Quit command
 and quit Apple-event handler end the sheets first (after the question, so that Cancel leaves them).
 
-## alife Preview (one window)
+## The window
 
-The one-app program (`docs/APP.md`) merges the two apps into one window, **alife**: a sidebar of *Worlds* (choose or make a world),
-*Watch* (the live picture), *Activity* (what runs, and the log) and *Lab* (the research form, for now). Until the old apps are retired
-it is built as a **preview** that installs beside them and changes neither (own bundle id `io.github.magicbundle.alife.preview`, own
-preferences; it reads the shared folder setting and the old apps' preferences and never writes them; the dock and display settings of Storm Worlds, or the Lab, are copied in once on the first launch):
-
-```bash
-gui/scripts/make-app.sh --app alife --preview --install   # "alife Preview.app" in /Applications
-gui/scripts/make-app.sh --app alife --preview --sign - --out DIR   # ad-hoc, bundle only
-swift run AlifeControl --launch-mode alife               # unbundled (keeps its own preferences, no migration)
-```
-
-`--world RUN` works (`open -a "alife Preview" --args --world RUN` on a fresh launch). The world's keys (Space, `.`, `g`, ...) act only on
+`--world RUN` works (`open -a alife --args --world RUN` on a fresh launch; `swift run AlifeControl --world RUN` unbundled). `--launch-mode X`
+of the old apps is accepted and ignored. The world's keys (Space, `.`, `g`, ...) act only on the Watch page (Cmd-1 Worlds, Cmd-2 Watch,
+Cmd-3 Activity, Cmd-4 New world, Cmd-5 Details). `ALIFE_PREFS_SUITE=name` (with `open --env ALIFE_PREFS_SUITE=name -a alife`, or the executable run
+directly) reads and writes only that domain for the folder, and skips the migration; other preferences (the page, the dock, the display) still go to the app's
+own domain, so a trial of a bundle with the real id should use another id (`ALIFE_BUNDLE_ID` of `make-app.sh`).
 
 The Worlds page is the library (PR-C): a search, the filters All / Played / Research / Unfinished and a card for each world with its state in plain words (Saved, Live, Paused, Growing, Saving, In use elsewhere, Unfinished); the sidebar lists the first eight worlds under the pages, a research world nested under the played world made from it. The folder is scanned off the main thread and cached per directory (200 worlds: about 5 ms to look again), and links in `runs/` to a drive that is not connected are counted, not listed. *Make planet...* on a card opens the planet form in a sheet; an unfinished build says why it stopped and can be made again under a new name. Nothing is deleted. Details: `docs/DESIGN.md` 33.4.12.
-the Watch page (Cmd-1 Worlds, Cmd-2 Watch, Cmd-3 Activity, Cmd-4 Lab). `ALIFE_PREFS_SUITE=name` (with `open --env ALIFE_PREFS_SUITE=name -a "alife Preview"`, or the executable run directly) reads and writes only that domain for the folder, and skips the migration. The Lab and Storm Worlds are unchanged.
-
 Safety rules (PR-E): closing the window while a run is going asks Keep Running / Stop and Quit / Cancel (remembered if you tick the box; Settings > While you are away); Keep Running leaves the app alive with no window, the Dock icon shows the run's progress and carries "Done" or "Failed" at its end, and a Dock click brings the window back. Leaving the Watch page pauses a running world and coming back runs it again (*Pick up where I left off*); a world you paused, or that stopped at a chapter or an alert, is never run by coming back. Playing another world, or making a planet, while one is live asks first (a sheet), saves the open world, then goes on. Details: `docs/DESIGN.md` 33.4.14, `docs/APP.md` 7.4.
 
 Watch and Details (PR-F): **Watch** has two forms. A played world is the live picture with the control center; a research world is an *observer* picture (`alife stream`: it follows a run while this app grows it and re-simulates the latest save point otherwise) with the **Run panel** beside it (Numbers, Autopilot, Log) on the same dock side. The toolbar says *Live* or *Observer*. The keys are two tables, never merged (the letters `f`, `s`, `o`, `r` mean different things), shown by **Help > World Controls**; the **World** menu lists the table of the form in view, with each key in the item's title. Observer keys: Space pause/run, `.` step or newest, `-` `+` steps per frame, `c` colour, `f` field slice, `[` `]` field layer, `s` snapshot, `o` orbit/fly, `r` reset view, `1` `2` `3` agents, bonds, frame. **Details** (a world's row in the sidebar, the info icon on a card, Command-5) says what a world is, how it is doing (its numbers and autopilot journal, growing or not) and what can be done with it. **Settings > Autopilot** holds the local model's address and name; **Help** has seven short topics. Details: `docs/DESIGN.md` 33.4.15, `docs/APP.md` 7.5.
 
 ## Install as an app
 
-Two apps are built from the one executable:
-
-- **Storm Worlds** (`Storm Worlds.app`): the game, for playing without the terminal. It opens straight into the World window
-  (on its launcher), and the research Lab is one menu item away, **Window > Lab** (Command-2; **Window > World** is Command-1).
-- **AlifeControl** (`AlifeControl.app`): the research Lab, the app this package always was.
-
 ```bash
-gui/scripts/make-app.sh --app both --install   # both, signed, copied to /Applications (recommended)
-gui/scripts/make-app.sh --install              # the Lab only: the default for --app is lab, as before
-gui/scripts/make-app.sh --app storm --install  # the game only
-gui/scripts/make-app.sh --app both             # bundles only: gui/.build/AlifeControl.app and "gui/.build/Storm Worlds.app"
+gui/scripts/make-app.sh --install              # alife.app, signed, copied to /Applications
+gui/scripts/make-app.sh                        # the bundle only: gui/.build/alife.app
+gui/scripts/make-app.sh --sign - --out DIR     # ad-hoc, bundle only
 gui/scripts/make-app.sh --help
 ```
 
-The script builds the release binary once, generates one icon per app (`scripts/make-icon.swift`: the cells for the Lab, a
-storm cloud and a lightning bolt over a small world for Storm Worlds; both are drawn by the script, no image is checked in),
-writes each `Info.plist` and signs each bundle with the hardened runtime. The bundle IDs are `io.github.magicbundle.alifecontrol`
-(overridable with `BUNDLE_ID`) and `io.github.magicbundle.stormworlds` (`STORM_BUNDLE_ID`); the version comes from `VERSION`
-and the build number from the commit count, the same for both. The signing identity is, in order: `--sign "<identity>"`, the
+The script builds the release binary, generates the icon (`scripts/make-icon.swift`: a small world with a few cells and stars, drawn by
+the script; no image is checked in), writes the `Info.plist` and signs the bundle with the hardened runtime. The bundle id is
+`io.github.magicbundle.alife` (`ALIFE_BUNDLE_ID` overrides it, for a trial that must have preferences of its own); the version comes
+from `VERSION` (default 0.2.0) and the build number from the commit count. The signing identity is, in order: `--sign "<identity>"`, the
 first "Developer ID Application" identity in the keychain, the first "Apple Development" identity, then ad-hoc, so with a Developer
-ID installed nothing needs to be named. `--sign -` is ad-hoc and never touches the keychain. `--out DIR` writes the bundles
+ID installed nothing needs to be named. `--sign -` is ad-hoc and never touches the keychain. `--out DIR` writes the bundle
 somewhere other than `gui/.build`, and `--install-dir DIR` installs somewhere else (not the `--out` directory: the script refuses) (for example `~/Applications`). The script
 never uses sudo and refuses, before building, to install over a copy that is running (a run or a world may be active), so quit
-the apps first. Re-run it after any GUI change to refresh the installed copies; the first run with a Developer ID can ask for
-keychain access to the signing key once ("Always Allow" stops the prompt).
+the app first. Re-run it after any GUI change to refresh the installed copy; the first run with a Developer ID can ask for
+keychain access to the signing key once ("Always Allow" stops the prompt). `--app` and `--preview` of earlier versions are refused.
 
-Signing with a Developer ID makes the apps run on this Mac and carry the hardened runtime. **Notarization is not done.** It
+**The old apps.** `AlifeControl.app`, `Storm Worlds.app` and `alife Preview.app` are retired. `--install` touches none of them: if
+they are in the install directory it prints their paths and how to move them to the Trash (Finder, or an `osascript` line per app). It is
+safe to leave them; they work as before and share the alife folder setting, but two of them running one world is the engine's
+`play.lock` business.
+
+Signing with a Developer ID makes the app run on this Mac and carry the hardened runtime. **Notarization is not done.** It
 is what lets an app downloaded from the web open on another Mac without Gatekeeper's warning: it needs `xcrun notarytool submit`
-for a zip of each bundle (a timestamped signature, `--timestamp` instead of `--timestamp=none`, and an app-specific password or
+for a zip of the bundle (a timestamped signature, `--timestamp` instead of `--timestamp=none`, and an app-specific password or
 API key kept in a keychain profile) and `xcrun stapler staple`; the commands are sketched at the end of `make-app.sh`. An
-in-app updater and a notarized standalone Storm Worlds (with the engine bundled, so that it needs no repository) are later steps.
+in-app updater and a notarized standalone app (with the engine bundled, so that it needs no repository) are later steps.
 The App Store would also need the engine embedded and sandboxed.
 
-Both apps are only front ends: they use the repository's `.venv` at the configured repo path (found in `~/artificial-life` or `~/alife` when none is set).
-**The two share that setting**, so it is chosen once, in either: the bundles keep it in the shared preferences domain
-`io.github.magicbundle.alife` (`RepoPathStore`). The first time an app starts it takes the folder it already had, from its own
-preferences and then from the Lab's (`io.github.magicbundle.alifecontrol`), and copies it into the shared domain, leaving the
-original where it was. A folder chosen afterwards is written to the shared domain and to the saving app's own preferences: in the Lab
-that keeps an older Lab build in agreement, but a folder chosen in Storm Worlds is not seen by an older Lab build (the current
-Lab reads the shared domain first). `ALIFE_PREFS_SUITE=name` makes an app read and write that domain instead (it only reads its
-own preferences), for trying a build without touching yours. `swift run` is not a bundle and keeps its own preferences, separate from the installed apps. Other
-preferences (the dock side, window sizes) belong to each app.
+The app is only a front end: it uses the repository's `.venv` at the configured alife folder (found in `~/artificial-life` or `~/alife` when none is set).
+The folder is kept in the app's own preferences, the domain `io.github.magicbundle.alife` that the Lab and Storm Worlds shared (`RepoPathStore`), so a
+folder they stored is already there. On the first launch of the bundle `PreferenceMigration` also reads the two old apps' domains
+(`io.github.magicbundle.alifecontrol`, `io.github.magicbundle.stormworlds`), only where the app has no value: the folder, and the 14 dock and
+display settings of the World window; it never writes them, never deletes, and runs once (`migrated.v1`). Window frames are not migrated. The
+bundle cannot open its own id as a suite, so its own domain is `UserDefaults.standard`. `swift run` is not a bundle and keeps its own
+preferences, separate from the installed app.
 
-Storm Worlds asks for the folder itself, without the Lab: while there is no usable one (no folder, or no `.venv/bin/alife` in
-it) and no world is open, its window shows the folder field with **Choose...** and **Re-check** instead of the launcher (and a
-button for the Lab's **Set up environment** when the folder exists but has no engine); **Settings** (Command-comma) has the
-same field. `--world RUN` works in both apps (`swift run AlifeControl --world RUN`, or `open -a "Storm Worlds" --args --world RUN`, which works only if the app is not already running).
-`swift run AlifeControl --launch-mode world` runs the game's window arrangement unbundled (a bundle's `AlifeLaunchMode` key,
-`world` or `lab`, says which app it is; no key is the Lab).
-
-Closing the World window of Storm Worlds ends the game and the app, as for any single-window game (the world saves its
-checkpoint first), unless the Lab is open: then the app stays, and **Window > World** reopens the game. Closing the Lab
-there takes only the 3D viewer with it, and does not stop a run started in it: that keeps going until you stop it in the Lab
-(**Window > Lab** shows it again) or quit. The Window menu lists the game and the Lab twice, once with the key equivalent. The Lab window is not reopened at the next launch.
-
-`scripts/check-apps.sh` is the smoke test of the bundles: it builds both ad-hoc into a new directory (`--out DIR`), and checks
-each `Info.plist` key, the executable, the icon and `codesign --verify`. It installs and launches nothing. It needs macOS and a
+`scripts/check-apps.sh` is the smoke test of the bundle: it builds alife.app ad-hoc into a new directory (`--out DIR`), checks
+each `Info.plist` key, the executable, the icon and `codesign --verify`, and that `--app` and `--preview` are refused. It installs and launches nothing. It needs macOS and a
 Swift toolchain and takes minutes, so it is a manual step, also run by `tests/test_app_bundles.py` when `ALIFE_APP_SMOKE=1`.
 
 ## Choosing a preset
 
-In *New run* mode a card under the **Preset** picker shows the selected preset: a snapshot beside a plain-language description (what
+On the *New world* page (Create, with *Start from* a preset) a card under the picker shows the selected preset: a snapshot beside a plain-language description (what
 the world is, what it is good for, what it costs), its shape and size and how many organisms it holds (read from the preset file), and
 captions: the run the picture is from (seed, step, the organisms alive in the whole world and, when the picture is a window of a large
 flat world, how many of them are in it), what the picture shows (the whole world, the whole box, or one side of a planet), the speed at
@@ -300,16 +275,16 @@ so the GPU is idle while nothing changes. The shaders are
 compiled when the first stream is shown (an idle window creates no Metal device); if that fails, the window shows the
 compiler's message.
 
-## The World window
+## Playing a world
 
-The game's window (DESIGN §33.4, `docs/GAMES.md` §9 G3a). **Open World** in the Lab (or `swift run AlifeControl --world RUN`) opens
+The Watch page of a played world (DESIGN §33.4, `docs/GAMES.md` §9 G3a). *Play* on a world (or `--world RUN`) opens
 it; it plays a world with `alife play` over the stream records of DESIGN §33.1 and shows the planet map and the organisms in a
 raw-Metal view with a control center docked to one side (left, right or bottom; the toolbar and the divider change it).
 
-- **Worlds.** The launcher lists the worlds under `runs/` (a directory with `play.json`; a planet build that was cancelled or
+- **Worlds.** The Worlds page lists the worlds under `runs/` (a directory with `play.json`; a planet build that was cancelled or
   failed is listed, collapsed, as an unfinished build: it carries the `play_build` mark `alife play` writes, a research run never
-  does), resumes one at 1x, or makes a planet from a checkpoint: the storm overlay with a weather spin-up, `director.enabled`, the
-  houses mode. The sheet scrolls its form; the Resume list and *Make planet and play* (the default action: Return) stay in view. Closing the window stops the process with `quit` (it saves a checkpoint), then SIGINT after 30 s.
+  does), resumes one at 1x, or makes a planet from a save point (New world > Make planet): the storm overlay with a weather spin-up, `director.enabled`, the
+  houses mode. Closing the window stops the process with `quit` (it saves a checkpoint), then SIGINT after 30 s.
 - **Clock strip** (always at the top of the dock): Pause, 0.25x, 0.5x, 1x, 2x, Max, `+1` and (paused) `+25`, the step, the achieved
   rate ("0.98x of 1x"), "late N" and "saving...".
 - **Map.** Drag grabs the map (the point under the pointer stays under it), right or Option drag turns the heading and tilts the view, the mouse wheel and a pinch zoom about the pointer, and a trackpad's two-finger scroll pans (View > Scroll zooms restores zoom, and is how a Magic Mouse, whose scroll pans like a trackpad's, zooms; a flick's momentum never zooms and one gesture zooms by at most a factor of 4). One world is ever drawn: the view may not reach past 0.49 L from its centre at any heading, so the farthest zoom shows the width of one world. **Tilting** goes to edge-on: the tilt handle at the right edge (a vertical track, straight down at the top), Option-drag or right drag, or the standard views **Top, Oblique (45 degrees), Low (70) and Side (edge-on from the middle of the height: the life from 0 to H at a glance)** on the keys `t` `o` `l` `s`, the strip over the controls and View > View angle, each an animated ease; the **3D** button goes from straight down to the angle you used last (never steeper than Low) and back; at edge-on the eye is at the middle of the height, with faint rows for the floor, the middle and the ceiling; the **compass is a dial** (drag it to turn the view, click for north up, double click for Home) and the readout above it says "Tilt 45° · heading 270°". A tilted view is held nearer (the eye stays over the world) and a **haze** hides the far floor, with the sky above the horizon, so the edge of the world is never a line; the zoom comes back when the tilt is relaxed. The floor in the haze or above the horizon has no coordinates under the pointer and takes no click. Fly-tos (the Cast, the Chronicle, a double click on an empty point) are arcs that zoom out and in; **Home** (`h`, `r`, the toolbar's house, View > Home view) flies to the **globe overview** (the whole planet at 80% of the height, facing the populated side; zoom out past the whole map and the flat map rolls into the planet, zoom in and it rolls back; View > Globe overview turns it off for the flat map, and a 2D world is always flat). On the globe the same controls tilt and turn around the planet, a flick keeps a short inertia, **View > Keep north up** turns the globe back north up after a drag, **View > Spin** turns it slowly when nothing happens, the minimap shows the visible cap, and the selected organism stands on a pin. The flat overview, facing the populated side, is the Home of a 2D world and of a world with the globe off, `n` turns north up. **Where you are** (always over the map): a readout at the top left (the hemisphere, longitude, latitude and how high the eye is over the floor in world units, and what is under the pointer: the floor, or the organism's own place and height), a column of controls down the right edge above the minimap (the strip of views, the angle readout, the compass, the 3D button, the tilt handle and `+` / `-` buttons), a **minimap** of the whole world at the bottom right (north up, the equator through the middle, the wrap in y on its top and bottom edges, the view's footprint in yellow with the rest dimmed, storms as dots, the organisms as a haze; a click flies there, a drag moves the view live, a double click dives, the house glyph is Home, the wheel zooms the map; `i` or View > Minimap turns it off) and a **scale bar** in world units at the bottom left, true on the plane it names ("on the floor"), with the organism as a segment on the same scale (and "drawn x3" where the size policy draws it larger or smaller than life). A one-line hint of the controls shows once (View > Controls... shows it again). Organisms are drawn at every level as symbols
@@ -359,11 +334,9 @@ Testing), **`AlifeCoreTests`** for the library and **`AlifeControlTests`** for t
   `CastPolicy.swift`, `Inspector.swift` and `WorldChronicle.swift` (grouping, filters, toasts)
 
 `Sources/AlifeControl/`:
-- `AlifeControlApp.swift`: the entry point (`AlifeEntry` picks the Lab or Storm Worlds from `LaunchMode`), the app delegate (ignores
-  SIGPIPE) and the Lab app's scenes: the main window, the 3D Viewer window and the World window
-- `StormWorldsApp.swift`: Storm Worlds' scenes (the World window first, the Lab, the viewer, Settings), its Window-menu items, the
-  repository-folder gate and the Settings view
-- `ContentView.swift`: the UI
+- `AlifeApp.swift`: the entry point (`AlifeEntry`: the preference migration, then the app) and the scenes: the window, the set-up window, Help and Settings, with the menus
+- `AppDelegate.swift`: the app delegate (ignores SIGPIPE; the quit gate, the close question, the reopen)
+- `AppShellView.swift` and the pages (`WorldsPage`, `WatchPage`, `ResearchWatchPage`, `ActivityPage`, `SetupPage`, `DetailsPage`), `RepoFolderForm.swift`, `LogView.swift`
 - `RunController.swift`: subprocess management (main-actor isolated; pipe output arrives through ordered
   AsyncStreams), log streaming, timer, keep-awake
 - `DirectorPanel.swift`: the Director settings box and the Interventions / Journal views
@@ -375,17 +348,17 @@ Testing), **`AlifeCoreTests`** for the library and **`AlifeControlTests`** for t
 - `Renderer.swift`: the Metal drawing (buffers, pipelines, offscreen rendering for snapshots), the PNG writer, and
   `DrawGate`, the ring of buffer sets and the two semaphores that keep a draw from waiting for the GPU
 - `ViewerMTKView.swift`, `ViewerModel.swift`, `Viewer3DView.swift`: the mouse and keys, the display options and
-  snapshot, and the window's controls
+  snapshot, and the observer picture's colour picker and Metal view
 - `ViewerSupport.swift`: the pure parts (keys, speed, pointer-to-camera mapping, the stream's arguments)
 - `WindowCloseObserver.swift`: runs an action when a window closes (or when the last of a group of windows does)
 - The World window: `EngineSession.swift` (the process plumbing shared with `StreamController`), `PlayController.swift` (the
-  `alife play` process), `WorldView.swift`, `ControlCenterView.swift`, `WorldPanels.swift` (Cast, Chronicle, inspector, toasts),
+  `alife play` process), `WorldView.swift` (the dock layout), `ControlCenterView.swift`, `WorldPanels.swift` (Cast, Chronicle, inspector, toasts),
   `WorldModel.swift` and `WorldModel+Interaction.swift` (camera, selection, follow, keys), `WorldMetalView.swift` and
-  `WorldOverlayView.swift` (the view and its `Canvas` overlay), `WorldLauncherView.swift`, `AppTermination.swift`
+  `WorldOverlayView.swift` (the view and its `Canvas` overlay), `WorldLauncherModel.swift`, `AppTermination.swift`
 
 Also `scripts/make-app.sh`, `scripts/make-icon.swift` and `scripts/check-apps.sh` (the app bundles, signing, install, the generated icons
-and the smoke test). `AlifeCore/LaunchMode.swift` (the mode and what each does with its windows) and `AlifeCore/RepoPathStore.swift` (the
-shared repository-folder setting) are the pure parts of the two-app arrangement.
+and the smoke test). `AlifeCore/AppPlan.swift` (the app's names), `AlifeCore/RepoPathStore.swift` (the
+alife-folder setting) and `AlifeCore/PreferenceMigration.swift` (the old apps' settings) are the pure parts of the bundle.
 
 ## Tests
 
@@ -424,7 +397,7 @@ after any change to `Shaders.swift` or `Renderer.swift`.
 
 ## The sphere world
 
-A world with `world.geometry = "sphere"` (presets `tiny3s`, `mini3s`, `64k3s`) is drawn as a planet by Storm Worlds and by the Lab's 3D viewer (DESIGN §46.8): drag turns
+A world with `world.geometry = "sphere"` (presets `tiny3s`, `mini3s`, `64k3s`) is drawn as a planet by the Watch page, played or observed (DESIGN §46.8): drag turns
 the planet, a two-finger scroll pans (View > Scroll zooms swaps it with the zoom), a pinch or a wheel zooms, T O L S tilt, H goes home, I shows the minimap (an
-equal-area Mollweide chart). The Lab's levers for it are in the 3D levers box. The GPU tests are opt-in:
+equal-area Mollweide chart). Its levers are under New world > Advanced. The GPU tests are opt-in:
 `ALIFE_GPU_TESTS=1 swift test --filter "GPUSphereTests|GPUPlanetWindowTests"` (pictures under `$ALIFE_GPU_TESTS_OUT`; `$ALIFE_SPHERE_STREAM` names a protocol 2 play stream to draw).

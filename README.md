@@ -39,6 +39,10 @@ uv run alife render runs/first --steps 200 --every 2 --out runs/first/media/movi
 uv run alife view --preset dev            # live viewer (needs the `viewer` extra)
 ```
 
+## The app (macOS)
+
+`gui/` is a native SwiftUI app, **alife**: one window with your worlds, a live picture of the one you watch, what runs, and one page that makes a new world (a planet, a flat world, a branch of an existing one) with every research setting behind *Advanced*. It runs the CLI above for you and replaces the two earlier apps (the research Lab and Storm Worlds). `gui/scripts/make-app.sh --install` builds and installs `alife.app`; see `gui/README.md`, and `docs/APP.md` for the design.
+
 ## CLI overview
 
 | command | what it does |
