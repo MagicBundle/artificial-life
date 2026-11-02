@@ -57,6 +57,10 @@ while [[ $# -gt 0 ]]; do
     *) usage >&2; die "unknown argument: $1" ;;
   esac
 done
+# Refused first, before anything (an output directory included) is made.
+if [[ $INSTALL -eq 1 && "$ALIFE_BUNDLE_ID" != "$DEFAULT_BUNDLE_ID" ]]; then
+  die "--install needs the default bundle id ($DEFAULT_BUNDLE_ID); ALIFE_BUNDLE_ID=$ALIFE_BUNDLE_ID is for a trial bundle only."
+fi
 INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
 
 BUILD_DIR="${OUT_DIR:-$GUI_DIR/.build}"
@@ -75,8 +79,6 @@ is_running() {  # $1 = bundle ID, $2 = path of the installed executable
 
 # Fail early, before building, if the install cannot proceed.
 if [[ $INSTALL -eq 1 ]]; then
-  # A trial id is for a bundle that is looked at and thrown away: installed, it would replace the real alife.app with another id.
-  [[ "$ALIFE_BUNDLE_ID" == "$DEFAULT_BUNDLE_ID" ]] || die "--install needs the default bundle id ($DEFAULT_BUNDLE_ID); ALIFE_BUNDLE_ID=$ALIFE_BUNDLE_ID is for a trial bundle only."
   if [[ ! -d "$INSTALL_DIR" || ! -w "$INSTALL_DIR" ]]; then
     echo "error: $INSTALL_DIR is not writable (this script never uses sudo)." >&2
     echo "Try: $0 --install --install-dir ~/Applications" >&2
