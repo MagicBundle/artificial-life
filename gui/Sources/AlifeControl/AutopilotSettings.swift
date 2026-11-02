@@ -74,7 +74,7 @@ struct AutopilotSettingsView: View {
     var body: some View {
         Form {
             Section("Language model") {
-                Text("The autopilot can ask a language model that runs on your Mac (for example in LM Studio) to choose its moves. Nothing is sent anywhere else. Each new world starts from this address and name; a world can change them under Advanced > Autopilot.")
+                Text("The autopilot can ask a language model that runs on your Mac (for example in LM Studio) to choose its moves. Nothing is sent anywhere else. Each new world starts from this address and name; a world can change them under Advanced > Autopilot. A New world form that is already open keeps what it has: close it and open it again to pick these up.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 TextField("Address", text: $settings.url, prompt: Text(DirectorDefaults.url))
                     .textFieldStyle(.roundedBorder)

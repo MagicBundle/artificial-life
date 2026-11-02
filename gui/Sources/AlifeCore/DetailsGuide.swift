@@ -27,7 +27,8 @@ package enum DetailsGuide {
             out.append("A world you play. It runs live in Watch, and you can use powers, read its chronicle and its reports.")
             if let from = row.madeFrom {
                 // (a planet made from the world that was grown for it says "its grown world", not "the grown world of" itself)
-                let source = NameFolding.same(from.name, row.name + SetupPlan.growSuffix) ? "its grown world" : SetupIntent.shown(from.name)
+                let source = NameFolding.same(from.name, row.name + SetupPlan.growSuffix)
+                    ? "its grown world (the research world that was grown to make it)" : SetupIntent.shown(from.name)
                 out.append("It was made from \(source)" + (from.step.map { " at step \(WorldsGuide.grouped($0))." } ?? "."))
             }
         case .research:
@@ -93,12 +94,41 @@ package enum DetailsGuide {
         }
     }
 
+    // MARK: Check world
+
+    /// Why *Check world* (`alife inspect --check`) cannot run now; nil when it can. One rule for the card's menu and for Details, for either kind
+    /// of world (docs/APP.md §5.2: ok when saved, and for an unfinished build; it waits for a world that is open or growing, and for one that
+    /// is still being saved; another process writing it is a warning, not a refusal, because the check only reads).
+    package static func reasonToCheck(_ row: LibraryRow, engineReady: Bool, jobGoing: Bool) -> String? {
+        if !engineReady { return "Set up the engine first." }
+        switch row.state {
+        case .live, .paused, .starting: return "Wait until it is saved: it is open now."
+        case .growing: return "Wait until it stops growing."
+        case .saving: return "Saving…"
+        case .saved, .inUseElsewhere, .unfinished: break
+        }
+        if !row.hasSavePoint { return "No save point to check yet." }
+        if jobGoing { return "Another job is running. Wait for it to finish." }
+        return nil
+    }
+
+    // MARK: Words for single numbers
+
+    /// "OK", or how far the energy books are off, in units of energy (the engine counts energy in whole units).
+    package static func energyCheck(_ error: Double?) -> String {
+        guard let error else { return "-" }
+        return error == 0 ? "OK" : "off by \(WorldsGuide.grouped(Int(error.rounded()))) units of energy"
+    }
+
+    /// The mean height in the world's own units (the world is that high, floor to surface).
+    package static func height(_ mean: Double?) -> String { mean.map { String(format: "%.2f units", $0) } ?? "-" }
+
     // MARK: Where the numbers come from
 
     /// A line under the numbers: when they are from and why they may be missing.
     package static func numbersCaption(hasMetrics: Bool, growing: Bool) -> String {
-        if hasMetrics { return growing ? "Read from the world's metrics file every two seconds while it grows." : "The world's last row of numbers." }
-        return growing ? "No numbers yet. The first appear a few seconds after the engine starts." : "This world has no numbers file."
+        if hasMetrics { return growing ? WatchGuide.stepsDifferNote : "The world's last row of numbers." }
+        return growing ? "No numbers yet. The first appear a few seconds after the engine starts." : "No numbers were recorded for this world."
     }
 }
 

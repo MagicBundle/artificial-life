@@ -47,8 +47,13 @@ final class ShellModel: ObservableObject {
     @Published private(set) var watchForm: WatchForm?
     /// This app grows a research run now, and the shape of the world Watch observes: what the World menu needs without watching the controllers
     /// (they publish with every frame). Set by the window.
-    @Published var runGoing = false
+    @Published var runningRun: String?
     @Published private(set) var observedShape: WorldShape?
+    /// This app grows the world Watch observes (the World menu's Stop is for that run and no other).
+    var observedGrowing: Bool {
+        guard let run = runningRun, let observed else { return false }
+        return NameFolding.same(run, observed)
+    }
     /// The shape of a world by name, from the library (set by the window).
     var shapeOf: (String) -> WorldShape? = { _ in nil }
 
@@ -103,8 +108,10 @@ final class ShellModel: ObservableObject {
 
     /// The played world's keys, drawing and attention follow the Watch page *and* the played form: with a research world in view the world
     /// model has nothing on the page.
-    private func refreshWatchActive() {
-        let form = Self.form(of: session.play.phase, observed: observed)
+    /// `phase` is the phase being announced: the play controller's `@Published` phase publishes *before* it changes, so the property still holds
+    /// the old one when the observer runs (the form lagged a phase behind until another publish came).
+    private func refreshWatchActive(phase: PlayPhase? = nil) {
+        let form = Self.form(of: phase ?? session.play.phase, observed: observed)
         if form != watchForm { watchForm = form }
         session.model.setWatchActive(page == .watch && form != .research)
     }
@@ -122,11 +129,12 @@ final class ShellModel: ObservableObject {
     /// A research run was started from the set-up page: Watch follows it, and the person who pressed the button is taken there. Nothing moves
     /// a person who went on to another page, and a world that is open stays what Watch shows.
     func researchStarted(_ world: String) {
-        guard !session.play.isActive else { return }
+        // A run started while a world is open: the world stays what Watch shows (one picture at a time, R1), and the run is what Watch shows when
+        // the world is closed. It is never lost: Details, Activity and the bar name it.
         observed = world
         observedShape = shapeOf(world)
         refreshWatchActive()
-        if page == .setup { select(.watch) }
+        if page == .setup, !session.play.isActive { select(.watch) }
     }
 
     private func phaseChanged(to phase: PlayPhase) {
@@ -136,7 +144,7 @@ final class ShellModel: ObservableObject {
         if open != worldIsOpen { worldIsOpen = open }
         // A world that opens is what Watch shows; the research world seen before is not brought back behind it.
         if phase == .starting { observed = nil }
-        refreshWatchActive()
+        refreshWatchActive(phase: phase)
         switch phase {
         case .starting:
             startFailure = nil

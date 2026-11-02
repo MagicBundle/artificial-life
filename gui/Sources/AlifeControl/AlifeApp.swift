@@ -151,13 +151,14 @@ struct WorldCommands: Commands {
             }
             if form == .research, let world = shell.observed {
                 Divider()
-                Button("Stop") { controller.stop() }
+                // Stop ends the run that Watch shows, from Watch only: a key that ended a run from another page would be a trap.
+                Button("Stop \(DetailsGuide.title(world))") { controller.stop() }
                     .keyboardShortcut(".", modifiers: .command)
-                    .disabled(!Self.canStop(runGoing: shell.runGoing))
+                    .disabled(!Self.canStop(page: shell.page, form: form, observedGrowing: shell.observedGrowing))
                 Button("Check World") { check(world) }
-                    .disabled(!Self.canCheck(runGoing: shell.runGoing, repoReady: controller.repoReady))
+                    .disabled(!enabled || !Self.canCheck(runGoing: shell.runningRun != nil, repoReady: controller.repoReady))
                 Button("Open Classic 2D Viewer") { controller.openClassicViewer(world: world) }
-                    .disabled(!Self.canOpenClassic(shape: shell.observedShape, repoReady: controller.repoReady))
+                    .disabled(!enabled || !Self.canOpenClassic(shape: shell.observedShape, repoReady: controller.repoReady))
             }
         }
     }
@@ -176,7 +177,7 @@ struct WorldCommands: Commands {
     }
 
     /// Stop ends a run this app grows; Check World needs the engine and no job; the classic viewer shows flat worlds only.
-    static func canStop(runGoing: Bool) -> Bool { runGoing }
+    static func canStop(page: ShellPage, form: WatchForm?, observedGrowing: Bool) -> Bool { page == .watch && form == .research && observedGrowing }
     static func canCheck(runGoing: Bool, repoReady: Bool) -> Bool { !runGoing && repoReady }
     static func canOpenClassic(shape: WorldShape?, repoReady: Bool) -> Bool { shape == .flat && repoReady }
 

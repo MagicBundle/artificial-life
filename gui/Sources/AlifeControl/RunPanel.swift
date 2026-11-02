@@ -119,10 +119,17 @@ struct RunPanel: View {
         switch tab {
         case .numbers:
             ScrollView {
-                RunNumbersView(
-                    metrics: reader.reading?.metrics,
-                    clock: growing ? RunNumbersView.Clock(elapsed: controller.elapsed, remaining: controller.remaining) : nil,
-                    emptyText: DetailsGuide.numbersCaption(hasMetrics: false, growing: growing), titled: false)
+                VStack(alignment: .leading, spacing: 6) {
+                    RunNumbersView(
+                        metrics: reader.reading?.metrics,
+                        clock: growing ? RunNumbersView.Clock(elapsed: controller.elapsed, remaining: controller.remaining) : nil,
+                        showsStep: false, showsSpeed: growing,
+                        emptyText: DetailsGuide.numbersCaption(hasMetrics: false, growing: growing), titled: false)
+                    if reader.reading?.metrics != nil {
+                        Text(DetailsGuide.numbersCaption(hasMetrics: true, growing: growing)).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 6)
+                    }
+                }
             }
         case .autopilot:
             DirectorSnapshotView(

@@ -16,7 +16,7 @@ package enum WatchForm: String, Equatable, Sendable {
     package var chipMeaning: String {
         switch self {
         case .played: return "The world is running and you can play it: powers, chronicle, reports."
-        case .research: return "You are looking at a research world from outside. It cannot be played here."
+        case .research: return WatchGuide.observerMeaning
         }
     }
 }
@@ -80,6 +80,11 @@ package enum WatchGuide {
         package var hasSavePoint: Bool
         /// This app's run grows that world now.
         package var growing: Bool
+        /// Another process writes it (a run started from a terminal): `In use elsewhere`. It is followed like a run of this app.
+        package var elsewhere = false
+        /// What the player chose with the Source picker for this world (follow or re-simulate); nil while they have not. A choice is never
+        /// overridden by the rules below.
+        package var chosen: Bool?
         /// The run the stream is attached to, nil with none; and whether it follows the run (else it re-simulates).
         package var streamWorld: String?
         package var follows = false
@@ -87,11 +92,18 @@ package enum WatchGuide {
         /// Starts in a row that failed, for this world.
         package var failures = 0
 
-        package init(world: String, hasSavePoint: Bool, growing: Bool, streamWorld: String? = nil, follows: Bool = false,
-                     stream: Stream = .idle, failures: Int = 0) {
+        /// A run is going in it (here or in another process): the picture follows it.
+        package var active: Bool { growing || elsewhere }
+        /// What a start follows: the player's choice, else the run that is going.
+        package var startsFollowing: Bool { chosen ?? active }
+
+        package init(world: String, hasSavePoint: Bool, growing: Bool, elsewhere: Bool = false, chosen: Bool? = nil, streamWorld: String? = nil,
+                     follows: Bool = false, stream: Stream = .idle, failures: Int = 0) {
             self.world = world
             self.hasSavePoint = hasSavePoint
             self.growing = growing
+            self.elsewhere = elsewhere
+            self.chosen = chosen
             self.streamWorld = streamWorld
             self.follows = follows
             self.stream = stream
@@ -114,22 +126,22 @@ package enum WatchGuide {
     /// the player.
     package static func observerStep(_ f: ObserverFacts) -> ObserverStep {
         if let other = f.streamWorld, other != f.world, f.stream != .idle {
-            return f.hasSavePoint ? .start(follow: f.growing) : .wait(waitingText)
+            return f.hasSavePoint ? .start(follow: f.startsFollowing) : .wait(waitingText)
         }
         switch f.stream {
         case .starting:
             return .none
         case .live:
-            // The followed run ended: show what it left, by re-simulating.
-            return f.follows && !f.growing ? .restart(follow: false) : .none
+            // The followed run ended: show what it left, by re-simulating. A player who chose to follow is not argued with.
+            return f.follows && !f.active && f.chosen == nil ? .restart(follow: false) : .none
         case .ended:
-            if f.follows { return f.growing ? .start(follow: true) : .start(follow: false) }
+            if f.follows { return .start(follow: f.chosen ?? f.active) }
             return .none
         case .failed:
             guard f.failures < startRetries else { return .none }
-            return f.hasSavePoint ? .start(follow: f.growing) : .wait(waitingText)
+            return f.hasSavePoint ? .start(follow: f.startsFollowing) : .wait(waitingText)
         case .idle:
-            return f.hasSavePoint ? .start(follow: f.growing) : .wait(waitingText)
+            return f.hasSavePoint ? .start(follow: f.startsFollowing) : .wait(waitingText)
         }
     }
 
@@ -146,11 +158,21 @@ package enum WatchGuide {
         }
     }
 
+    // MARK: Plain words for the page
+
+    /// What the chip and the Source picker say (their tooltips): the page explains its own words.
+    package static let observerMeaning = "An observer view shows a research world from outside. It cannot be played as it is, so there are no powers in it; to play it, make a planet from it."
+    package static let followMeaning = "Follow shows the run's newest save point each time the world writes one, so a world with an autopilot is shown as the autopilot changed it. It needs a run that is going."
+    package static let reSimulateMeaning = "Re-simulate steps the latest save point again in a separate process, as fast as you choose. It leaves the autopilot out, so a world that had one drifts from what really happened after the autopilot's first move."
+    /// Said in the picture's status line when Slower or Faster is used while following.
+    package static let stepsPerFrameNote = "Steps per frame apply while re-simulating. A followed run has its own pace."
+    /// Said under the numbers of a world that grows: why the picture's step is not the numbers' step.
+    package static let stepsDifferNote = "The numbers are read every two seconds. The picture follows the newest save point, so its step can be ahead of or behind them."
+
     /// The toolbar's second line for the research form: how the picture is made.
-    package static func observerLine(follows: Bool?, step: UInt64?) -> String {
+    package static func observerLine(follows: Bool?) -> String {
         var line = "Observer"
         if let follows { line += follows ? " · following the run" : " · re-simulating" }
-        if let step { line += " · step " + WorldsGuide.grouped(Int(step)) }
         return line
     }
 }

@@ -59,6 +59,35 @@ import Testing
         #expect(research == ["Pause or Run", "Step", "Slower", "Faster", "Next colour", "Field slice", "Snapshot", "Orbit or Fly", "Reset view"])
     }
 
+    /// The hint is what a person reads in the menu and in Help; it must name keys the row maps, and name the row's first key.
+    @Test func theHintOfARowNamesOnlyKeysItMapsAndItsFirstKey() {
+        func keys(ofToken token: String) -> [String] {
+            switch token {
+            case "Space": return [" "]
+            case "Esc": return ["\u{1B}"]
+            case "Return": return ["\r", "\u{3}"]
+            default: return [token.lowercased()]
+            }
+        }
+        for form in [WatchForm.played, .research] {
+            for entry in ControlTables.entries(form) {
+                let tokens = entry.hint.split(whereSeparator: { $0 == "," || $0 == " " }).map(String.init).filter { $0 != "or" }
+                #expect(!tokens.isEmpty, "\(form) '\(entry.title)'")
+                for token in tokens {
+                    #expect(keys(ofToken: token).contains { entry.keys.contains($0) }, "\(form) '\(entry.title)': the hint names '\(token)', which the row does not map (\(entry.keys))")
+                }
+                // every key of the row is named, but the shifted twins (the same key with Shift held: "=" for "+", "_" for "-"), the second field-slice
+                // key ("4"), the second snapshot key ("p") and the other Return: those are aliases the hint does not repeat
+                let aliases: Set<String> = ["=", "_", "4", "p", "\u{3}"]
+                for key in entry.keys where !aliases.contains(key) {
+                    #expect(tokens.contains { keys(ofToken: $0).contains(key) }, "\(form) '\(entry.title)': the hint \"\(entry.hint)\" leaves out '\(key)'")
+                }
+                let first = entry.keys[0]
+                #expect(tokens.contains { keys(ofToken: $0).contains(first) }, "\(form) '\(entry.title)': the hint \"\(entry.hint)\" leaves out the row's first key '\(first)'")
+            }
+        }
+    }
+
     @Test func theTwoTablesConflictOnFSOAndRSoTheyAreNeverMerged() {
         // the same letter, two meanings: this is why each form has its own table and the menu follows the form in view
         #expect(WorldKeys.action(for: "f") == .followSelection && ViewerKeys.action(for: "f") == .toggleFields)

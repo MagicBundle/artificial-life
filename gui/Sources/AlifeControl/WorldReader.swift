@@ -83,7 +83,7 @@ final class WorldReader: ObservableObject {
         madeWith = nil
         serial += 1  // (a read of the world before is on its way: it is not applied)
         applied = serial
-        if shown > 0, name != nil { readSoon() }
+        if shown > 0, name != nil { if inFlight { again = true } else { readSoon() } }
     }
 
     /// Someone shows the readings: they are kept up to date until the matching `release`.
@@ -109,8 +109,20 @@ final class WorldReader: ObservableObject {
 
     var isPolling: Bool { task != nil }
 
-    /// Reads the files again, whenever someone shows them.
-    func readSoon() { Task { await readNow() } }
+    /// Reads the files again, whenever someone shows them. One read of a world at a time: a volume that is slow or gone (an archive drive that was
+    /// unmounted) must not collect a new read every two seconds, each holding a thread of the pool.
+    func readSoon() {
+        guard !inFlight else { return }
+        inFlight = true
+        Task {
+            await readNow()
+            inFlight = false
+            if again { again = false; readSoon() }
+        }
+    }
+    private var inFlight = false
+    /// Asked for while a read was in flight (the world changed): one more follows it.
+    private var again = false
 
     /// One read, applied if it is still the newest and the world is still this one. The tests await it.
     func readNow() async {

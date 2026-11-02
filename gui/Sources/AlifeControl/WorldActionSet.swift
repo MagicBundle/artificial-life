@@ -29,14 +29,7 @@ struct WorldActionSet {
         var playReason: String?
         if row.kind == .played { playReason = playable.flatMap { WorldsGuide.reason(forPlaying: $0, in: facts) } ?? (playable == nil ? "Not playable yet" : nil) }
         let ruleFacts = setup.ruleFacts
-        var checkReason: String?
-        if !controller.repoReady {
-            checkReason = "Set up the engine first."
-        } else if row.state != .saved {
-            checkReason = row.state == .growing ? "Wait until it stops growing." : "Only a world that is saved and not in use can be checked."
-        } else if controller.job != nil {
-            checkReason = "Another job is running. Wait for it to finish."
-        }
+        let checkReason = DetailsGuide.reasonToCheck(row, engineReady: controller.repoReady, jobGoing: controller.job != nil)
         return WorldActionSet(
             play: CardAction(label: "Play", reason: playReason),
             watch: CardAction(label: "Watch", reason: WatchGuide.reasonToWatch(row, openWorld: facts.openWorld, runGrowing: controller.runningRunName)),

@@ -25,7 +25,10 @@ struct ResearchWatchPage: View {
     let world: String
     @ObservedObject var shell: ShellModel
     @ObservedObject var observer: ObserverSession
-    @ObservedObject var stream: StreamController
+    /// **Not observed**: the stream publishes with every frame, and a page that observed it would redo its whole body each time. The page reads
+    /// `pageState` (what the body needs of the stream, published only when it changes); the status line and the colour pop-up observe it themselves.
+    let stream: StreamController
+    @ObservedObject private var pageState: DistinctState<ViewerPageInputs>
     @ObservedObject var controller: RunController
     @ObservedObject var library: WorldLibrary
     @ObservedObject var reader: WorldReader
@@ -41,7 +44,21 @@ struct ResearchWatchPage: View {
     private var row: LibraryRow? { library.state.row(named: world) }
     private var growing: Bool { observer.isGrowing(world) }
 
+    init(world: String, shell: ShellModel, observer: ObserverSession, stream: StreamController, controller: RunController, library: WorldLibrary,
+         reader: WorldReader, setup: SetupModel) {
+        self.world = world
+        self.shell = shell
+        self.observer = observer
+        self.stream = stream
+        pageState = observer.viewer.page
+        self.controller = controller
+        self.library = library
+        self.reader = reader
+        self.setup = setup
+    }
+
     var body: some View {
+        let _ = ViewProbe.note("ResearchWatchPage", for: stream)
         GeometryReader { geometry in
             let frames = DockLayout.frames(in: geometry.size, side: side, extent: extent, collapsed: collapsed)
             ZStack(alignment: .topLeading) {
@@ -59,7 +76,7 @@ struct ResearchWatchPage: View {
             .coordinateSpace(name: "world")
         }
         .navigationTitle(DetailsGuide.title(world))
-        .navigationSubtitle(WatchGuide.observerLine(follows: stream.source.map(\.follow), step: stream.frame?.step))
+        .navigationSubtitle(WatchGuide.observerLine(follows: pageState.value.hasSource ? pageState.value.follows : nil))
         .toolbar {
             ToolbarItemGroup {
                 Picker("Dock", selection: $sideRaw) {
@@ -113,7 +130,7 @@ struct ResearchWatchPage: View {
 
     private var canvasArea: some View {
         VStack(spacing: 0) {
-            ViewerCompactControls(stream: stream, model: observer.viewer, canFollow: growing) { observer.choose(follow: $0) }
+            ViewerCompactControls(stream: stream, model: observer.viewer) { observer.choose(follow: $0) }
             Divider()
             noteStrip
             ZStack {
@@ -127,21 +144,28 @@ struct ResearchWatchPage: View {
     }
 
     @ViewBuilder private var picture: some View {
-        if stream.phase == .idle {
+        if pageState.value.phase == .idle {
             EmptyView()
-        } else if stream.header?.isSphere == true {
-            SphereLabMetalView(stream: stream, model: observer.viewer)
+        } else if pageState.value.isSphere {
+            SphereLabMetalView(stream: stream, model: observer.viewer, keysFollowWindow: true)
         } else {
-            ViewerMetalView(stream: stream, model: observer.viewer)
+            ViewerMetalView(stream: stream, model: observer.viewer, keysFollowWindow: true)
         }
     }
 
-    /// One line on what this is, and the way to a planet.
+    /// One line on what this is, and the way to a planet; when the planet cannot be made now, why, in words beside the grey button.
     private var noteStrip: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "eye").foregroundStyle(.secondary).accessibilityHidden(true)
-            Text(WatchGuide.note(forShape: row?.shape)).font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        let actions = row.map { WorldActionSet.make(row: $0, controller: controller, play: shell.session.play, library: library, setup: setup) }
+        let reason = row?.shape == .flat ? nil : actions?.makePlanet.reason
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "eye").foregroundStyle(.secondary).accessibilityHidden(true).padding(.top, 1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(WatchGuide.note(forShape: row?.shape)).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let reason {
+                    Text("Make planet…: \(reason)").font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
             Button("What can I do here?") {
                 HelpModel.shared.show("watch")
                 openWindow(id: AppShell.helpWindowID)
@@ -151,11 +175,10 @@ struct ResearchWatchPage: View {
             .help("What a research world can and cannot do in Watch (Help)")
             Spacer(minLength: 8)
             if let row, row.shape != .flat {
-                let actions = WorldActionSet.make(row: row, controller: controller, play: shell.session.play, library: library, setup: setup)
                 Button("Make planet…") { setup.openMakePlanet(from: world) }
                     .controlSize(.small)
-                    .disabled(actions.makePlanet.reason != nil)
-                    .help(actions.makePlanet.reason ?? "Make a played world from this world's newest save point")
+                    .disabled(reason != nil)
+                    .help(reason ?? "Make a played world from this world's newest save point")
             }
         }
         .padding(.horizontal, 12)
@@ -168,7 +191,7 @@ struct ResearchWatchPage: View {
         if let failure = observer.viewer.drawingFailure {
             card(Text("Cannot draw: \(failure)").foregroundStyle(.red))
         } else {
-            switch stream.phase {
+            switch pageState.value.phase {
             case .live:
                 EmptyView()
             case .starting:
@@ -206,8 +229,9 @@ struct ResearchWatchPage: View {
     }
 
     private var idleText: String? {
+        // (a world that is gone says so before it says it waits: it never will have its first save point)
+        if row == nil, !growing { return "This world is not in the library any more. It may have been moved or removed." }
         if case .wait(let text) = observer.step { return text }
-        if row == nil { return "This world is not in the library any more. It may have been moved or removed." }
         return nil
     }
 

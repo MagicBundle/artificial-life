@@ -94,6 +94,8 @@ struct WorldCard: View {
     var branch = CardAction(label: "Branch…", reason: nil)
     /// Watch a research world as an observer (a played world is watched while it plays: its Watch button is the open world's).
     var watch = CardAction(label: "Watch", reason: nil)
+    /// Check world, for either kind of world (the same rule as Details: `DetailsGuide.reasonToCheck`).
+    var check = CardAction(label: "Check world", reason: nil)
     let onSelect: () -> Void
     let onPlay: () -> Void
     let onWatch: () -> Void
@@ -187,7 +189,7 @@ struct WorldCard: View {
                 }
                 Button("Branch…", action: onBranch).disabled(branch.reason != nil)
                 Spacer(minLength: 0)
-                if row.kind == .research { moreMenu }
+                moreMenu
             }
         }
         .controlSize(.small)
@@ -197,12 +199,12 @@ struct WorldCard: View {
     private var moreMenu: some View {
         Menu {
             if row.shape == .flat { Button("Open Classic 2D Viewer", action: onOpenClassic) }
-            Button("Check world", action: onCheck).disabled(row.state != .saved)
+            Button("Check world", action: onCheck).disabled(check.reason != nil).help(check.reason ?? "Ask the engine to verify this world")
         } label: { Label("More", systemImage: "ellipsis.circle") }
             .menuStyle(.borderlessButton)
             .labelStyle(.iconOnly)
             .fixedSize()
-            .help("Open it in the classic 2D viewer (a flat world), or check it")
+            .help("Check this world, or open it in the classic 2D viewer (a flat world)")
             .accessibilityLabel("More actions")
     }
 

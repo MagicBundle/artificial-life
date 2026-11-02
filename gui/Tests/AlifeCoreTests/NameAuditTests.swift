@@ -70,7 +70,7 @@ import Testing
     static let sources = ["WorldsPage.swift", "ActivityPage.swift", "WatchPage.swift", "GeneralSettingsView.swift", "AppShellView.swift",
                           "AlifeApp.swift", "WorldCards.swift", "WorldLibrary.swift", "SetupPage.swift", "SetupModel.swift", "PipelineViews.swift",
                           "PipelineCoordinator.swift", "RunNumbersView.swift", "WorldSwitcher.swift", "DockTileController.swift", "DetailsPage.swift",
-                          "RunPanel.swift", "ResearchWatchPage.swift", "AutopilotSettings.swift", "HelpView.swift", "WorldActionSet.swift"]
+                          "RunPanel.swift", "ResearchWatchPage.swift", "AutopilotSettings.swift", "HelpView.swift", "WorldActionSet.swift", "ControlCenterView.swift"]
     static let coreSources = ["WorldsGuide.swift", "ActivityGuide.swift", "WatchCue.swift", "ShellPage.swift", "WorldLibraryState.swift",
                               "LibraryScanner.swift", "Recipe.swift", "PipelinePlan.swift", "SetupPlan.swift", "SetupSettings.swift",
                               "DirectoryGuard.swift", "SessionRules.swift", "WorldSwitch.swift", "AwayPause.swift", "DockProgress.swift", "WatchGuide.swift",
@@ -148,6 +148,27 @@ import Testing
         for text in literalsOfPages where text.localizedCaseInsensitiveContains("branch") {
             #expect(branchUses.contains { text.contains($0) }, "'branch' is used for something else: \"\(text)\"")
         }
+    }
+
+    /// The clock strip's button runs the paused clock: *Run* in this window (§2.5), *Resume* in the two old apps; the word *Resume* is not in the
+    /// view's source at all (`ClockWords` has it), so the audit above, which bans it, reads the view too.
+    @Test func theClockStripSaysRunHereAndResumeInTheOldApps() {
+        #expect(ClockWords.run(plain: true) == "Run" && ClockWords.run(plain: false) == "Resume")
+        #expect(NameAuditTests.actions.contains { $0.label == "Run" && $0.action == "run-clock" })
+    }
+
+    /// What no render can show without a lit display, pinned in the source: the clock strip reads the window's words, the strip of the pipeline's bar
+    /// has no Command-period and no Stop on Watch, and the bar's own Stop key is for the set-up page's card.
+    @Test func theViewsThatSayTheWordsAndOwnTheKeysSayThemThroughTheRulesThisPrAdded() throws {
+        let strip = try read("ControlCenterView.swift", core: false)
+        #expect(strip.contains("ClockWords.run(plain: model.plainNames)") && !strip.contains("\"Resume\""))
+        let bar = try read("PipelineViews.swift", core: false)
+        #expect(bar.contains("BannerButtons(buttons: banner.buttons, stopKey: false, hidesStop: hidesStop)"), "the strip has no key and may hide its Stop")
+        #expect(bar.contains("var stopKey = true") && bar.contains("} else if button == .stop, stopKey {"), "the card keeps Command-period")
+        let keys = try read("ViewerSupport.swift", core: false)
+        #expect(keys.contains("eventWindow: key.window, in: window,"), "the monitor hands the table the window the key was sent to: another window's keys are not the observer's")
+        let shell = try read("AppShellView.swift", core: false)
+        #expect(shell.contains("hidesStop: shell.page == .watch && shell.watchForm == .research && shell.observedGrowing"), "Watch's Run panel holds the one Stop")
     }
 
     @Test func theLabelsOfTheMenusAndTheSidebarAreThePageTitles() {

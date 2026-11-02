@@ -15,6 +15,10 @@ final class ObserverSession: ObservableObject {
     var hasSavePoint: (String) -> Bool
     /// The research world this app grows now (the run job's); the tests give theirs.
     var runningWorld: () -> String?
+    /// Whether another process writes the world (a run started from a terminal: *In use elsewhere*); it is followed like a run of this app.
+    var inUseElsewhere: (String) -> Bool = { _ in false }
+    /// What the player chose with the Source picker for the world in view; nil until they do. A choice is never overridden by the rules.
+    @Published private(set) var chosenFollow: Bool?
     /// Starts a stream (the tests record the request instead of launching the engine).
     var startStream: (StreamSource, _ keepingView: Bool) -> Void
 
@@ -66,7 +70,7 @@ final class ObserverSession: ObservableObject {
         case .failed: phase = .failed
         }
         return WatchGuide.ObserverFacts(
-            world: world, hasSavePoint: hasSavePoint(world), growing: isGrowing(world),
+            world: world, hasSavePoint: hasSavePoint(world), growing: isGrowing(world), elsewhere: inUseElsewhere(world), chosen: chosenFollow,
             streamWorld: stream.source?.run, follows: stream.source?.follow ?? false, stream: phase, failures: failures)
     }
 
@@ -75,6 +79,7 @@ final class ObserverSession: ObservableObject {
         if self.world != world {
             self.world = world
             failures = 0
+            chosenFollow = nil
         }
         shown = true
         tick()
@@ -108,7 +113,9 @@ final class ObserverSession: ObservableObject {
 
     /// The Source picker: follow the run, or re-simulate it.
     func choose(follow: Bool) {
-        guard let world, stream.source?.follow != follow else { return }
+        guard let world else { return }
+        chosenFollow = follow
+        guard stream.source?.follow != follow else { return }
         startStream(StreamSource(run: world, follow: follow), true)
     }
 

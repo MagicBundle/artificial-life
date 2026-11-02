@@ -205,38 +205,43 @@ struct ViewerStatusBar: View {
     }
 }
 
-/// The same controls in two rows that fit a narrow picture (the research Watch's free rectangle is about 525 points at the window's minimum
-/// size, beside the sidebar and the Run panel): the source, pause, step and colour in the first; what to show (a menu), the steps per frame
-/// while re-simulating, the camera, reset and snapshot in the second.
+/// The same controls in two rows that fit a narrow picture (the research Watch's free rectangle is about 525 points at 1,100 x 700, beside the
+/// sidebar and the Run panel): the source, pause, step and colour in the first; what to show (a menu), the steps per frame while re-simulating,
+/// the camera, reset and snapshot in the second. **It reads `ViewerModel.controls`, not the stream**: the stream publishes with every frame, and a
+/// `Menu` that is evaluated again while it is open is rebuilt under the pointer (docs/DESIGN.md §33.4.4; `MenuStabilityTests`).
 struct ViewerCompactControls: View {
-    @ObservedObject var stream: StreamController
+    let stream: StreamController
     @ObservedObject var model: ViewerModel
-    var canFollow = true
+    @ObservedObject var state: DistinctState<ViewerControlInputs>
     var chooseSource: (Bool) -> Void
 
-    private var live: Bool { stream.phase == .live }
-    private var following: Bool { stream.source?.follow == true }
+    init(stream: StreamController, model: ViewerModel, chooseSource: @escaping (Bool) -> Void) {
+        self.stream = stream
+        self.model = model
+        state = model.controls
+        self.chooseSource = chooseSource
+    }
 
     var body: some View {
+        let _ = ViewProbe.note("ViewerCompactControls", for: stream)
+        let c = state.value
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Picker("Source", selection: Binding(get: { stream.source?.follow ?? true }, set: { chooseSource($0) })) {
-                    Text("Follow").tag(true).disabled(!canFollow)
-                    Text("Re-simulate").tag(false)
+                Picker("Source", selection: Binding(get: { c.hasSource ? c.follows : true }, set: { chooseSource($0) })) {
+                    Text("Follow").tag(true).help(WatchGuide.followMeaning)
+                    Text("Re-simulate").tag(false).help(WatchGuide.reSimulateMeaning)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .frame(width: 180)
-                .disabled(stream.source == nil)
-                .help(canFollow
-                      ? "Follow shows the run's newest save points, so a run with an autopilot is shown faithfully. Re-simulate steps the latest save point again in a separate process, without the autopilot."
-                      : "This world is not growing, so there is nothing to follow. Re-simulate steps its latest save point in a separate process, without the autopilot.")
-                Button(stream.control.paused ? "Run" : "Pause") { model.perform(.togglePause) }
-                    .disabled(!live)
+                .disabled(!c.hasSource)
+                .help("\(WatchGuide.followMeaning)\n\n\(WatchGuide.reSimulateMeaning)")
+                Button(c.paused ? "Run" : "Pause") { model.perform(.togglePause) }
+                    .disabled(!c.live)
                     .help("Space")
-                Button(following ? "Newest" : "Step") { model.perform(.step) }
-                    .disabled(!live)
-                    .help(following ? "Fetch the newest save point once (.)" : "Run one step and pause (.)")
+                Button(c.follows ? "Newest" : "Step") { model.perform(.step) }
+                    .disabled(!c.live)
+                    .help(c.follows ? "Fetch the newest save point once (.)" : "Run one step and pause (.)")
                 Spacer(minLength: 4)
                 ViewerColourPicker(state: model.colour, stream: stream)
             }
@@ -249,26 +254,25 @@ struct ViewerCompactControls: View {
                     Toggle("Agents", isOn: $model.display.agents)
                     Toggle("Bonds", isOn: $model.display.bonds)
                     Toggle("Frame", isOn: $model.display.frame)
-                    Toggle("Field slice", isOn: Binding(get: { stream.control.fields }, set: { stream.setFields($0) })).disabled(!live)
+                    Toggle("Field slice", isOn: Binding(get: { c.fields }, set: { stream.setFields($0) })).disabled(!c.live)
                 }
                 .fixedSize()
                 .help("What the picture shows: the animals, their bonds, the box edges and floor, and one layer of food and chemicals")
-                if let header = stream.header, header.fieldLayers > 1, stream.control.fields {
-                    Stepper("layer \(stream.control.fieldLayer)", value: Binding(
-                        get: { stream.control.fieldLayer }, set: { stream.setFieldLayer($0) }), in: 0...(header.fieldLayers - 1))
+                if c.fieldLayers > 1, c.fields {
+                    Stepper("layer \(c.fieldLayer)", value: Binding(get: { c.fieldLayer }, set: { stream.setFieldLayer($0) }), in: 0...(c.fieldLayers - 1))
                         .fixedSize()
                         .help("Field layer ([ and ])")
                 }
-                if !following {
+                if !c.follows {
                     HStack(spacing: 4) {
                         Button("-") { model.perform(.slower) }
-                        Text("\(stream.control.every)").font(.callout.monospacedDigit()).frame(minWidth: 28)
+                        Text("\(c.every)").font(.callout.monospacedDigit()).frame(minWidth: 28)
                         Button("+") { model.perform(.faster) }
                         Text("/frame").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                     .fixedSize()
-                    .disabled(!live)
-                    .help("Simulation steps per frame (- and +)")
+                    .disabled(!c.live)
+                    .help("Simulation steps per frame (- and +), while re-simulating")
                 }
                 Spacer(minLength: 4)
                 Picker("Camera", selection: $model.cameraMode) {
@@ -281,7 +285,7 @@ struct ViewerCompactControls: View {
                 Button("Reset view") { model.perform(.resetCamera) }.help("r").fixedSize()
                 Button("Snapshot") { model.perform(.snapshot) }
                     .fixedSize()
-                    .disabled(stream.frame == nil)
+                    .disabled(!c.hasFrame)
                     .help("Save a PNG under the world's media folder (s)")
             }
             .controlSize(.small)

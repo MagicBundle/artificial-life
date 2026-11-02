@@ -166,4 +166,34 @@ struct ObserverSessionTests {
         rig.session.show("v")
         #expect(rig.session.failures == 0 && rig.session.world == "v")
     }
+
+    @Test func aRunStartedFromATerminalIsFollowedAndTheSourcePickerCanStillChoose() throws {
+        let rig = try Rig()
+        defer { rig.scratch.cleanup() }
+        rig.session.inUseElsewhere = { $0 == "w" }
+        rig.session.show("w")
+        #expect(rig.started.starts.map(\.source) == [StreamSource(run: "w", follow: true)])
+        // a world nobody runs can be followed too, when the player asks (the old 3D Viewer could): the choice is kept for the world
+        let other = try Rig(savePoints: ["w"])
+        defer { other.scratch.cleanup() }
+        other.session.show("w")
+        other.session.choose(follow: true)
+        #expect(other.started.starts.last?.source == StreamSource(run: "w", follow: true) && other.session.chosenFollow == true)
+        other.session.show("v")
+        #expect(other.session.chosenFollow == nil, "a choice is for the world it was made on")
+    }
+
+    @Test func aFailedStartIsRetriedAsTheChoiceTheWorldHad() async throws {
+        let rig = try Rig(running: "w")
+        defer { rig.stream.stop(); rig.scratch.cleanup() }
+        rig.session.show("w")
+        rig.session.choose(follow: false)
+        let exe = try rig.scratch.script("fail", "exit 4")
+        rig.stream.start(StreamSource(run: "w", follow: false), executable: exe, directory: rig.scratch.url)
+        #expect(await eventually { rig.session.failures == 1 })
+        let before = rig.started.starts.count
+        rig.session.tick()
+        #expect(rig.started.starts.count == before + 1 && rig.started.starts.last?.source == StreamSource(run: "w", follow: false),
+                "a deliberate Re-simulate is not turned into Follow by the retry of a world that grows")
+    }
 }

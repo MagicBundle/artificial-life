@@ -118,3 +118,9 @@ package enum WorldTitle {
         world == nil ? "World" : heading(world: world, header: header)
     }
 }
+
+/// The words of the clock strip's buttons that differ between the `alife` window and the two old apps (docs/APP.md §2.5: one word per action).
+package enum ClockWords {
+    /// The button that runs a paused clock again: *Run* here (the toggle of the Space key and the World menu is Pause/Run), *Resume* in the old apps.
+    package static func run(plain: Bool) -> String { plain ? "Run" : "Resume" }
+}

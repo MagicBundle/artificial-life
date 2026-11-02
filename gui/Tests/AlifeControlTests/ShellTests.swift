@@ -393,9 +393,9 @@ private struct ShellRig {
         #expect(await eventually { rig.play.phase == .live })
         rig.shell.select(.worlds)
         rig.shell.observe("research")
-        #expect(rig.shell.observed == nil && rig.shell.watchForm == .played && rig.shell.page == .worlds)
+        #expect(rig.shell.observed == nil && rig.shell.watchForm == .played && rig.shell.page == .worlds, "a card's Watch cannot replace a world that is open (R1)")
         rig.shell.researchStarted("research")
-        #expect(rig.shell.observed == nil)
+        #expect(rig.shell.watchForm == .played && rig.shell.page == .worlds, "a run started meanwhile does not either: it is kept for when the world is closed")
     }
 
     @Test func aRunStartedFromTheSetUpPageTakesThePersonToWatchButNoOneElse() throws {
@@ -410,6 +410,32 @@ private struct ShellRig {
         #expect(other.shell.page == .activity && other.shell.observed == "r1", "a person who went on to another page is not moved")
         other.shell.select(.watch)
         #expect(other.shell.watchForm == .research)
+    }
+
+    @Test func aRunStartedWhileAWorldIsOpenIsWhatWatchShowsWhenTheWorldIsClosed() async throws {
+        let rig = try ShellRig(page: .setup)
+        defer { rig.finish() }
+        rig.start()
+        #expect(await eventually { rig.play.phase == .live })
+        rig.shell.researchStarted("r1")
+        #expect(rig.shell.watchForm == .played && rig.shell.observed == "r1", "the world stays what Watch shows; the run is kept, not lost")
+        #expect(rig.shell.page == .setup, "nobody is moved in front of a world being played")
+        rig.play.stop()
+        #expect(await eventually { rig.play.phase != .live })
+        #expect(rig.shell.observed == "r1", "phase \(rig.play.phase)")
+        #expect(rig.shell.watchForm == .research, "the run is what Watch shows once the world is closed (phase \(rig.play.phase))")
+    }
+
+    @Test func theObservedWorldIsGrowingOnlyWhenTheRunIsItsOwn() throws {
+        let rig = try ShellRig(page: .worlds)
+        defer { rig.finish() }
+        rig.shell.observe("planet-1-grow")
+        rig.shell.runningRun = nil
+        #expect(!rig.shell.observedGrowing)
+        rig.shell.runningRun = "other"
+        #expect(!rig.shell.observedGrowing, "another world's run is not this one's")
+        rig.shell.runningRun = "PLANET-1-GROW"
+        #expect(rig.shell.observedGrowing, "capitals do not tell worlds apart")
     }
 
     @Test func theFormTableCoversEveryPhase() {
@@ -434,7 +460,12 @@ private struct ShellRig {
     }
 
     @Test func theObserverMenusExtraItemsKnowWhenTheyCanWork() {
-        #expect(WorldCommands.canStop(runGoing: true) && !WorldCommands.canStop(runGoing: false))
+        // Stop is for the run Watch shows, and only from Watch: never from another page, never for another world's run
+        #expect(WorldCommands.canStop(page: .watch, form: .research, observedGrowing: true))
+        #expect(!WorldCommands.canStop(page: .watch, form: .research, observedGrowing: false))
+        #expect(!WorldCommands.canStop(page: .watch, form: .played, observedGrowing: true))
+        #expect(!WorldCommands.canStop(page: .watch, form: nil, observedGrowing: true))
+        for page in [ShellPage.worlds, .activity, .setup, .details] { #expect(!WorldCommands.canStop(page: page, form: .research, observedGrowing: true), "\(page)") }
         #expect(WorldCommands.canCheck(runGoing: false, repoReady: true))
         #expect(!WorldCommands.canCheck(runGoing: true, repoReady: true), "a run holds the engine's one job")
         #expect(!WorldCommands.canCheck(runGoing: false, repoReady: false))

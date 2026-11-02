@@ -275,6 +275,42 @@ struct WorldReaderTests {
         #expect(r.reading == nil)
     }
 
+    @Test func aSlowVolumeCollectsOneReadNotOnePerPoll() async throws {
+        let rig = try Rig()
+        defer { rig.scratch.cleanup() }
+        try rig.world("a", step: 1)
+        let r = reader(rig)  // polls every 30 ms
+        var reads = 0
+        r.afterRead = { _ in
+            reads += 1
+            // A read that is still not back when the test looks (far longer than the look: a stalled main actor can delay the look by seconds,
+            // and a read that came back meanwhile would start the next one legitimately).
+            try? await Task.sleep(for: .seconds(6))
+        }
+        r.follow("a")
+        r.retain()
+        defer { r.release() }
+        #expect(await eventually { reads == 1 })
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(reads == 1, "\(reads) reads were started while the first had not come back")
+    }
+
+    @Test func aWorldThatChangesWhileAReadIsOnItsWayIsReadWhenThatReadIsBack() async throws {
+        let rig = try Rig()
+        defer { rig.scratch.cleanup() }
+        try rig.world("a", step: 1)
+        try rig.world("b", step: 2)
+        let r = WorldReader(runsDirectory: { rig.runs }, interval: .seconds(60))  // no poll will come to the rescue
+        var slow = true
+        r.afterRead = { name in if name == "a", slow { slow = false; try? await Task.sleep(for: .milliseconds(300)) } }
+        r.follow("a")
+        r.retain()
+        defer { r.release() }
+        try await Task.sleep(for: .milliseconds(100))
+        r.follow("b")
+        #expect(await eventually(timeout: .seconds(5)) { r.reading?.world == "b" && r.reading?.metrics?.step == 2 }, "the read for b waits for the one in flight and then follows it")
+    }
+
     @Test func noFolderMeansNothingToRead() async {
         let r = WorldReader(runsDirectory: { nil }, interval: .milliseconds(30))
         r.follow("w")

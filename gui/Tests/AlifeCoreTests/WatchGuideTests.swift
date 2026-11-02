@@ -22,7 +22,7 @@ import Testing
 
     @Test func theChipSaysWhichWatchItIs() {
         #expect(WatchForm.played.chip == "Live" && WatchForm.research.chip == "Observer")
-        #expect(WatchForm.research.chipMeaning.contains("cannot be played"))
+        #expect(WatchForm.research.chipMeaning == WatchGuide.observerMeaning && WatchForm.research.chipMeaning.contains("cannot be played"))
         #expect(WatchForm.played.chipMeaning.contains("powers"))
     }
 
@@ -60,9 +60,41 @@ import Testing
 
     // MARK: The observer's stream
 
-    private func facts(_ stream: WatchGuide.ObserverFacts.Stream = .idle, save: Bool = true, growing: Bool = false, on: String? = nil, follows: Bool = false,
-                       failures: Int = 0) -> WatchGuide.ObserverFacts {
-        .init(world: "w", hasSavePoint: save, growing: growing, streamWorld: on, follows: follows, stream: stream, failures: failures)
+    private func facts(_ stream: WatchGuide.ObserverFacts.Stream = .idle, save: Bool = true, growing: Bool = false, elsewhere: Bool = false,
+                       chosen: Bool? = nil, on: String? = nil, follows: Bool = false, failures: Int = 0) -> WatchGuide.ObserverFacts {
+        .init(world: "w", hasSavePoint: save, growing: growing, elsewhere: elsewhere, chosen: chosen, streamWorld: on, follows: follows, stream: stream,
+              failures: failures)
+    }
+
+    // MARK: A run from a terminal, and what the player chose
+
+    @Test func aRunStartedFromATerminalIsFollowedLikeOneOfThisApp() {
+        #expect(WatchGuide.observerStep(facts(elsewhere: true)) == .start(follow: true))
+        #expect(WatchGuide.observerStep(facts(.live, elsewhere: true, on: "w", follows: true)) == .none, "still going: left alone")
+        #expect(WatchGuide.observerStep(facts(.live, elsewhere: false, on: "w", follows: true)) == .restart(follow: false), "it ended")
+        #expect(WatchGuide.observerStep(facts(.failed, elsewhere: true, on: "w", failures: 1)) == .start(follow: true))
+    }
+
+    @Test func aChoiceOfThePlayerIsNeverOverriddenByTheRules() {
+        // follow a world that is not growing: the end rule does not turn it into a re-simulation
+        #expect(WatchGuide.observerStep(facts(.live, chosen: true, on: "w", follows: true)) == .none)
+        #expect(WatchGuide.observerStep(facts(.idle, chosen: true)) == .start(follow: true))
+        // re-simulate a world that grows: a failed start is retried as a re-simulation, and so is a start after the stream ended
+        #expect(WatchGuide.observerStep(facts(.failed, growing: true, chosen: false, on: "w", failures: 1)) == .start(follow: false))
+        #expect(WatchGuide.observerStep(facts(.idle, growing: true, chosen: false)) == .start(follow: false))
+        #expect(WatchGuide.observerStep(facts(.ended, growing: true, chosen: true, on: "w", follows: true)) == .start(follow: true))
+        #expect(WatchGuide.observerStep(facts(.ended, growing: false, chosen: true, on: "w", follows: true)) == .start(follow: true), "a followed world that nobody runs: still followed")
+        #expect(WatchGuide.observerStep(facts(.ended, growing: true, chosen: nil, on: "w", follows: true)) == .start(follow: true))
+        #expect(WatchGuide.observerStep(facts(.ended, growing: false, chosen: nil, on: "w", follows: true)) == .start(follow: false))
+        #expect(WatchGuide.observerStep(facts(.live, growing: true, chosen: false, on: "w", follows: true)) == .none)
+        #expect(WatchGuide.observerStep(facts(.live, growing: true, on: "other")) == .start(follow: true), "another world's stream is replaced by the rule's choice")
+        #expect(WatchGuide.observerStep(facts(.live, growing: true, chosen: false, on: "other")) == .start(follow: false))
+    }
+
+    @Test func thePageExplainsItsOwnWords() {
+        #expect(WatchGuide.followMeaning.hasPrefix("Follow shows") && WatchGuide.reSimulateMeaning.hasPrefix("Re-simulate steps"))
+        #expect(WatchGuide.observerMeaning.contains("research world") && WatchGuide.stepsPerFrameNote.contains("re-simulating"))
+        #expect(WatchGuide.stepsDifferNote.contains("every two seconds"))
     }
 
     @Test func theStreamStartsWhenTheWorldHasASavePointAndFollowsAGrowingRun() {
@@ -116,8 +148,8 @@ import Testing
     }
 
     @Test func theSubtitleSaysHowThePictureIsMade() {
-        #expect(WatchGuide.observerLine(follows: nil, step: nil) == "Observer")
-        #expect(WatchGuide.observerLine(follows: true, step: nil) == "Observer · following the run")
-        #expect(WatchGuide.observerLine(follows: false, step: 1_234) == "Observer · re-simulating · step 1,234")
+        #expect(WatchGuide.observerLine(follows: nil) == "Observer")
+        #expect(WatchGuide.observerLine(follows: true) == "Observer · following the run")
+        #expect(WatchGuide.observerLine(follows: false) == "Observer · re-simulating")
     }
 }

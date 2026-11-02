@@ -28,8 +28,8 @@ import Testing
         #expect(sentences[1] == "It was made from the grown world of p at step 30,000.")
         // a planet made from the world that was grown for it
         let own = DetailsGuide.whatItIs(row(.played, name: "p", from: SourceRef(name: "p-grow", step: 30_000)), grownFor: nil)
-        #expect(own[1] == "It was made from its grown world at step 30,000.")
-        #expect(DetailsGuide.whatItIs(row(.played, name: "P", from: SourceRef(name: "p-grow", step: nil)), grownFor: nil)[1] == "It was made from its grown world.")
+        #expect(own[1] == "It was made from its grown world (the research world that was grown to make it) at step 30,000.")
+        #expect(DetailsGuide.whatItIs(row(.played, name: "P", from: SourceRef(name: "p-grow", step: nil)), grownFor: nil)[1] == "It was made from its grown world (the research world that was grown to make it).")
         #expect(DetailsGuide.whatItIs(row(.played), grownFor: nil).count == 1)
     }
 
@@ -102,10 +102,10 @@ import Testing
     }
 
     @Test func theNumbersCaptionSaysWhyThereAreNone() {
-        #expect(DetailsGuide.numbersCaption(hasMetrics: true, growing: true).contains("two seconds"))
+        #expect(DetailsGuide.numbersCaption(hasMetrics: true, growing: true) == WatchGuide.stepsDifferNote)
         #expect(DetailsGuide.numbersCaption(hasMetrics: true, growing: false).contains("last row"))
         #expect(DetailsGuide.numbersCaption(hasMetrics: false, growing: true).contains("No numbers yet"))
-        #expect(DetailsGuide.numbersCaption(hasMetrics: false, growing: false).contains("no numbers file"))
+        #expect(DetailsGuide.numbersCaption(hasMetrics: false, growing: false) == "No numbers were recorded for this world.")
     }
 
     // MARK: The settings it was made with
@@ -122,6 +122,32 @@ import Testing
         try config.write(to: dir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
         if let meta { try meta.write(to: dir.appendingPathComponent("meta.json"), atomically: true, encoding: .utf8) }
         return (dir, { try? FileManager.default.removeItem(at: dir) })
+    }
+
+    // MARK: Words for single numbers
+
+    @Test func theEnergyCheckAndTheHeightHaveUnits() {
+        #expect(DetailsGuide.energyCheck(0) == "OK" && DetailsGuide.energyCheck(nil) == "-")
+        #expect(DetailsGuide.energyCheck(3) == "off by 3 units of energy" && DetailsGuide.energyCheck(12_345.4) == "off by 12,345 units of energy")
+        #expect(DetailsGuide.height(6.0712) == "6.07 units" && DetailsGuide.height(nil) == "-")
+    }
+
+    // MARK: Check world
+
+    @Test func checkWorldHasOneRuleForCardAndDetailsAndForBothKinds() {
+        func r(_ kind: WorldKind, _ state: WorldState, step: Int? = 10) -> LibraryRow { row(kind, state: state, step: step) }
+        for kind in [WorldKind.research, .played] {
+            #expect(DetailsGuide.reasonToCheck(r(kind, .saved), engineReady: true, jobGoing: false) == nil)
+            #expect(DetailsGuide.reasonToCheck(r(kind, .inUseElsewhere), engineReady: true, jobGoing: false) == nil, "another process writing it is a warning, not a refusal")
+            #expect(DetailsGuide.reasonToCheck(r(kind, .live), engineReady: true, jobGoing: false) == "Wait until it is saved: it is open now.")
+            #expect(DetailsGuide.reasonToCheck(r(kind, .paused), engineReady: true, jobGoing: false)?.hasPrefix("Wait until it is saved") == true)
+            #expect(DetailsGuide.reasonToCheck(r(kind, .starting), engineReady: true, jobGoing: false)?.hasPrefix("Wait until it is saved") == true, "a world that is opening is open")
+            #expect(DetailsGuide.reasonToCheck(r(kind, .growing), engineReady: true, jobGoing: false) == "Wait until it stops growing.")
+            #expect(DetailsGuide.reasonToCheck(r(kind, .saving), engineReady: true, jobGoing: false) == "Saving…")
+            #expect(DetailsGuide.reasonToCheck(r(kind, .saved, step: nil), engineReady: true, jobGoing: false) == "No save point to check yet.")
+            #expect(DetailsGuide.reasonToCheck(r(kind, .saved), engineReady: true, jobGoing: true) == "Another job is running. Wait for it to finish.")
+            #expect(DetailsGuide.reasonToCheck(r(kind, .saved), engineReady: false, jobGoing: false) == "Set up the engine first.")
+        }
     }
 
     @Test func theSettingsAWorldWasMadeWithAreReadFromItsConfig() throws {

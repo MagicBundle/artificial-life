@@ -17,6 +17,49 @@ struct ViewerColourInputs: Equatable {
     }
 }
 
+/// What the controls of the research Watch show of the stream, held apart from it (it publishes with every frame; a `Menu` that observes it
+/// is rebuilt under the pointer: `DistinctState`).
+struct ViewerControlInputs: Equatable {
+    var hasSource: Bool
+    var follows: Bool
+    var live: Bool
+    var paused: Bool
+    var hasFrame: Bool
+    var fields: Bool
+    var fieldLayers: Int
+    var fieldLayer: Int
+    var every: Int
+
+    @MainActor
+    init(stream: StreamController) {
+        hasSource = stream.source != nil
+        follows = stream.source?.follow == true
+        live = stream.phase == .live
+        paused = stream.control.paused
+        hasFrame = stream.frame != nil
+        fields = stream.control.fields
+        fieldLayers = stream.header?.fieldLayers ?? 0
+        fieldLayer = stream.control.fieldLayer
+        every = stream.control.every
+    }
+}
+
+/// What the research Watch's page body reads of the stream: which picture to make and what to say while there is none.
+struct ViewerPageInputs: Equatable {
+    var phase: StreamPhase
+    var isSphere: Bool
+    var hasSource: Bool
+    var follows: Bool
+
+    @MainActor
+    init(stream: StreamController) {
+        phase = stream.phase
+        isSphere = stream.header?.isSphere == true
+        hasSource = stream.source != nil
+        follows = stream.source?.follow == true
+    }
+}
+
 /// The colour pop-up of the viewer. It reads `state`, not the stream: the stream publishes with every frame, and a pop-up that is
 /// evaluated again while its menu is open is rebuilt under the pointer.
 struct ViewerColourPicker: View {
@@ -80,6 +123,8 @@ struct Viewer3DView: View {
 struct ViewerMetalView: NSViewRepresentable {
     @ObservedObject var stream: StreamController
     @ObservedObject var model: ViewerModel
+    /// The keys follow the window, not the focus (the `alife` window's Watch).
+    var keysFollowWindow = false
 
     /// What the renderer has been given, so that an update copies a frame only once.
     final class Coordinator {
@@ -92,6 +137,7 @@ struct ViewerMetalView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> ViewerMTKView {
         let view = ViewerMTKView(frame: .zero, device: nil)
+        view.keysFollowWindow = keysFollowWindow
         view.model = model
         view.colorPixelFormat = Renderer.colorFormat
         view.depthStencilPixelFormat = Renderer.depthFormat

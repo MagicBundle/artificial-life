@@ -57,7 +57,7 @@ struct AppShellView: View {
                 }
                 // The pipeline's bar is on every page but the one that shows it in full: the wait is never out of sight.
                 if showsStrip {
-                    PipelineStrip(coordinator: setup.coordinator) { shell.select(.setup) }
+                    PipelineStrip(coordinator: setup.coordinator, hidesStop: shell.page == .watch && shell.watchForm == .research && shell.observedGrowing) { shell.select(.setup) }
                 }
                 ZStack {
                     WatchLayer(play: play, model: model, visible: shell.page == .watch && shell.watchForm != .research)
@@ -83,7 +83,8 @@ struct AppShellView: View {
             shell.buildEnded = { [weak library] world, note in library?.note(note, forBuild: world) }
             controller.pollsRunList = shell.page == .setup
             shell.shapeOf = { [weak library] name in library?.state.row(named: name)?.shape }
-            shell.runGoing = controller.hasRunJob
+            shell.runningRun = controller.runningRunName
+            observer.inUseElsewhere = { [weak library] world in library?.state.row(named: world)?.state == .inUseElsewhere }
             // The set-up page does not continue a played world, or a directory another process or this window is writing.
             controller.resumeRefusal = { [weak library] name in library?.reasonNotToResume(name) }
             wireSetup()
@@ -93,7 +94,7 @@ struct AppShellView: View {
             library.startTimer()
         }
         // The library follows the folder, what this app does with its worlds, and the planet form follows the library.
-        .onChange(of: controller.hasRunJob) { _, going in shell.runGoing = going }
+        .onChange(of: controller.runningRunName) { _, run in shell.runningRun = run }
         .onChange(of: controller.repoReady) { _, _ in library.refresh() }
         .onChange(of: controller.repoPath) { _, _ in library.refresh() }
         .onChange(of: liveFacts) { _, facts in library.update(live: facts) }
@@ -225,7 +226,10 @@ struct AppShellView: View {
             if shell.startFailure != nil { return ("A world did not open", true) }
             return (nil, false)
         case .watch:
-            if shell.watchForm == .research, let world = shell.observed { return ("Observing " + SetupIntent.shown(world), false) }
+            // (the stream ends with the page: away from Watch the row says what was looked at, not that anything is being observed)
+            if shell.watchForm == .research, let world = shell.observed {
+                return ((shell.page == .watch ? "Observing " : "Last watched ") + SetupIntent.shown(world), false)
+            }
             let cue = model.watchCue(startFailed: shell.startFailure != nil)
             return (cue.text, cue.needsPlayer)
         case .activity:

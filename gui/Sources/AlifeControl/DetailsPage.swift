@@ -74,6 +74,7 @@ struct DetailsPage: View {
             if let note = row.note { Text(note).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             RunNumbersView(
                 metrics: reading?.metrics, clock: growing ? RunNumbersView.Clock(elapsed: controller.elapsed, remaining: controller.remaining) : nil,
+                showsStep: false, showsSpeed: growing,
                 emptyText: DetailsGuide.numbersCaption(hasMetrics: false, growing: growing), titled: false)
                 .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
             if reading?.metrics != nil {
@@ -91,6 +92,9 @@ struct DetailsPage: View {
 
     private func header(_ row: LibraryRow) -> some View {
         VStack(alignment: .leading, spacing: 6) {
+            Button { shell.select(.worlds) } label: { Label("Worlds", systemImage: "chevron.left") }
+                .buttonStyle(.link)
+                .help("Back to the list of worlds")
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Image(systemName: row.kind.symbol).font(.title2).foregroundStyle(.secondary).accessibilityHidden(true)
                 Text(DetailsGuide.title(row.name)).font(.largeTitle.weight(.semibold)).lineLimit(2)
@@ -159,14 +163,14 @@ struct DetailsPage: View {
             Button("Branch…") { setup.openBranch(from: row.name) }.disabled(a.branch.reason != nil)
         }
         HStack(spacing: 8) {
+            Button("Check world") { check(row) }.disabled(a.check.reason != nil)
             if row.kind == .research {
-                Button("Check world") { check(row) }.disabled(a.check.reason != nil)
                 if row.shape == .flat { Button("Open Classic 2D Viewer") { controller.openClassicViewer(world: row.name) }.disabled(a.classic.reason != nil) }
             }
             Button("Reveal in Finder") { Task { await library.reveal(row.name) } }
         }
         let grey: [CardAction] = [row.kind == .played && !isOpen ? a.play : nil, row.kind == .research ? a.watch : nil, a.makePlanet,
-                                  row.kind == .research ? a.keepGrowing : nil, a.branch, row.kind == .research ? a.check : nil]
+                                  row.kind == .research ? a.keepGrowing : nil, a.branch, a.check]
             .compactMap { $0 }.filter { $0.reason != nil }
         ReasonLines(actions: grey)
     }

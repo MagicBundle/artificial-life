@@ -93,7 +93,7 @@ struct WorldActionSetTests {
         rig.library.update(live: LiveFacts(growing: "r"))
         #expect(rig.actions("r").check.reason == "Wait until it stops growing.")
         rig.library.update(live: LiveFacts(saving: ["r"]))
-        #expect(rig.actions("r").check.reason == "Only a world that is saved and not in use can be checked.")
+        #expect(rig.actions("r").check.reason == "Saving…")
         rig.library.update(live: LiveFacts())
         #expect(rig.actions("r").check.reason == nil)
     }

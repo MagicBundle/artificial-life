@@ -342,6 +342,7 @@ struct WorldsPage: View {
                         keepGrowing: CardAction(label: "Keep growing…", reason: SetupRules.reason(.keepGrowing, on: row, in: ruleFacts)),
                         branch: CardAction(label: "Branch…", reason: SetupRules.reason(.branch, on: row, in: ruleFacts)),
                         watch: CardAction(label: "Watch", reason: WatchGuide.reasonToWatch(row, openWorld: f.openWorld, runGrowing: controller.runningRunName)),
+                        check: CardAction(label: "Check world", reason: DetailsGuide.reasonToCheck(row, engineReady: controller.repoReady, jobGoing: controller.job != nil)),
                         onSelect: { library.select(row.name, scroll: false) },
                         onPlay: { playWorld(row.name) },
                         onWatch: { shell.select(.watch) },
