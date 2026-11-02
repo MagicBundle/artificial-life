@@ -1,56 +1,44 @@
 #!/usr/bin/env bash
-# Build, bundle and sign the AlifeControl apps (the research Lab, Storm Worlds and the alife preview), and optionally install them.
-# Run from any directory. See `make-app.sh --help`.
+# Build, bundle and sign alife.app (the one app: docs/APP.md), and optionally install it. Run from any directory. See `make-app.sh --help`.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GUI_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-LAB_BUNDLE_ID="${BUNDLE_ID:-io.github.magicbundle.alifecontrol}"
-STORM_BUNDLE_ID="${STORM_BUNDLE_ID:-io.github.magicbundle.stormworlds}"
-# The preview of the one-app program (docs/APP.md, PR-B): its own preferences, installed beside the two old apps. The final id (the
-# shared preferences domain) replaces it when the old apps are retired.
-ALIFE_PREVIEW_BUNDLE_ID="${ALIFE_PREVIEW_BUNDLE_ID:-io.github.magicbundle.alife.preview}"
-VERSION="${VERSION:-0.1.0}"
+# The bundle id is also the preferences domain the Lab and Storm Worlds shared, so the folder they stored is already there. The override
+# exists for a trial bundle that must have preferences of its own (its domain is then not the owner's).
+ALIFE_BUNDLE_ID="${ALIFE_BUNDLE_ID:-io.github.magicbundle.alife}"
+VERSION="${VERSION:-0.2.0}"
 
 SIGN_ARG=""
 INSTALL=0
 INSTALL_DIR="/Applications"
-PREVIEW=0
-WHICH="lab"
 OUT_DIR=""
 
 usage() {
   cat <<USAGE
-Usage: make-app.sh [--app lab|storm|both|alife --preview] [--sign IDENTITY] [--out DIR] [--install] [--install-dir DIR] [--help]
+Usage: make-app.sh [--sign IDENTITY] [--out DIR] [--install] [--install-dir DIR] [--help]
 
-Builds the release binary once, generates the icons, assembles and signs
-  AlifeControl.app   the research Lab (the run controls, the log, the director panel)
-  Storm Worlds.app   the game: opens straight into the World window; the Lab is Window > Lab
-  alife Preview.app  the one-app program's preview (docs/APP.md): one window with a sidebar (--app alife --preview)
+Builds the release binary, generates the icon, assembles and signs
+  alife.app   the app: one window with a sidebar (Worlds, Watch, Activity, New world); id $ALIFE_BUNDLE_ID
 in DIR (default $GUI_DIR/.build).
 
 Options:
-  --app WHICH         lab (default: what this script always built), storm, both (recommended
-                      with --install: the game and the Lab share the repository folder setting), or alife.
-  --preview           With --app alife: build the preview, id io.github.magicbundle.alife.preview, with its own preferences. It
-                      installs beside the old apps and changes neither: it reads the shared alife folder setting and never writes it. (alife.app,
-                      the final one, comes when they are retired.)
   --sign IDENTITY     Signing identity (name or hash). Default: the first
                       "Developer ID Application" identity, else the first
                       "Apple Development" identity, else ad-hoc ("-"). "--sign -" is ad-hoc and
                       never touches the keychain.
-  --out DIR           Where the bundles are written (default $GUI_DIR/.build).
-  --install           Copy the bundle(s) to the install directory (default /Applications), replacing a copy
-                      there. Refuses, before building, if one of them is running.
+  --out DIR           Where the bundle is written (default $GUI_DIR/.build).
+  --install           Copy alife.app to the install directory (default /Applications), replacing a copy
+                      there. Refuses, before building, if it is running. It touches no other app: AlifeControl.app,
+                      Storm Worlds.app and alife Preview.app are left where they are, and the script prints how to Trash them.
   --install-dir DIR   Install somewhere else, for example ~/Applications.
   -h, --help          Show this help.
 
 Environment:
-  BUNDLE_ID           Bundle identifier of the Lab (default io.github.magicbundle.alifecontrol)
-  STORM_BUNDLE_ID     Bundle identifier of Storm Worlds (default io.github.magicbundle.stormworlds)
-  ALIFE_PREVIEW_BUNDLE_ID  Bundle identifier of alife Preview (default io.github.magicbundle.alife.preview)
-  VERSION             CFBundleShortVersionString of both (default 0.1.0)
+  ALIFE_BUNDLE_ID     Bundle identifier (default io.github.magicbundle.alife). Another id has other preferences; for a trial.
+  VERSION             CFBundleShortVersionString (default 0.2.0)
 
+The Lab and Storm Worlds are retired (docs/APP.md section 6): --app and --preview no longer exist.
 Never uses sudo. Not notarized: sharing an app needs a Developer ID identity plus notarization.
 USAGE
 }
@@ -59,26 +47,16 @@ die() { echo "error: $*" >&2; exit 1; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --app) [[ $# -ge 2 ]] || die "--app needs an argument"; WHICH="$2"; shift 2 ;;
     --sign) [[ $# -ge 2 ]] || die "--sign needs an argument"; SIGN_ARG="$2"; shift 2 ;;
     --out) [[ $# -ge 2 ]] || die "--out needs an argument"; OUT_DIR="$2"; shift 2 ;;
-    --preview) PREVIEW=1; shift ;;
     --install) INSTALL=1; shift ;;
     --install-dir) [[ $# -ge 2 ]] || die "--install-dir needs an argument"; INSTALL_DIR="$2"; shift 2 ;;
+    --app|--app=*|--preview) die "$1 is retired: this script builds one app, alife.app (the Lab, Storm Worlds and the preview are gone, docs/APP.md section 6)" ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; die "unknown argument: $1" ;;
   esac
 done
 INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
-case "$WHICH" in
-  lab) APPS="lab" ;;
-  storm) APPS="storm" ;;
-  both) APPS="lab storm" ;;
-  alife) APPS="alife"
-    [[ $PREVIEW -eq 1 ]] || die "--app alife builds the preview for now: add --preview (alife.app arrives when the old apps are retired)" ;;
-  *) usage >&2; die "--app must be lab, storm, both or alife (got: $WHICH)" ;;
-esac
-[[ $PREVIEW -eq 0 || "$WHICH" == "alife" ]] || die "--preview goes with --app alife"
 
 BUILD_DIR="${OUT_DIR:-$GUI_DIR/.build}"
 BUILD_DIR="${BUILD_DIR/#\~/$HOME}"
@@ -86,20 +64,8 @@ BUILD_DIR="${BUILD_DIR/#\~/$HOME}"
 mkdir -p "$BUILD_DIR"
 BUILD_DIR="$(cd "$BUILD_DIR" && pwd -P)"
 
-# What differs between the apps. $1 = lab|storm; sets A_* variables.
-app_vars() {  # $1 = lab|storm|alife
-  case "$1" in
-    lab)
-      A_MODE="lab"; A_NAME="AlifeControl"; A_EXEC="AlifeControl"; A_DIR="AlifeControl.app"
-      A_ID="$LAB_BUNDLE_ID"; A_ICON="lab"; A_CATEGORY="public.app-category.developer-tools" ;;
-    storm)
-      A_MODE="world"; A_NAME="Storm Worlds"; A_EXEC="StormWorlds"; A_DIR="Storm Worlds.app"
-      A_ID="$STORM_BUNDLE_ID"; A_ICON="storm"; A_CATEGORY="public.app-category.simulation-games" ;;
-    alife)
-      A_MODE="alife"; A_NAME="alife Preview"; A_EXEC="alife"; A_DIR="alife Preview.app"
-      A_ID="$ALIFE_PREVIEW_BUNDLE_ID"; A_ICON="alife"; A_CATEGORY="public.app-category.simulation-games" ;;
-  esac
-}
+A_NAME="alife"; A_EXEC="alife"; A_DIR="alife.app"; A_ID="$ALIFE_BUNDLE_ID"; A_ICON="alife"
+A_CATEGORY="public.app-category.simulation-games"; A_MODE="alife"
 
 is_running() {  # $1 = bundle ID, $2 = path of the installed executable
   if [[ -n "$(lsappinfo find bundleid="$1" 2>/dev/null || true)" ]]; then return 0; fi
@@ -110,22 +76,19 @@ is_running() {  # $1 = bundle ID, $2 = path of the installed executable
 if [[ $INSTALL -eq 1 ]]; then
   if [[ ! -d "$INSTALL_DIR" || ! -w "$INSTALL_DIR" ]]; then
     echo "error: $INSTALL_DIR is not writable (this script never uses sudo)." >&2
-    echo "Try: $0 --app $WHICH --install --install-dir ~/Applications" >&2
+    echo "Try: $0 --install --install-dir ~/Applications" >&2
     exit 1
   fi
   # Installing replaces the copy in INSTALL_DIR with the bundle in BUILD_DIR; the same directory would delete the new one first.
   if [[ "$(cd "$INSTALL_DIR" && pwd -P)" == "$BUILD_DIR" ]]; then
     die "--out and --install-dir are the same directory ($BUILD_DIR): installing would delete the bundles just built. Use another --out."
   fi
-  for app in $APPS; do
-    app_vars "$app"
-    if is_running "$A_ID" "$INSTALL_DIR/$A_DIR/Contents/MacOS/$A_EXEC"; then
-      die "$A_NAME ($A_ID) is running. Quit it first; not touching it in case a run or a world is active."
-    fi
-  done
+  if is_running "$A_ID" "$INSTALL_DIR/$A_DIR/Contents/MacOS/$A_EXEC"; then
+    die "$A_NAME ($A_ID) is running. Quit it first; not touching it in case a run or a world is active."
+  fi
 fi
 
-# 1. Release build (once: both apps are this binary).
+# 1. Release build.
 echo "==> swift build -c release"
 (cd "$GUI_DIR" && swift build -c release)
 BIN_DIR="$(cd "$GUI_DIR" && swift build -c release --show-bin-path)"
@@ -153,8 +116,7 @@ else
   fi
 fi
 
-build_app() {  # $1 = lab|storm|alife
-  app_vars "$1"
+build_app() {
   local bundle="$BUILD_DIR/$A_DIR"
 
   # 2. Icon.
@@ -162,15 +124,14 @@ build_app() {  # $1 = lab|storm|alife
   swift "$SCRIPT_DIR/make-icon.swift" "$WORK/$A_ICON.iconset" "$A_ICON"
   iconutil -c icns "$WORK/$A_ICON.iconset" -o "$WORK/$A_ICON.icns"
 
-  # 3. Bundle. The executable is named for the app so that the menu bar, Activity Monitor and `pgrep` tell the two apart.
+  # 3. Bundle. The executable is named for the app (`pkill -f alife` matches it too).
   echo "==> assembling $bundle"
   rm -rf "$bundle"
   mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
   cp "$BINARY" "$bundle/Contents/MacOS/$A_EXEC"
   cp "$WORK/$A_ICON.icns" "$bundle/Contents/Resources/AppIcon.icns"
 
-  # AlifeLaunchMode tells the one executable which app it is (LaunchMode.swift); the same key turns on the shared
-  # repository-folder setting (RepoPathStore.swift).
+  # AlifeLaunchMode marks a bundle made by this script (AppPlan.swift): only such a process reads the old apps' preferences (RepoPathStore.swift).
   cat > "$bundle/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -205,8 +166,7 @@ PLIST
   codesign --verify --strict --verbose=2 "$bundle"
 }
 
-install_app() {  # $1 = lab|storm|alife
-  app_vars "$1"
+install_app() {
   local bundle="$BUILD_DIR/$A_DIR" dest="$INSTALL_DIR/$A_DIR"
   echo "==> installing to $dest"
   # Re-check: it may have been launched during the build.
@@ -218,28 +178,30 @@ install_app() {  # $1 = lab|storm|alife
   echo "installed: $dest"
 }
 
-for app in $APPS; do build_app "$app"; done
+build_app
 
 # Notarization (not done): with a Developer ID identity and a timestamp (--timestamp instead of
-# --timestamp=none), zip each bundle with `ditto -c -k --keepParent`, then
-#   xcrun notarytool submit "Storm Worlds.zip" --keychain-profile <profile> --wait
-#   xcrun stapler staple "Storm Worlds.app"
+# --timestamp=none), zip the bundle with `ditto -c -k --keepParent`, then
+#   xcrun notarytool submit "alife.zip" --keychain-profile <profile> --wait
+#   xcrun stapler staple "alife.app"
 
-# 5. Install. Every copy is checked again first, so that a launch during the build stops the script before it replaces any of
-# them (not after the Lab and before Storm Worlds).
+# 5. Install: only alife.app. The retired apps are never touched; their paths are printed with how to Trash them.
 if [[ $INSTALL -eq 1 ]]; then
-  for app in $APPS; do
-    app_vars "$app"
-    if is_running "$A_ID" "$INSTALL_DIR/$A_DIR/Contents/MacOS/$A_EXEC"; then
-      die "$A_NAME ($A_ID) is running. Quit it first; nothing was installed."
-    fi
-  done
-fi
-for app in $APPS; do
-  app_vars "$app"
-  if [[ $INSTALL -eq 1 ]]; then
-    install_app "$app"
-  else
-    echo "built: $BUILD_DIR/$A_DIR (use --install to copy it to $INSTALL_DIR)"
+  if is_running "$A_ID" "$INSTALL_DIR/$A_DIR/Contents/MacOS/$A_EXEC"; then
+    die "$A_NAME ($A_ID) is running. Quit it first; nothing was installed."
   fi
-done
+  install_app
+  OLD=()
+  for name in "AlifeControl.app" "Storm Worlds.app" "alife Preview.app"; do
+    [[ -e "$INSTALL_DIR/$name" ]] && OLD+=("$INSTALL_DIR/$name")
+  done
+  if [[ ${#OLD[@]} -gt 0 ]]; then
+    echo
+    echo "The retired apps are still installed, and were not touched (alife replaces them; its settings were read from theirs, never changed):"
+    for path in "${OLD[@]}"; do echo "  $path"; done
+    echo "To remove one, quit it, then drag it to the Trash in Finder, or run:"
+    for path in "${OLD[@]}"; do echo "  osascript -e 'tell application \"Finder\" to delete POSIX file \"$path\"'"; done
+  fi
+else
+  echo "built: $BUILD_DIR/$A_DIR (use --install to copy it to $INSTALL_DIR)"
+fi
