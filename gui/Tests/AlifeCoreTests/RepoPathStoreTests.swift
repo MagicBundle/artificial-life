@@ -3,8 +3,8 @@ import Testing
 
 @testable import AlifeCore
 
-/// The repository folder shared by the Lab app and Storm Worlds, and moved from the Lab's own preferences. Every domain
-/// here is in memory: the real preferences are never read or written, and no property list is left behind.
+/// The alife folder: kept in the app's own preferences (the domain the Lab and Storm Worlds shared), taken once from their domains,
+/// which are only read. Every domain here is in memory: the real preferences are never read or written, and no property list is left behind.
 @Suite struct RepoPathStoreTests {
     private let key = RepoPathStore.key
 
@@ -22,10 +22,10 @@ import Testing
         #expect(own.string(forKey: key) == "/work/artificial-life")
     }
 
-    @Test func stormWorldsTakesTheFolderOfTheLabsDomain() {
+    @Test func aSecondAppTakesTheFolderOfTheLabsDomain() {
         let shared = MemoryDomain(), lab = MemoryDomain()
         lab.set("/work/artificial-life", forKey: key)
-        // Storm Worlds: its own preferences are empty, the Lab's are a legacy source.
+        // A second app: its own preferences are empty, the Lab's are a legacy source.
         let storm = RepoPathStore(shared: shared, own: MemoryDomain(), legacy: [lab])
         #expect(storm.load() == "/work/artificial-life")
         #expect(shared.string(forKey: key) == "/work/artificial-life")
@@ -48,14 +48,15 @@ import Testing
         #expect(RepoPathStore(shared: MemoryDomain(), own: own, legacy: [lab]).load() == "/mine")
     }
 
-    @Test func aFolderChosenInOneAppIsTheOtherOnesAtItsNextStart() {
-        let shared = MemoryDomain(), labOwn = MemoryDomain(), stormOwn = MemoryDomain()
-        let lab = RepoPathStore(shared: shared, own: labOwn)
-        let storm = RepoPathStore(shared: shared, own: stormOwn, legacy: [labOwn])
-        storm.save("/chosen/in/storm")
-        #expect(lab.load() == "/chosen/in/storm")
-        lab.save("/chosen/in/lab")
-        #expect(storm.load() == "/chosen/in/lab")
+    @Test func aFolderChosenInAnOldAppIsTheNewOnesAtItsNextStartAndTheOtherWayRound() {
+        // The old apps write the shared domain, which is the new app's own (the same bundle identifier).
+        let domain = MemoryDomain(), labOwn = MemoryDomain()
+        let oldApp = RepoPathStore(shared: domain, own: labOwn)
+        let app = RepoPathStore(shared: domain, own: domain)
+        oldApp.save("/chosen/in/the/old/app")
+        #expect(app.load() == "/chosen/in/the/old/app")
+        app.save("/chosen/in/alife")
+        #expect(oldApp.load() == "/chosen/in/alife")
     }
 
     @Test func aSaveIsMirroredToTheAppsOwnPreferencesForAnOlderBuild() {
@@ -104,25 +105,37 @@ import Testing
         #expect(suites.asked.isEmpty, "no shared suite is opened: swift run stays separate from the installed apps")
     }
 
-    @Test func aBundleWithTheKeyUsesTheSharedSuiteAndMigratesFromTheLabsDomain() {
+    @Test func aBundleWithTheKeyUsesItsOwnDomainAndReadsTheOldAppsFromTheirs() {
         let standard = MemoryDomain(), suites = Suites()
-        let lab = MemoryDomain()
+        let lab = MemoryDomain(), storm = MemoryDomain()
         lab.set("/labs", forKey: key)
         suites.domains[RepoPathStore.labDomain] = lab
-        let store = RepoPathStore.forApp(info: "world", environment: [:], standard: standard, suite: suites.open)
-        #expect(suites.asked == [RepoPathStore.sharedSuite, RepoPathStore.labDomain])
+        suites.domains[RepoPathStore.stormDomain] = storm
+        let store = RepoPathStore.forApp(info: "alife", environment: [:], standard: standard, suite: suites.open)
+        #expect(suites.asked == [RepoPathStore.stormDomain, RepoPathStore.labDomain], "never its own identifier as a suite")
         #expect(store.load() == "/labs")
-        #expect(suites.domains[RepoPathStore.sharedSuite]?.string(forKey: key) == "/labs")
+        #expect(standard.string(forKey: key) == "/labs", "copied into the app's own domain")
         store.save("/chosen")
-        #expect(suites.domains[RepoPathStore.sharedSuite]?.string(forKey: key) == "/chosen")
-        #expect(lab.string(forKey: key) == "/labs", "the Lab's own preferences are not written from the game")
+        #expect(standard.string(forKey: key) == "/chosen")
+        #expect(lab.string(forKey: key) == "/labs" && storm.all.isEmpty, "the old apps' domains are only read")
+    }
+
+    @Test func theAppsOwnFolderBeatsStormWorldsAndStormWorldsBeatsTheLab() {
+        let suites = Suites()
+        suites.domains[RepoPathStore.labDomain] = { let d = MemoryDomain(); d.set("/lab", forKey: key); return d }()
+        suites.domains[RepoPathStore.stormDomain] = { let d = MemoryDomain(); d.set("/storm", forKey: key); return d }()
+        let fresh = MemoryDomain()
+        #expect(RepoPathStore.forApp(info: "alife", environment: [:], standard: fresh, suite: suites.open).load() == "/storm")
+        let own = MemoryDomain()
+        own.set("/own", forKey: key)
+        #expect(RepoPathStore.forApp(info: "alife", environment: [:], standard: own, suite: suites.open).load() == "/own")
     }
 
     @Test func theOverrideSuiteReplacesTheSharedOneAndTheLabsDomain() {
         let standard = MemoryDomain(), suites = Suites()
         standard.set("/own", forKey: key)
         let store = RepoPathStore.forApp(
-            info: "world", environment: [RepoPathStore.suiteOverrideEnvironment: "test-suite"], standard: standard,
+            info: "alife", environment: [RepoPathStore.suiteOverrideEnvironment: "test-suite"], standard: standard,
             suite: suites.open)
         #expect(suites.asked == ["test-suite"])
         #expect(store.load() == "/own")  // migrated from the app's own preferences into the override suite
@@ -135,7 +148,7 @@ import Testing
         let standard = MemoryDomain(), suites = Suites()
         standard.set("/owners", forKey: key)
         let store = RepoPathStore.forApp(
-            info: "lab", environment: [RepoPathStore.suiteOverrideEnvironment: "test-suite"], standard: standard,
+            info: "alife", environment: [RepoPathStore.suiteOverrideEnvironment: "test-suite"], standard: standard,
             suite: suites.open)
         _ = store.load()
         store.save("/owners")  // what the Repository field does on its own, unchanged
@@ -158,6 +171,7 @@ import Testing
     @Test func theNamesAreTheOnesTheBundlesUse() {
         #expect(RepoPathStore.key == "repoPath")  // unchanged: the Lab has always stored it under this key
         #expect(RepoPathStore.sharedSuite == "io.github.magicbundle.alife")
+        #expect(RepoPathStore.stormDomain == "io.github.magicbundle.stormworlds")
         #expect(RepoPathStore.labDomain == "io.github.magicbundle.alifecontrol")
         #expect(RepoPathStore.suiteOverrideEnvironment == "ALIFE_PREFS_SUITE")
     }

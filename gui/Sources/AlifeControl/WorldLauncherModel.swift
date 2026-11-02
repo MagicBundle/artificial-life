@@ -1,8 +1,8 @@
 import AlifeCore
 import Foundation
 
-/// The logic behind the launcher sheet: what is under `runs/`, which worlds can be resumed, and the planet being set up
-/// (DESIGN §33.4.7). The sheet's view is `WorldLauncherView`; `launch` is how a request reaches the `PlayController`.
+/// What is under `runs/`, which worlds can be resumed, and the planet being set up (DESIGN §33.4.7). It was the logic of the launcher
+/// sheet; the set-up page and the Worlds page use it now (`SetupModel.launcher`). `launch` is how a request reaches the `PlayController`.
 @MainActor
 final class WorldLauncherModel: ObservableObject {
     @Published private(set) var catalog = PlayCatalog()
@@ -218,5 +218,12 @@ extension WorldLauncherModel {
         WorldLauncherModel(
             runsDirectory: { run.repoReady ? run.repoURL.appendingPathComponent("runs") : nil },
             launch: { request in play.start(request, executable: run.alifeURL, directory: run.repoURL) })
+    }
+}
+
+extension WorldLauncherModel {
+    /// The source's name, with "sphere" and its radius for a planet (DESIGN §46.9: a world's geometry is shown).
+    static func title(of source: PlaySource) -> String {
+        source.geometry == "sphere" ? "\(source.name)  (sphere\(source.planetRadius.map { ", radius " + World3DLevers.text($0) } ?? ""))" : source.name
     }
 }

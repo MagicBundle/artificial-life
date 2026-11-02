@@ -93,7 +93,6 @@ struct AppShellView: View {
             library.refresh()
             library.startTimer()
             // Welcome: a launch without a working engine opens on Worlds, where the card says what to do (a remembered page would hide it).
-            controller.alifeWording = true
             shell.welcome.refresh(controller)
             // (once per launch: not again when the window comes back from the Dock, and not over a person who went to fix the folder)
             if !shell.welcomeShownAtLaunch {

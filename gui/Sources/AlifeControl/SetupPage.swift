@@ -404,7 +404,7 @@ struct SetupPage: View {
             } else {
                 labelled("Start from") {
                     Picker("Start from", selection: Binding(get: { launcher.planet.source }, set: { model.chooseSource($0) })) {
-                        ForEach(launcher.catalog.sources) { Text(LauncherPlanetBox.title(of: $0)).tag($0.name) }
+                        ForEach(launcher.catalog.sources) { Text(WorldLauncherModel.title(of: $0)).tag($0.name) }
                     }
                     .labelsHidden().fixedSize()
                 }

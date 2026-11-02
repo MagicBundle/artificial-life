@@ -127,16 +127,15 @@ import Testing
 
     // MARK: M4: the window comes back, and closing it closes the app's other windows
 
-    private func delegate(_ plan: LaunchMode) -> AppDelegate {
+    private func delegate() -> AppDelegate {
         let delegate = AppDelegate(run: RunController(storedPath: "", savePath: { _ in }, candidates: [], isApp: false), play: PlayController(), quitPanel: .offscreen())
-        delegate.plan = plan.plan
         delegate.replyToTerminate = {}
         delegate.terminate = {}
         return delegate
     }
 
     @Test func aClickOnTheDockIconBringsTheClosedWindowBack() {
-        let delegate = delegate(.alife)
+        let delegate = delegate()
         var opened = 0
         delegate.reopenMainWindow = { opened += 1 }
         let stray = window(nil)  // the glass window of the quit question's alert, which stays visible after Cancel
@@ -152,16 +151,6 @@ import Testing
         #expect(opened == 1)
     }
 
-    @Test func theOldAppsKeepAppKitsOwnReopen() {
-        for mode in [LaunchMode.lab, .world] {
-            let delegate = delegate(mode)
-            var opened = 0
-            delegate.reopenMainWindow = { opened += 1 }
-            #expect(delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false))
-            #expect(opened == 0)
-        }
-    }
-
     private func window(_ id: String?) -> NSWindow {
         let window = QuietWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.borderless], backing: .buffered, defer: true)
         window.isReleasedWhenClosed = false
@@ -173,7 +162,7 @@ import Testing
     }
 
     @Test func closingTheMainWindowClosesSettingsAndTheViewerSoTheAppEndsThroughTheQuit() {
-        let delegate = delegate(.alife)
+        let delegate = delegate()
         let main = window(AppShell.mainWindowID), settings = window("settings"), viewer = window("viewer3d")
         defer { for w in [main, settings, viewer] { w.close() } }
         main.close()  // (as the player's close did; the observer then calls this)
@@ -184,13 +173,5 @@ import Testing
         defer { other.close() }
         delegate.mainWindowClosed(windows: { [other] })
         #expect(other.isVisible)
-    }
-
-    @Test func theOldAppsDoNotCloseOtherWindowsWithAMainOne() {
-        let delegate = delegate(.lab)
-        let settings = window("settings")
-        defer { settings.close() }
-        delegate.mainWindowClosed(windows: { [settings] })
-        #expect(settings.isVisible)
     }
 }

@@ -94,38 +94,25 @@ struct PresetGuideViewTests {
     }
 
     @Test func theSheetFitsTheSmallestMainWindow() {
-        // AlifeControlApp gives the window a minimum of 960 x 700; the sheet's ideal size is inside it, and it scrolls.
+        // the window's minimum is 1,100 x 700 (AppShell); the sheet's ideal size is inside the smaller 960 x 700 of the old Lab window, and it scrolls.
         let host = NSHostingView(rootView: PresetCompareSheet(content: content, selected: .dev) { _ in })
         host.layoutSubtreeIfNeeded()
         #expect(host.fittingSize.width <= 960 && host.fittingSize.height <= 700, "\(host.fittingSize)")
     }
 
-    // MARK: In the Lab
+    // MARK: In the set-up page
 
-    @Test(arguments: [false, true])
-    func theLabShowsTheCardUnderThePickerAndTheSheetOpens(dark: Bool) throws {
+    @Test func aPickInTheSheetRunsWhatThePickerDidOnAChange() async throws {
+        // The sheet's click is `SetupModel.choose(.preset)`: the 3D levers follow the preset and the director cadence is refreshed
+        // (this was the Lab picker's `onChange`; the set-up page does it in the model).
         let c = controller()
-        c.settings.mode = .new
-        c.settings.preset = .tiny3d
-        // the window of the app has its own background; the hosted view has none, so it is given the system's here
-        let rep = try draw(ContentView(controller: c, presetGuide: content).background(Color(nsColor: .windowBackgroundColor)), width: 1000, height: 760, dark: dark, name: "lab")
-        #expect(colours(rep) > 60)
-    }
-
-    @Test func aPickInTheLabRunsWhatThePickerDoesOnAChange() async throws {
-        // The sheet sets `controller.settings.preset`, the picker's own binding: the 3D levers follow through the view's `onChange`.
-        let c = controller()
-        c.settings.mode = .new
-        let host = NSHostingView(rootView: ContentView(controller: c, presetGuide: content).frame(width: 1000, height: 760))
-        let window = QuietWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 760), styleMask: [.borderless], backing: .buffered, defer: true)
-        window.contentView = host
-        window.alphaValue = 0  // (this one was ordered in at the origin of the display, at full opacity, for as long as the test took)
-        window.ignoresMouseEvents = true
-        window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
-        window.orderBack(nil)
-        defer { window.orderOut(nil) }
-        host.layoutSubtreeIfNeeded()
-        c.settings.preset = .mini3d  // what a click in the sheet does
+        let library = WorldLibrary(runsDirectory: { nil }, scanner: LibraryScanner(settle: 2, timeout: 60, inline: true), observesApp: false,
+                                   watchesFolder: false)
+        let setup = SetupModel.forApp(controller: c, play: PlayController(), library: library,
+                                      defaults: UserDefaults(suiteName: "alife-preset-\(UUID().uuidString)")!)
+        setup.openCreate()
+        setup.choose(.preset(.mini3d))  // what a click in the sheet does
+        #expect(c.settings.preset == .mini3d)
         let followed = await eventually(timeout: .seconds(5)) { c.settings.worldDims == 3 && c.settings.presetWorld3D.height == "80" }
         #expect(followed, "the 3D levers did not follow the preset: dims \(c.settings.worldDims), height \(c.settings.presetWorld3D.height)")
     }

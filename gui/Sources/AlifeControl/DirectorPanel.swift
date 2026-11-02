@@ -6,7 +6,7 @@ import SwiftUI
 /// The "Director" group of the settings column: mode, persona, goal, cadence and the LLM tier.
 struct DirectorSettingsBox: View {
     @ObservedObject var controller: RunController
-    /// "Director" in the two old apps; the `alife` window calls it Autopilot (docs/APP.md §2.5).
+    /// The window calls it Autopilot (docs/APP.md §2.5).
     var title = "Director"
 
     private var busy: Bool { controller.job != nil }
@@ -187,18 +187,7 @@ private enum DirectorTab: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-/// The last interventions and the journal of the tracked or selected run, tailed from its files (the Lab's).
-struct DirectorLiveView: View {
-    @ObservedObject var controller: RunController
-    /// "Director" in the two old apps; the `alife` window says Autopilot (docs/APP.md §2.5).
-    var title = "Director"
-
-    var body: some View {
-        DirectorSnapshotView(snapshot: controller.director, title: title)
-    }
-}
-
-/// The interventions and the journal of one snapshot. The Lab shows the run it follows; the Run panel and Details show the world they are
+/// The interventions and the journal of one snapshot. The Run panel and Details show the world they are
 /// about, growing or not (`WorldReader`). `titled` false drops the box (the panel's tab already says "Autopilot").
 struct DirectorSnapshotView: View {
     var snapshot: DirectorSnapshot?

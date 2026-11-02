@@ -278,9 +278,8 @@ struct SessionTests {
 
     // MARK: D3: closing the window
 
-    private func delegate(_ run: RunController, _ play: PlayController, mode: LaunchMode = .alife) -> AppDelegate {
+    private func delegate(_ run: RunController, _ play: PlayController) -> AppDelegate {
         let delegate = AppDelegate(run: run, play: play, quitPanel: .offscreen())
-        delegate.plan = mode.plan
         delegate.replyToTerminate = {}
         delegate.terminate = {}
         delegate.stopStream = {}
@@ -414,18 +413,6 @@ struct SessionTests {
         }
         #expect(!d.mainWindowShouldClose())
         #expect(inner == false)
-    }
-
-    @Test func theOldAppsNeverAskAndQuitWithTheirLastWindow() async throws {
-        let rig = try PipelineRig(mode: "long:ok")
-        defer { rig.finish() }
-        try await growing(rig)
-        for mode in [LaunchMode.lab, .world] {
-            let d = delegate(rig.controller, rig.play, mode: mode)
-            d.askClose = { _ in Issue.record("the old apps keep their behaviour"); return (.cancel, false) }
-            #expect(d.mainWindowShouldClose())
-            #expect(d.applicationShouldTerminateAfterLastWindowClosed(NSApp))
-        }
     }
 
     @Test func keepingARunAliveClosesTheOpenWorldAndSavesItWhileTheRunGoesOn() async throws {
@@ -577,14 +564,12 @@ struct SessionTests {
         #expect(rig.controller.job == .run)
     }
 
-    @Test func anAppWithNoReopenClosureOrAnOldModeDoesNothing() throws {
+    @Test func aWindowThatNeverAppearedHasNothingToReopen() throws {
         let rig = try PipelineRig(mode: "ok:ok")
         defer { rig.finish() }
         let d = delegate(rig.controller, rig.play)
         #expect(!d.showMainWindowIfNeeded(), "no closure yet (the window never appeared)")
-        let old = delegate(rig.controller, rig.play, mode: .lab)
-        old.reopenMainWindow = { Issue.record("the old apps keep AppKit's own") }
-        #expect(!old.showMainWindowIfNeeded())
+        #expect(d.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false), "and AppKit does as it does")
     }
 
     // MARK: The close guard of a real window

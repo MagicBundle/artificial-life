@@ -3,20 +3,14 @@ import Testing
 
 @testable import AlifeCore
 
-/// The words and numbers of the quit confirmation and panel (docs/APP.md §5.4), and the `LaunchPlan` flags that switch them on.
+/// The words and numbers of the quit confirmation and panel (docs/APP.md §5.4).
 @Suite struct QuitWordingTests {
-    @Test func bothModesConfirmARunAndWaitForIt() {
-        for mode in LaunchMode.allCases {
-            #expect(mode.plan.confirmsRunOnQuit, "\(mode)")
-            #expect(mode.plan.quitWaitsForRun, "\(mode)")
-        }
-    }
-
     @Test func theQuestionNamesTheRunAndStatesTheLoss() {
         #expect(QuitWording.confirmTitle(run: "run-1") == "Stop 'run-1' and quit?")
         #expect(QuitWording.confirmDetail.contains("save point"))
         #expect(QuitWording.confirmDetail.contains("after 120 s"))
         #expect(QuitWording.confirmDetail.contains("lost"))
+        #expect(QuitWording.confirmDetail.contains("Keep growing") && !QuitWording.confirmDetail.contains("Lab"))
     }
 
     @Test func aRunWaitsLongerThanAnythingElse() {

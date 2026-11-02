@@ -50,12 +50,8 @@ package enum QuitWording {
 
     package static func confirmTitle(run: String) -> String { "Stop '\(run)' and quit?" }
 
+    /// A stopped world is continued with *Keep growing* (docs/APP.md §5.4).
     package static let confirmDetail =
-        "The run writes a save point first; continue it later from the Lab with Mode: Resume. If it has not finished that "
-        + "after \(runWaitSeconds) s, it is stopped anyway and the steps since its last save point are lost."
-
-    /// The same in the `alife` window, where a stopped world is continued with *Keep growing* (docs/APP.md §5.4).
-    package static let confirmDetailShell =
         "The run writes a save point first; continue it later with Keep growing. If it has not finished that "
         + "after \(runWaitSeconds) s, it is stopped anyway and the steps since its last save point are lost."
 

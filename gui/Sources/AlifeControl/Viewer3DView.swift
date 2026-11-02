@@ -78,44 +78,6 @@ struct ViewerColourPicker: View {
     }
 }
 
-/// The content of the "3D Viewer" window: the controls, the Metal view, and a status line. The controls, the overlay and the status line are
-/// the pieces `ViewerStreamControls`, `ViewerViewControls`, `ViewerOverlay` and `ViewerStatusBar`, which the research Watch page of the `alife`
-/// window uses too.
-struct Viewer3DView: View {
-    @ObservedObject var stream: StreamController
-    @StateObject private var model: ViewerModel
-
-    init(stream: StreamController) {
-        self.stream = stream
-        _model = StateObject(wrappedValue: ViewerModel(stream: stream))
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            ViewerStreamControls(stream: stream, model: model, canFollow: true) { stream.restart(follow: $0) }
-            Divider()
-            ViewerViewControls(stream: stream, model: model)
-            Divider()
-            ZStack {
-                // No Metal device is created until a stream is open.
-                if stream.phase == .idle {
-                    Color(red: 0.035, green: 0.04, blue: 0.055)
-                } else if stream.header?.isSphere == true {
-                    SphereLabMetalView(stream: stream, model: model)
-                } else {
-                    ViewerMetalView(stream: stream, model: model)
-                }
-                ViewerOverlay(stream: stream, model: model, idleText: "No stream is open. Choose a run in the main window and press Open 3D viewer.")
-            }
-            Divider()
-            ViewerStatusBar(stream: stream, model: model)
-        }
-        .frame(minWidth: 760, minHeight: 560)
-        .background(WindowCloseObserver(restorable: false) { stream.stop() })
-        .onDisappear { stream.stop() }
-    }
-}
-
 // MARK: - The Metal view
 
 /// Hosts a `ViewerMTKView` and feeds it from the stream. SwiftUI calls `updateNSView` when the stream, the display
