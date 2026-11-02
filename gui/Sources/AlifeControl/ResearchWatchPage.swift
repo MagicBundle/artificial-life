@@ -78,14 +78,19 @@ struct ResearchWatchPage: View {
         .navigationTitle(DetailsGuide.title(world))
         .navigationSubtitle(WatchGuide.observerLine(follows: pageState.value.hasSource ? pageState.value.follows : nil))
         .toolbar {
-            ToolbarItemGroup {
+            // Separate items at their own width: in one group the glass squeezes the last button against the window's corner.
+            ToolbarItem {
                 Picker("Dock", selection: $sideRaw) {
                     ForEach(DockSide.allCases) { Image(systemName: Self.symbol($0)).tag($0.rawValue) }
                 }
                 .pickerStyle(.segmented)
                 .help("Dock the Run panel on the left, the right or the bottom")
-                WatchFormChip(form: .research)
+            }
+            ToolbarItem { WatchFormChip(form: .research).fixedSize() }
+            if #available(macOS 26.0, *) { ToolbarSpacer(.fixed) }
+            ToolbarItem {
                 Button("Details", action: showDetails)
+                    .fixedSize()
                     .help("What this world is, how it is doing, and what you can do with it")
             }
         }
