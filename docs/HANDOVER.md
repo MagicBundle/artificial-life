@@ -981,7 +981,7 @@ unit (§37.4).
      Autopilot) starts from them. (Test with an address nothing listens on first; the scripted run did, and read "FAIL connection: ConnectionRefusedError".)
   6. **Help.** alife Help and World Controls (Help menu) open one window of seven topics; the Watch topic says what a research world can and cannot do.
   7. **One menu word per action** (the audit): Watch, Details, Check World, Stop, Open Classic 2D Viewer are the same words on the cards, Details, the menus and the panel.
-  **Open, for you:** Help > World Controls and the dock's View > Controls... are two places for "the controls" (the hint on the map and the tables); Cmd-R stays the
+  **Open, for you:** the control center's clock strip still says **Resume** for the pause button (shared with the old apps, left as it was; §2.5 says Pause/Run); Help > World Controls and the dock's View > Controls... are two places for "the controls" (the hint on the map and the tables); Cmd-R stays the
   set-up page's button and is not in the World menu (it would start a world from any page); two Stop buttons are on Watch while a run grows (the bar's and the panel's: one action).
   What was **not** exercised and is yours: the Metal picture on a lit display (every window composite in the scripted runs was blank: the status line showed frames
   arriving), a real mouse and trackpad on the new controls, the toolbar items (a window server that composes nothing), VoiceOver, 13 inches, and the app on a folder of yours.
