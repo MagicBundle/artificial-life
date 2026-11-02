@@ -151,6 +151,7 @@ extension WorldModel {
     /// A `CLCK` arrived: a chapter notice for a world that does not stop, and the attention a stop asks for.
     func handleClock() {
         guard let clock = play.store.clock else { return }
+        awayClockChanged()
         storage.note(clock: clock)
         if display.spin, clock.rate != 0 { startAnimating() }  // (the spin stood still while paused)
         let chapter = Int(clock.chapter)
@@ -250,7 +251,8 @@ extension WorldModel {
             chapter = Int(clock.chapter)
             if clock.rate == 0 { stop = clock.reason == .chapter ? .chapter : (clock.reason == .alert ? .alert : nil) }
         }
-        return WatchCue.cue(phase: phase, world: play.world, stop: stop, chapter: chapter, unread: attention.unread, looking: viewerIsLooking)
+        return WatchCue.cue(phase: phase, world: play.world, stop: stop, chapter: chapter, unread: attention.unread, looking: viewerIsLooking,
+                            pause: awayHold)
     }
 
     /// The Watch page appeared or went (`ShellModel`). Showing it clears the unread alerts and the badge when the window is the one in
@@ -261,6 +263,8 @@ extension WorldModel {
         view?.canvasVisibilityChanged()
         sphere.view?.canvasVisibilityChanged()
         if active, windowIsKey() { windowBecameKey() }
+        // D4: the world is paused while the player is on another page, and continues when they come back (if they pick up).
+        if active { returnedToWatch() } else { leftWatch() }
     }
 
     // MARK: Powers

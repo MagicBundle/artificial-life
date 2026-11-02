@@ -10,18 +10,31 @@ struct AlifeApp: App {
     @StateObject private var shell = ShellModel(session: .shared)
     @StateObject private var library: WorldLibrary
     @StateObject private var setup: SetupModel
+    @StateObject private var switcher: WorldSwitcher
+    /// The Dock icon's progress bar for a run, and the badge and bounce when it ends (D3).
+    @StateObject private var dock: DockTileController
     private let appName = (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? LaunchMode.alife.plan.appName
 
     init() {
         // (the set-up model reads the library, so both are made here and handed to the scenes)
         let library = WorldLibrary.forApp(run: .shared)
         _library = StateObject(wrappedValue: library)
-        _setup = StateObject(wrappedValue: SetupModel.forApp(controller: .shared, play: PlayController.shared, library: library))
+        let setup = SetupModel.forApp(controller: .shared, play: PlayController.shared, library: library)
+        _setup = StateObject(wrappedValue: setup)
+        _switcher = StateObject(wrappedValue: WorldSwitcher.forApp(controller: .shared, play: PlayController.shared))
+        // The run's target: the pipeline's when it grows the run, else the `run.steps` of the run's own config.
+        let controller = RunController.shared
+        let coordinator = setup.coordinator
+        _dock = StateObject(wrappedValue: DockTileController(controller: controller, surface: SystemDockTile()) {
+            if let plan = coordinator.plan, case .growing = plan.state, let target = plan.targetSteps { return target }
+            guard let run = controller.runningRunName, controller.repoReady else { return nil }
+            return DockTileController.configTarget(run: run, repo: controller.repoURL)
+        })
     }
 
     var body: some Scene {
         Window(appName, id: AppShell.mainWindowID) {
-            AppShellView(shell: shell, controller: controller, library: library, setup: setup)
+            AppShellView(shell: shell, controller: controller, library: library, setup: setup, switcher: switcher)
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 1280, height: 800)

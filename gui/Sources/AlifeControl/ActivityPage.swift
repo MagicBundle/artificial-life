@@ -9,18 +9,20 @@ struct ActivityPage: View {
     @ObservedObject var play: PlayController
     @ObservedObject var stream: StreamController
 
-    static func facts(controller: RunController, play: PlayController, stream: StreamController) -> ActivityGuide.Facts {
+    static func facts(controller: RunController, play: PlayController, stream: StreamController, away: AwayPause.Hold = .none,
+                      picksUp: Bool = true) -> ActivityGuide.Facts {
         ActivityGuide.Facts(
             runName: controller.hasRunJob ? (controller.runningRunName ?? "being started") : nil,
             runStopping: controller.hasRunJob && controller.stopRequested,
             setupRunning: controller.job == .setup, checkRunning: controller.job == .inspect,
             worldName: play.isActive ? (play.world ?? "") : nil, worldStarting: play.phase == .starting,
             saving: play.retiredWorlds, streamRun: stream.phase == .idle ? nil : (stream.source?.run ?? ""),
-            classicViewerOpen: controller.viewerRunning)
+            classicViewerOpen: controller.viewerRunning, worldPausedAway: away.isAway, picksUp: picksUp)
     }
 
     var body: some View {
-        let items = ActivityGuide.items(Self.facts(controller: controller, play: play, stream: stream))
+        let items = ActivityGuide.items(Self.facts(controller: controller, play: play, stream: stream, away: shell.awayHold,
+                                                   picksUp: shell.session.model.picksUpWhereLeft))
         VStack(alignment: .leading, spacing: 16) {
             Text("Activity").font(.largeTitle.weight(.semibold))
             if items.isEmpty {

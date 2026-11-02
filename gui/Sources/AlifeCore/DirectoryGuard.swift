@@ -113,6 +113,8 @@ package enum SetupRules {
         package var runJob: Bool
         /// The world open in Watch (starting, live or paused), nil when none is.
         package var openWorld: String?
+        /// The open world is still starting (it cannot be stopped to make room: the switching sheet is for a live one).
+        package var openWorldStarting: Bool
         package var guardState: DirectoryGuard
         package var folderExists: Bool
         package var engineReady: Bool
@@ -122,8 +124,9 @@ package enum SetupRules {
 
         package enum Pipeline: Equatable, Sendable { case none, running, waiting }
 
-        package init(runJob: Bool = false, openWorld: String? = nil, guardState: DirectoryGuard = DirectoryGuard(), folderExists: Bool = true,
-                     engineReady: Bool = true, folderProblem: String? = nil, pipeline: Pipeline = .none) {
+        package init(runJob: Bool = false, openWorld: String? = nil, openWorldStarting: Bool = false, guardState: DirectoryGuard = DirectoryGuard(),
+                     folderExists: Bool = true, engineReady: Bool = true, folderProblem: String? = nil, pipeline: Pipeline = .none) {
+            self.openWorldStarting = openWorldStarting
             self.pipeline = pipeline
             self.runJob = runJob
             self.openWorld = openWorld
@@ -158,7 +161,10 @@ package enum SetupRules {
             if !row.hasSavePoint { return "No save point to start from yet." }
             return nil
         case .makePlanet:
-            if let open = facts.openWorld { return open == row.name ? "Close it first" : "Close \(open) first" }
+            if let open = facts.openWorld {
+                if open == row.name { return "Close it first" }
+                if facts.openWorldStarting { return "\(open) is still starting" }  // (another live world is stopped by the sheet, R5)
+            }
             if row.state == .saving || facts.guardState.writer(of: row.name)?.writer == .saving { return "Saving…" }
             if !row.hasSavePoint { return "No save point to start from yet." }
             if row.diedOut { return WorldsGuide.diedOutHasNoPlanet }

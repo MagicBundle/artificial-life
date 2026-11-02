@@ -29,6 +29,8 @@ struct RunExit: Equatable {
     var forced: Bool
     var problem: String?
     var serial: Int
+    /// The stop-after timer ended it (a `stopRequested` that the person did not ask for).
+    var byTimer = false
 }
 
 /// Splits a byte stream into lines (on "\n" or "\r", so progress bars become lines too).
@@ -156,6 +158,7 @@ final class RunController: ObservableObject {
     @Published private(set) var lastRunExit: RunExit?
     private var runExitCount = 0
     private var forceRequested = false
+    private var timerEnded = false
     private var jobLogStart = 0
     /// The `world.dims` of the run the status, viewer and inspect buttons refer to (from its `config.json`; a run from
     /// before the key is 2D), or nil when there is no such run or its config cannot be read.
@@ -569,11 +572,18 @@ final class RunController: ObservableObject {
         lastExit = nil
         stopRequested = false
         forceRequested = false
+        timerEnded = false
         elapsed = 0
         remaining = nil
         deadline = nil
         logLines.removeAll()
         jobLogStart = nextLogID
+        if kind == .run {
+            // The numbers of the run before are not this run's: the Dock's bar and the pages read them until the first poll of the new one.
+            metrics = nil
+            pollCount += 1
+            appliedPoll = pollCount  // (a poll of the old run still on its way is not applied)
+        }
         appendLines(["$ " + ([executable.path] + arguments).map(shellQuote).joined(separator: " ")], isError: false)
         let launched = launch(executable, arguments, prefix: "") { [weak self] status, reason in
             self?.finish(kind, status: status, reason: reason)
@@ -605,7 +615,7 @@ final class RunController: ObservableObject {
             let problems = logLines.filter { $0.id >= jobLogStart && $0.isError }.map(\.text)
             lastRunExit = RunExit(
                 run: trackedRun, status: status, signalled: reason == .uncaughtSignal, stopRequested: stopRequested, forced: forceRequested,
-                problem: PipelineWords.firstProblem(in: problems), serial: runExitCount)
+                problem: PipelineWords.firstProblem(in: problems), serial: runExitCount, byTimer: timerEnded)
         }
         stopRequested = false
         refreshRepo()
@@ -838,15 +848,17 @@ final class RunController: ObservableObject {
 
     // MARK: Ticker (1 s): timer, elapsed time; every 2 s: metrics and run list
 
-    func tick() {
+    /// `at` is the time it is (the tests move it past a timer's deadline).
+    func tick(at time: Date = Date()) {
         tickCount += 1
         if job == .run, let started = startedAt {
-            let now = Date()
+            let now = time
             elapsed = now.timeIntervalSince(started)
             if let deadline {
                 remaining = max(0, deadline.timeIntervalSince(now))
                 if now >= deadline, !stopRequested {
                     appendLines(["Timer elapsed."], isError: false)
+                    timerEnded = true
                     stop()
                 }
             }

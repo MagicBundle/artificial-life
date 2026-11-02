@@ -5,6 +5,10 @@ import SwiftUI
 /// folder form as the Worlds page's first card; the old apps keep their own Settings until they are retired.
 struct GeneralSettingsView: View {
     @ObservedObject var controller: RunController
+    /// What closing the window does while a run is going (D3), and whether a world paused by leaving Watch continues when the player comes
+    /// back (D4). The app's own preferences; the question's "Remember my choice" sets the first.
+    @AppStorage(AppShell.closeWithRunKey) private var closeWithRun = ClosePreference.ask.rawValue
+    @AppStorage(AppShell.pickUpKey) private var pickUp = true
 
     var body: some View {
         TabView {
@@ -13,6 +17,27 @@ struct GeneralSettingsView: View {
                     RepoFolderForm(controller: controller)
                     Text("The folder with .venv/bin/alife and runs/. This preview keeps its own choice: the other alife apps are not changed by it.")
                         .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("While you are away") {
+                    // (an old stored "stop" reads as Ask me: Stop and Quit cannot be remembered)
+                    let remembered = ClosePreference(stored: closeWithRun)
+                    Picker("When I close the window while a run is going", selection: Binding(
+                        get: { ClosePreference(stored: closeWithRun).rawValue }, set: { closeWithRun = $0 })) {
+                        ForEach(ClosePreference.allCases) { Text($0.title).tag($0.rawValue) }
+                    }
+                    Text(remembered.effect).font(.caption).foregroundStyle(.secondary)
+                    if remembered == .keep {
+                        HStack {
+                            Text("Remembered from the question: Keep it running.").font(.caption).foregroundStyle(.secondary)
+                            Button("Ask me again") { closeWithRun = ClosePreference.ask.rawValue }
+                                .controlSize(.small)
+                        }
+                    }
+                    Toggle("Pick up where I left off", isOn: $pickUp)
+                    Text(pickUp
+                         ? "Leaving the Watch page pauses the world you are playing, and it continues when you come back. A world you paused yourself, or that stopped at a chapter or an alert, stays paused."
+                         : "Leaving the Watch page pauses the world you are playing, and it stays paused until you press Run in Watch.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 Section("Engine") {
                     if controller.repoReady {
@@ -39,6 +64,6 @@ struct GeneralSettingsView: View {
             .formStyle(.grouped)
             .tabItem { Label("General", systemImage: "gearshape") }
         }
-        .frame(width: 540, height: 360)
+        .frame(width: 540, height: 620)
     }
 }

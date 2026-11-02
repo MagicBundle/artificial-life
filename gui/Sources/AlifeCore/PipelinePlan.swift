@@ -417,7 +417,7 @@ package struct PipelinePlan: Equatable, Sendable {
             case .worldOpen(let open):
                 return Banner(
                     tone: .attention, title: parkedTitle(at: parkedStep),
-                    detail: "\(open) is open, and a new planet replaces the open world. Close \(open), then make the planet.",
+                    detail: "\(open) is open, and a new planet replaces the open world. Make planet asks to stop \(open) first; it is saved.",
                     fraction: nil, next: nil, buttons: [.makePlanet, .done])
             case .nameTaken:
                 return Banner(

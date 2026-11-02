@@ -19,6 +19,9 @@ final class PipelineCoordinator: ObservableObject {
         var playerStartsWorld: () -> Void = {}
         var showActivity: () -> Void = {}
         var showWatch: () -> Void = {}
+        /// A planet is to be made while a world is open: the sheet asks to stop it first (R5). True when it took the request (`then` runs
+        /// after the world is saved); false when no world has to stop.
+        var switchWorld: (SwitchRequest.Goal, @escaping @MainActor () -> Void) -> Bool = { _, _ in false }
         /// Opens the set-up page on an intent, with a name to suggest.
         var openSetup: (SetupIntent, String?) -> Void = { _, _ in }
         /// The planet's failure is told by the pipeline, not also by the Worlds page.
@@ -80,7 +83,15 @@ final class PipelineCoordinator: ObservableObject {
 
     // MARK: What the window shows
 
-    var banner: PipelinePlan.Banner? { plan?.banner(elapsed: elapsed) }
+    var banner: PipelinePlan.Banner? {
+        guard var banner = plan?.banner(elapsed: elapsed) else { return nil }
+        if let note = parkedNote { banner.detail += " " + note }
+        return banner
+    }
+
+    /// What the last press of a parked pipeline's button was told when it could not go on yet (a world that is still starting cannot be
+    /// stopped by a sheet): never a button that does nothing and says nothing. Gone with the next change of state.
+    @Published private(set) var parkedNote: String?
 
     /// A pipeline is under way (a process runs or it waits for a button): the set-up page shows its progress instead of the form.
     var isActive: Bool { plan?.isActive ?? false }
@@ -206,6 +217,13 @@ final class PipelineCoordinator: ObservableObject {
         case .cancel: apply(.cancelPressed)
         case .makePlanet, .makePlanetFromHere:
             if case .parked = p.state {
+                // (a world that is open is stopped first, through the sheet: the planet starts when it is saved)
+                if play.phase == .starting, let open = play.world {
+                    parkedNote = "\(open) is still starting. Wait until it is open, or cancel it on the Worlds page; then press Make planet again."
+                    return
+                }
+                parkedNote = nil
+                if play.isActive, hooks.switchWorld(.makePlanet(p.name), { [weak self] in self?.apply(.makePlanetPressed) }) { return }
                 apply(.makePlanetPressed)
             } else if let world = p.growName ?? p.source {
                 hooks.openSetup(.makePlanet(from: world), p.name)
@@ -257,7 +275,10 @@ final class PipelineCoordinator: ObservableObject {
     private func apply(_ event: PipelinePlan.Event, around: PipelinePlan.Surroundings? = nil) {
         guard var p = plan else { return }
         let effects = p.apply(event, in: around ?? surroundings())
-        if p != plan { plan = p }
+        if p != plan {
+            plan = p
+            parkedNote = nil
+        }
         for effect in effects { perform(effect) }
         if plan?.isOver == true { stopTicker() }
     }

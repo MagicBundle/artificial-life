@@ -15,7 +15,11 @@ package enum WatchCue {
 
     /// `looking` is `WorldModel.viewerIsLooking`: Watch is shown in the key window. `stop` is why the world is stopped now (a chapter or
     /// an alert with the rate at 0), nil when it runs or the user paused it. `unread` counts the alerts raised while not looking.
-    package static func cue(phase: Phase, world: String?, stop: Stop?, chapter: Int, unread: Int, looking: Bool) -> Cue {
+    ///
+    /// `pause` is the app's own pause (`AwayPause`, docs/APP.md D4): the world is paused because the player left Watch, and the row says
+    /// so; a world they paused, or that stopped at a chapter or an alert, is told as that.
+    package static func cue(phase: Phase, world: String?, stop: Stop?, chapter: Int, unread: Int, looking: Bool,
+                            pause: AwayPause.Hold = .none) -> Cue {
         let name = world ?? ""
         switch phase {
         case .none: return Cue(text: "No world open", needsPlayer: false)
@@ -24,12 +28,20 @@ package enum WatchCue {
         case .failedToStart: return Cue(text: "\(name) · did not start", needsPlayer: false)
         case .failed: return Cue(text: "\(name) · stopped unexpectedly", needsPlayer: false)
         case .live:
-            guard !looking else { return Cue(text: "\(name) · live", needsPlayer: false) }
+            guard !looking else {
+                if case .left = pause { return Cue(text: "\(name) · paused: you left", needsPlayer: false) }
+                return Cue(text: "\(name) · live", needsPlayer: false)
+            }
             var parts = [name]
             switch stop {
             case .chapter: parts.append(chapter > 0 ? "chapter \(chapter) is waiting" : "a chapter is waiting")
             case .alert: parts.append("stopped for an alert")
-            case nil: parts.append("live")
+            case nil:
+                switch pause {
+                case .away: parts.append("paused: you left")
+                case .left: parts.append("paused: you left")
+                case .none: parts.append("live")
+                }
             }
             if unread > 0 { parts.append(unread == 1 ? "1 unread alert" : "\(unread) unread alerts") }
             return Cue(text: parts.joined(separator: " · "), needsPlayer: stop != nil || unread > 0)

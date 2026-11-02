@@ -64,9 +64,10 @@ import Testing
         LibraryRow(name: name, kind: kind, shape: .planet, state: state, note: nil, step: step, lastSaved: Date(timeIntervalSince1970: 1_000))
     }
 
-    private func facts(runJob: Bool = false, open: String? = nil, guardState: DirectoryGuard = DirectoryGuard(), engine: Bool = true, folder: Bool = true)
-        -> SetupRules.Facts {
-        SetupRules.Facts(runJob: runJob, openWorld: open, guardState: guardState, folderExists: folder, engineReady: engine)
+    private func facts(runJob: Bool = false, open: String? = nil, starting: Bool = false, guardState: DirectoryGuard = DirectoryGuard(),
+                       engine: Bool = true, folder: Bool = true) -> SetupRules.Facts {
+        SetupRules.Facts(runJob: runJob, openWorld: open, openWorldStarting: starting, guardState: guardState, folderExists: folder,
+                         engineReady: engine)
     }
 
     @Test func keepGrowingFollowsTheMatrix() {
@@ -101,7 +102,9 @@ import Testing
     @Test func makePlanetFollowsTheMatrix() {
         let f = facts()
         #expect(SetupRules.reason(.makePlanet, on: row(.saved), in: f) == nil)
-        #expect(SetupRules.reason(.makePlanet, on: row(.saved), in: facts(open: "other")) == "Close other first")
+        // R5: another world that is live is stopped by the sheet, so it is not a reason; one that is still starting has to be waited for
+        #expect(SetupRules.reason(.makePlanet, on: row(.saved), in: facts(open: "other")) == nil)
+        #expect(SetupRules.reason(.makePlanet, on: row(.saved), in: facts(open: "other", starting: true)) == "other is still starting")
         #expect(SetupRules.reason(.makePlanet, on: row(.live, kind: .played), in: facts(open: "w")) == "Close it first")
         #expect(SetupRules.reason(.makePlanet, on: row(.growing), in: f) == nil, "newest save point, with a note")
         #expect(SetupRules.reason(.makePlanet, on: row(.saving), in: f) == "Saving…")

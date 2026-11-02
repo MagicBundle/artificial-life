@@ -71,7 +71,11 @@ package enum WorldsGuide {
 
     /// Why a world cannot be played now, in the words of the page; nil when it can. Always said beside the disabled button.
     package static func reason(forPlaying world: PlayWorld, in facts: Facts) -> String? {
-        if let open = facts.openWorld { return open == world.name ? "Open now" : "Close \(open) first" }
+        // (another open world is not a reason: the switching sheet stops it first, R5; only one that is still starting has to be waited for)
+        if let open = facts.openWorld {
+            if open == world.name { return "Open now" }
+            if facts.openWorldIsStarting { return "\(open) is still starting" }
+        }
         if facts.saving.contains(world.name) { return "Saving..." }
         if facts.growing == world.name { return "Still growing" }
         if world.locked { return WorldState.inUseElsewhere.title }
@@ -104,7 +108,7 @@ package enum WorldsGuide {
 
     /// Why *Make planet* is unavailable beyond the form's own errors; nil when the form decides.
     package static func reasonToMakePlanet(_ facts: Facts) -> String? {
-        if let open = facts.openWorld { return "Close \(open) first: a new planet replaces the open world." }
+        if let open = facts.openWorld, facts.openWorldIsStarting { return "\(open) is still starting. Wait for it, or cancel it on the Worlds page." }
         if !facts.folderExists { return facts.folderProblem ?? "The alife folder was not found." }
         if !facts.engineReady { return "Set up the engine first." }
         if facts.catalog.sources.isEmpty {
@@ -156,7 +160,11 @@ package enum WorldsGuide {
     /// Why *Make planet* is unavailable from this world's card; nil when it can be made. Always said beside the grey button.
     package static func reasonToMakePlanet(from row: LibraryRow, in facts: Facts) -> String? {
         // (Short: the open world's card at the top of the page says why, and every card repeats this line.)
-        if let open = facts.openWorld { return open == row.name ? "Close it first" : "Close \(open) first" }
+        // A planet is made from a save point, which a world that is open is still writing; another open world is stopped by the sheet (R5).
+        if let open = facts.openWorld {
+            if open == row.name { return "Close it first" }
+            if facts.openWorldIsStarting { return "\(open) is still starting" }
+        }
         if !facts.folderExists { return facts.folderProblem ?? "The alife folder was not found." }
         if !facts.engineReady { return "Set up the engine first." }
         if row.state == .saving || facts.saving.contains(row.name) { return "Saving..." }

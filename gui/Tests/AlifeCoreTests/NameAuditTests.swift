@@ -49,16 +49,23 @@ import Testing
         ("Stop", "stop-run"),
         ("Force stop", "force-stop"),
         ("Cancel", "cancel"),
+        ("Keep Running", "close-keep-running"),
+        ("Stop and Quit", "close-stop-quit"),
+        ("Keep Playing", "keep-playing"),
+        ("Stop and Play", "switch-and-play"),
+        ("Stop and Make Planet", "switch-and-make-planet"),
+        ("Run", "run-clock"),
+        ("Close Panel", "close-switch-panel"),
         ("Dismiss", "dismiss"),
     ]
 
     /// The page sources that are new in PR-B (the Lab page is `LabPage.swift`).
     static let sources = ["WorldsPage.swift", "ActivityPage.swift", "WatchPage.swift", "GeneralSettingsView.swift", "AppShellView.swift",
                           "AlifeApp.swift", "WorldCards.swift", "WorldLibrary.swift", "SetupPage.swift", "SetupModel.swift", "PipelineViews.swift",
-                          "PipelineCoordinator.swift", "RunNumbersView.swift"]
+                          "PipelineCoordinator.swift", "RunNumbersView.swift", "WorldSwitcher.swift", "DockTileController.swift"]
     static let coreSources = ["WorldsGuide.swift", "ActivityGuide.swift", "WatchCue.swift", "ShellPage.swift", "WorldLibraryState.swift",
                               "LibraryScanner.swift", "Recipe.swift", "PipelinePlan.swift", "SetupPlan.swift", "SetupSettings.swift",
-                              "DirectoryGuard.swift"]
+                              "DirectoryGuard.swift", "SessionRules.swift", "WorldSwitch.swift", "AwayPause.swift", "DockProgress.swift"]
 
     /// The words §2.5 retires or reserves, and the engine's own names, which a page of the new window does not show to the user.
     static let banned = ["Resume", "Checkpoint", "Fork", "Home", "spin-up", "Spin-up", "director.enabled", "Storm Worlds", "Source",

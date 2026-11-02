@@ -99,7 +99,7 @@ import Testing
         #expect(effects == [])
         #expect(p.state == .parked(.worldOpen("mini3s_a"), step: 30_000))
         let b = p.banner(elapsed: 0)
-        #expect(b?.detail.contains("Close mini3s_a") == true && b?.buttons == [.makePlanet, .done])
+        #expect(b?.detail.contains("Make planet asks to stop mini3s_a first") == true && b?.buttons == [.makePlanet, .done])
     }
 
     @Test func aNameThatAppearedWhileItGrewParksWithAWayToUseAnother() {

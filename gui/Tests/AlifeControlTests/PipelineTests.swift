@@ -255,7 +255,7 @@ struct PipelineTests {
         #expect(await rig.waitForState { if case .parked = $0 { return true } else { return false } })
         #expect(rig.coordinator.plan?.state == .parked(.worldOpen("mini3s_a"), step: 30_000))
         #expect(rig.play.world == "mini3s_a" && rig.play.phase == .live, "the open world was not replaced")
-        #expect(rig.coordinator.banner?.detail.contains("Close mini3s_a") == true)
+        #expect(rig.coordinator.banner?.detail.contains("Make planet asks to stop mini3s_a first") == true)
         // pressing the button while it is still open changes nothing
         rig.coordinator.press(.makePlanet)
         #expect(rig.play.world == "mini3s_a" && rig.coordinator.plan?.state == .parked(.worldOpen("mini3s_a"), step: 30_000))

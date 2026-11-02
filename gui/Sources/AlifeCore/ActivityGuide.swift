@@ -17,10 +17,16 @@ package enum ActivityGuide {
         /// The run the 3D viewer's stream shows, nil when no stream runs.
         package var streamRun: String?
         package var classicViewerOpen = false
+        /// The world was paused by the app because the player is on another page (`AwayPause`, docs/APP.md D4).
+        package var worldPausedAway = false
+        /// *Pick up where I left off* is on: the paused world continues when the player goes back to Watch.
+        package var picksUp = true
 
         package init(runName: String? = nil, runStopping: Bool = false, setupRunning: Bool = false, checkRunning: Bool = false,
                      worldName: String? = nil, worldStarting: Bool = false, saving: [String] = [], streamRun: String? = nil,
-                     classicViewerOpen: Bool = false) {
+                     classicViewerOpen: Bool = false, worldPausedAway: Bool = false, picksUp: Bool = true) {
+            self.worldPausedAway = worldPausedAway
+            self.picksUp = picksUp
             self.runName = runName
             self.runStopping = runStopping
             self.setupRunning = setupRunning
@@ -83,10 +89,13 @@ package enum ActivityGuide {
             out.append(Item(kind: .check, title: "Checking a world", detail: "The result will be in the log below.", controls: [.cancel]))
         }
         if let world = facts.worldName {
-            out.append(Item(
-                kind: .world, title: "World \(world)",
-                detail: facts.worldStarting ? "Starting: the fork and the weather warm-up take a while." : "Open in Watch. Closing it saves first.",
-                controls: [.closeWorld]))
+            var detail = facts.worldStarting ? "Starting: the fork and the weather warm-up take a while."
+                : (facts.worldPausedAway ? (facts.picksUp ? "Paused while you are away from Watch. It continues when you go back."
+                                                                 : "Paused while you are away from Watch. It stays paused until you press Run in Watch.")
+                   : "Open in Watch. Closing it saves first.")
+            // R1: a run and a world may coexist, and they share the GPU.
+            if let note = SessionRules.gpuNote(runGoing: facts.runName != nil, worldOpen: true) { detail += " " + note }
+            out.append(Item(kind: .world, title: "World \(world)", detail: detail, controls: [.closeWorld]))
         }
         for name in facts.saving {
             out.append(Item(kind: .saving, title: "Saving \(name)", detail: "Writing its save point. This ends by itself.", controls: []))

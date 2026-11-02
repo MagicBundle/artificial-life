@@ -13,13 +13,15 @@ struct AppShellView: View {
     @ObservedObject var model: WorldModel
     @ObservedObject var library: WorldLibrary
     @StateObject private var setup: SetupModel
+    /// The sheet that stops the open world before another is played or a planet is made (R5).
+    @StateObject private var switcher: WorldSwitcher
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.openWindow) private var openWindow
     private let arguments: [String]
 
     /// `setup` is the app's set-up model (shared with the set-up window); without one the view makes its own (the tests').
-    init(shell: ShellModel, controller: RunController, library: WorldLibrary, setup: SetupModel? = nil, stream: StreamController = .shared,
-         arguments: [String] = CommandLine.arguments) {
+    init(shell: ShellModel, controller: RunController, library: WorldLibrary, setup: SetupModel? = nil, switcher: WorldSwitcher? = nil,
+         stream: StreamController = .shared, arguments: [String] = CommandLine.arguments) {
         self.shell = shell
         self.controller = controller
         self.library = library
@@ -29,6 +31,7 @@ struct AppShellView: View {
         self.arguments = arguments
         let play = shell.session.play
         _setup = StateObject(wrappedValue: setup ?? SetupModel.forApp(controller: controller, play: play, library: library))
+        _switcher = StateObject(wrappedValue: switcher ?? WorldSwitcher.forApp(controller: controller, play: play))
     }
 
     var body: some View {
@@ -37,6 +40,10 @@ struct AppShellView: View {
                 .navigationSplitViewColumnWidth(min: 190, ideal: 215, max: 280)
         } detail: {
             VStack(spacing: 0) {
+                // What became of the world that was open when the window was closed: on whatever page the player comes back to.
+                if let note = shell.closedNote {
+                    ClosedNoteStrip(text: note) { shell.closedNote = nil }
+                }
                 // The pipeline's bar is on every page but the one that shows it in full: the wait is never out of sight.
                 if showsStrip {
                     PipelineStrip(coordinator: setup.coordinator) { shell.select(.setup) }
@@ -51,13 +58,18 @@ struct AppShellView: View {
         // The 3D viewer window (until PR-F) goes with the main window, so that closing the main window ends the app as it always did.
         // The window is the app's: closing it is closing the last window (the Settings window and the 3D Viewer go with it, so that the app
         // ends through the question and the wait of the quit, as the old apps do).
-        .background(WindowCloseObserver(group: "main") {
+        // With a run going, closing it asks "Keep it running / Stop and quit / Cancel" first (D3, `AppDelegate.mainWindowShouldClose`).
+        .background(WindowCloseObserver(group: "main", shouldClose: { AppDelegate.current?.mainWindowShouldClose() ?? true }) {
             dismissWindow(id: AppWindow.viewer3d.rawValue)
             AppDelegate.current?.mainWindowClosed()
         })
+        .sheet(item: switchRequest) { request in
+            SwitchSheet(switcher: switcher, request: request)
+        }
         .onAppear {
             // A click on the Dock icon brings a closed window back (`AppDelegate.applicationShouldHandleReopen`).
             AppDelegate.current?.reopenMainWindow = { openWindow(id: AppShell.mainWindowID) }
+            AppDelegate.current?.onKeptRunning = { [weak shell] world, starting in shell?.windowClosedWithRun(world: world, starting: starting) }
             // A world that stopped while it was starting is an unfinished build; the library keeps what this session knows of it.
             shell.buildEnded = { [weak library] world, note in library?.note(note, forBuild: world) }
             controller.pollsRunList = shell.page == .setup
@@ -87,6 +99,11 @@ struct AppShellView: View {
         }
     }
 
+    /// The switching sheet: up while a switch is asked or waited for; going away by another way than its buttons is `sheetDismissed`.
+    private var switchRequest: Binding<SwitchRequest?> {
+        Binding(get: { switcher.request }, set: { if $0 == nil { switcher.sheetDismissed() } })
+    }
+
     /// The pipeline's bar is on every page but the one that shows it in full, and not on Watch once the planet it made is there to see.
     private var showsStrip: Bool {
         guard setup.coordinator.banner != nil, shell.page != .setup else { return false }
@@ -96,9 +113,9 @@ struct AppShellView: View {
     @ViewBuilder private var page: some View {
         switch shell.page {
         case .watch:
-            WatchChrome(shell: shell, play: play, model: model)
+            WatchChrome(shell: shell, play: play, model: model, controller: controller)
         case .worlds:
-            WorldsPage(shell: shell, controller: controller, play: play, setup: setup, library: library)
+            WorldsPage(shell: shell, controller: controller, play: play, setup: setup, library: library, switcher: switcher)
                 .navigationTitle("Worlds")
         case .activity:
             ActivityPage(shell: shell, controller: controller, play: play, stream: stream)
@@ -156,6 +173,9 @@ struct AppShellView: View {
 
     /// What the pipeline needs of the window: where to show things, and what other processes hold (from the library).
     private func wireSetup() {
+        setup.switcher = switcher
+        switcher.onDropped = { [weak shell] note in shell?.switchDropped(note) }
+        setup.coordinator.hooks.switchWorld = { [weak switcher] goal, then in switcher?.ask(goal, then: then) ?? false }
         setup.show = { [weak shell] in shell?.select(.setup) }
         setup.coordinator.hooks.playerStartsWorld = { [weak shell] in shell?.playerStartsWorld() }
         setup.coordinator.hooks.showActivity = { [weak shell] in shell?.select(.activity) }
@@ -188,7 +208,7 @@ struct AppShellView: View {
             let cue = model.watchCue(startFailed: shell.startFailure != nil)
             return (cue.text, cue.needsPlayer)
         case .activity:
-            return (ActivityGuide.sidebarDetail(ActivityPage.facts(controller: controller, play: play, stream: stream)), false)
+            return (ActivityGuide.sidebarDetail(ActivityPage.facts(controller: controller, play: play, stream: stream, away: shell.awayHold)), false)
         }
     }
 
@@ -202,6 +222,24 @@ struct AppShellView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .help(controller.repoReady ? controller.repoPath : "Open Worlds or Settings to fix it.")
+    }
+}
+
+/// A note over the page, with Dismiss (the strip of the pipeline's bar, in the same place and the same size).
+struct ClosedNoteStrip: View {
+    let text: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "info.circle.fill").foregroundStyle(.tint).accessibilityHidden(true)
+            Text(text).font(.caption).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Button("Dismiss", action: dismiss).controlSize(.small)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background { ZStack { Color(nsColor: .windowBackgroundColor); Color.accentColor.opacity(0.12) } }
     }
 }
 
