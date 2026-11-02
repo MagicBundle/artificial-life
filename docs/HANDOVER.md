@@ -986,6 +986,25 @@ unit (§37.4).
   What was **not** exercised and is yours: the Metal picture on a lit display (every window composite in the scripted runs was blank: the status line showed frames
   arriving), a real mouse and trackpad on the new controls, the toolbar items (a window server that composes nothing), VoiceOver, 13 inches, and the app on a folder of yours.
 
+- **Click-through list for PR-G of the one-app program** (the owner's hands; `docs/APP.md` §3.1, §7.6; DESIGN §33.4.16, row I87; the same `alife Preview.app`).
+  Welcome is one card on the Worlds page. To see each state without touching your own folder, point the preview at a scratch folder in Settings (Cmd-,) > alife
+  folder; the preview keeps its own choice. Scripted real-bundle runs (private folder, real `uv`) are in §7.6.
+  1. **No folder.** Choose a path that does not exist: the card says the folder is not there, the form shows what is wrong, *Check again* looks again, and
+     **I don't have alife yet** opens four copyable lines (*Copy these lines* puts them on the clipboard).
+  2. **A checkout without an engine** (a copy of the repository with no `.venv`): step 2 is next, *Set up engine* runs `uv sync`, the last lines uv prints
+     appear, *Cancel* stops it cleanly (the card then says it was cancelled and *Set up again* carries on). A cold run with downloads takes a minute or two.
+  3. **The check.** When the engine appears the card says "Checking the engine" and then goes away: the page offers your first world. A relaunch shows no card.
+  4. **uv missing** (rename `uv` away from every place in `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin` and `PATH`, or do this on a Mac without it): the
+     card says so before anything is clicked, with `brew install uv`, *Copy this line*, *Open the uv page* and *Check again*; install it and press Check again.
+  5. **A failing engine** (`chmod -x` or break `.venv/bin/alife`): "The engine does not start", with what it printed, *Set up again*, *Check again*, *Copy log*;
+     the sidebar says "Engine does not start" and the list of worlds waits.
+  6. **A failed set-up** (disconnect the network on a cold folder): the last lines of uv, *Set up again*, *Copy log*.
+  7. **Launch on another page**: with Welcome unsatisfied, a launch opens on Worlds even if Activity was the remembered page (not exercised in a scripted run).
+  8. **Light and dark, 1,100 x 700**: pictures of every state are in `SP/app_g_shots` (session scratch) and drawn by `WelcomeViewTests`.
+  **Not exercised and yours:** the progress and failure cards in the real bundle (uv from a warm cache finishes in seconds; they are drawn from stand-ins), uv
+  missing and a failing check in the real bundle, a cold `uv sync`, the clipboard and the uv page opening, a real mouse, VoiceOver. The `alife play --preset`
+  recipe (D1) is not built (APP.md §7.6).
+
 - **3D viewer click-through checklist** (3D PR 5, to add to the checklist above; `gui/README.md`, DESIGN §27.12; not yet
   run by the owner; use the `tiny3d` preset, and `tiny` for the 2D items; run the GPU tests first with the GPU free:
   `cd gui && ALIFE_GPU_TESTS=1 swift test --filter GPURenderTests`, which prints where the PNGs went):
