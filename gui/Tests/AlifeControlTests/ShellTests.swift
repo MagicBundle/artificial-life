@@ -291,6 +291,45 @@ private struct ShellRig {
         #expect(rig.shell.startFailure == nil, "its Watch page tells it; the Worlds page does not claim it never opened")
     }
 
+    // MARK: What the Unfinished card knows of this session's builds
+
+    @Test func aBuildThatFailsWhileItStartsIsRecordedAsFailed() async throws {
+        let rig = try ShellRig(page: .worlds)
+        defer { rig.finish() }
+        var notes: [String: String] = [:]
+        rig.shell.buildEnded = { notes[$0] = $1 }
+        let dies = try rig.scratch.script("dies", "echo 'engine: something went wrong' >&2\nexit 2")
+        rig.play.start(.resume(PlayResume(run: "built")), executable: dies, directory: rig.scratch.url, arguments: [])
+        #expect(await eventually { notes["built"] != nil })
+        #expect(notes["built"] == "It failed")
+    }
+
+    @Test func aBuildTheUserStopsWhileItStartsIsRecordedAsCancelled() async throws {
+        let rig = try ShellRig(page: .worlds)
+        defer { rig.finish() }
+        var notes: [String: String] = [:]
+        rig.shell.buildEnded = { notes[$0] = $1 }
+        let silent = try rig.scratch.script("quiet", "trap 'exit 130' INT\nwhile true; do sleep 0.1; done")
+        rig.play.start(.resume(PlayResume(run: "built")), executable: silent, directory: rig.scratch.url, arguments: [])
+        #expect(rig.play.phase == .starting)
+        rig.play.stop()
+        #expect(await eventually { notes["built"] != nil })
+        #expect(notes["built"] == "You cancelled it")
+    }
+
+    @Test func aWorldThatWentLiveIsNotABuildThatEnded() async throws {
+        let rig = try ShellRig(page: .worlds)
+        defer { rig.finish() }
+        var notes: [String: String] = [:]
+        rig.shell.buildEnded = { notes[$0] = $1 }
+        rig.start()
+        #expect(await eventually { rig.play.phase == .live })
+        rig.play.stop()
+        #expect(await eventually { rig.play.phase != .live })
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(notes.isEmpty)
+    }
+
     @Test func aWorldThatIsStillStartingDoesNotMoveThePage() throws {
         let rig = try ShellRig()
         defer { rig.finish() }

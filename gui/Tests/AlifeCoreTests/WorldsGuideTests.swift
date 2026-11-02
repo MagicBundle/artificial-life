@@ -52,7 +52,7 @@ import Testing
     @Test func aGreyPlayButtonAlwaysHasAReason() {
         let f = facts(catalog(worlds: [world("a"), world("b", locked: true), world("c", step: nil), world("d")]), saving: ["d"])
         #expect(WorldsGuide.reason(forPlaying: world("a"), in: f) == nil)
-        #expect(WorldsGuide.reason(forPlaying: world("b", locked: true), in: f) == "In use by another app")
+        #expect(WorldsGuide.reason(forPlaying: world("b", locked: true), in: f) == "In use elsewhere")
         #expect(WorldsGuide.reason(forPlaying: world("c", step: nil), in: f) == "No save point")
         #expect(WorldsGuide.reason(forPlaying: world("d"), in: f) == "Saving...")
         let open = facts(open: "a")

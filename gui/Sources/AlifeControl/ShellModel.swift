@@ -34,9 +34,16 @@ final class ShellModel: ObservableObject {
     @Published private(set) var worldIsOpen: Bool
     /// Counts the requests to scroll the Worlds page to its planet form (File > Make Planet...).
     @Published private(set) var planetFormRequests = 0
+    /// The last request the Worlds page opened the form for (the page may not exist when the request is made).
+    var planetFormHandled = 0
+
+    /// Called when a world that was being started ended before it was live: its directory name and a sentence for the Unfinished card
+    /// . Set by the window; the library keeps it for the session.
+    var buildEnded: ((String, String) -> Void)?
 
     let session: WorldSession
     private let defaults: UserDefaults
+    private var startingWorld: String?
     private var phaseObserver: AnyCancellable?
     private var previousPhase: PlayPhase
     /// The player pressed Play or Make planet on the Worlds page, or `--world` started a world: the next world to go live is theirs and
@@ -65,8 +72,10 @@ final class ShellModel: ObservableObject {
         switch phase {
         case .starting:
             startFailure = nil
+            startingWorld = session.play.world
         case .live:
             startFailure = nil
+            startingWorld = nil
             if was != .live, startedByArgument || (startedByThePlayer && page == .worlds) { page = .watch }
             startedByThePlayer = false
             startedByArgument = false
@@ -74,16 +83,25 @@ final class ShellModel: ObservableObject {
             // A world that was live and then died is told on its Watch page; one that never got live is told where the player is.
             if was != .live {
                 startFailure = StartFailure(world: session.play.world ?? "", message: message)
+                if let name = session.play.world ?? startingWorld { buildEnded?(name, ShellModel.buildNote(failed: true)) }
             }
             startedByThePlayer = false
             startedByArgument = false
+            startingWorld = nil
         case .idle, .ended:
+            if was == .starting, let name = startingWorld { buildEnded?(name, ShellModel.buildNote(failed: false)) }
             startedByThePlayer = false
             startedByArgument = false
+            startingWorld = nil
         }
     }
 
     func select(_ page: ShellPage) { self.page = page }
+
+    /// What the Unfinished card says about a world that was being started when it ended in this session.
+    static func buildNote(failed: Bool) -> String {
+        failed ? "It failed" : "You cancelled it"
+    }
 
     /// The player pressed Play or Make planet on the Worlds page: the world they start is shown when it is live.
     func playerStartsWorld() {

@@ -26,7 +26,7 @@ struct ShellViewTests {
     }
 
     enum Folder: String, CaseIterable {
-        case missing, noEngine, noRuns, oneRun, worlds
+        case missing, noEngine, noRuns, oneRun, worlds, five, sixty
     }
 
     /// A scratch alife folder in the given state.
@@ -47,6 +47,13 @@ struct ShellViewTests {
             try write("x", "checkpoints/step_0000030000.safetensors", in: research)
             try write("{}", "events/chunk_0.json", in: research)
         }
+        if state == .five { try LibraryTestFolders.many(runs, count: 5) }
+        if state == .sixty {
+            try LibraryTestFolders.many(runs, count: 60)
+            // an archive on a drive that is not connected
+            try FileManager.default.createSymbolicLink(
+                atPath: runs.appendingPathComponent("archived_old").path, withDestinationPath: "/Volumes/Archive/runs/archived_old")
+        }
         if state == .worlds {
             for name in ["mini3s_a", "planet_b"] {
                 let world = runs.appendingPathComponent(name)
@@ -59,7 +66,7 @@ struct ShellViewTests {
     }
 
     private func draw(_ page: ShellPage, state: Folder, dark: Bool, name: String, minimumColours: Int = 25,
-                      failure: StartFailure? = nil) throws -> NSBitmapImageRep {
+                      failure: StartFailure? = nil, configure: (WorldLibrary) -> Void = { _ in }) async throws -> NSBitmapImageRep {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
         let path = try folder(state, scratch)
@@ -73,7 +80,14 @@ struct ShellViewTests {
         shell.select(page)
         shell.startFailure = failure
         let size = CGSize(width: AppShell.minWidth, height: AppShell.minHeight)
-        let host = NSHostingView(rootView: AppShellView(shell: shell, controller: controller, arguments: []))
+        // (world_002 is held by another app, world_003 is the one this window has open, world_004 is growing)
+        let library = WorldLibrary(
+            runsDirectory: { controller.repoReady ? controller.repoURL.appendingPathComponent("runs") : nil }, observesApp: false,
+            lockHeld: { $0.lastPathComponent == "world_002" })
+        library.refresh()
+        _ = await eventually { library.hasScanned }
+        configure(library)
+        let host = NSHostingView(rootView: AppShellView(shell: shell, controller: controller, library: library, arguments: []))
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: true)
         window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         window.contentView = host
@@ -88,7 +102,7 @@ struct ShellViewTests {
         for turn in 0..<40 {
             host.layoutSubtreeIfNeeded()
             window.displayIfNeeded()
-            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+            spin()
             guard turn >= 5 else { continue }
             host.cacheDisplay(in: host.bounds, to: rep)
             if colours(rep) > minimumColours { break }
@@ -99,6 +113,8 @@ struct ShellViewTests {
         }
         return rep
     }
+
+    private func spin() { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
 
     /// The number of distinct colours among a sparse grid of pixels: a blank picture has one or two.
     private func colours(_ rep: NSBitmapImageRep) -> Int {
@@ -118,30 +134,45 @@ struct ShellViewTests {
     private var everything: Bool { out != nil }
 
     @Test(arguments: [false, true])
-    func theWorldsPageDrawsInEveryStateAFolderCanBeIn(dark: Bool) throws {
+    func theWorldsPageDrawsInEveryStateAFolderCanBeIn(dark: Bool) async throws {
         guard everything || !dark else { return }
-        for state in Folder.allCases where everything || state == .missing || state == .worlds {
-            let rep = try draw(.worlds, state: state, dark: dark, name: "worlds-\(state.rawValue)")
+        for state in Folder.allCases where everything || state == .missing || state == .worlds || state == .sixty {
+            let rep = try await draw(.worlds, state: state, dark: dark, name: "worlds-\(state.rawValue)")
             #expect(colours(rep) > 25, "worlds / \(state.rawValue): the page is blank")
         }
     }
 
     @Test(arguments: [false, true])
-    func aWorldThatDidNotOpenIsToldOnTheWorldsPage(dark: Bool) throws {
+    func aWorldThatDidNotOpenIsToldOnTheWorldsPage(dark: Bool) async throws {
         guard everything || !dark else { return }
         let failure = StartFailure(world: "mini3s_a", message: "alife play found no usable checkpoint (exit code 4)")
-        let rep = try draw(.worlds, state: .worlds, dark: dark, name: "worlds-failed", failure: failure)
+        let rep = try await draw(.worlds, state: .worlds, dark: dark, name: "worlds-failed", failure: failure)
         #expect(colours(rep) > 25)
     }
 
     @Test(arguments: [false, true])
-    func theOtherPagesDraw(dark: Bool) throws {
+    func theOtherPagesDraw(dark: Bool) async throws {
         guard everything || !dark else { return }
         for (page, state) in [(ShellPage.watch, Folder.worlds), (.activity, .worlds), (.lab, .oneRun)] {
-            let rep = try draw(page, state: state, dark: dark, name: page.rawValue, minimumColours: page == .watch ? 2 : 12)
+            let rep = try await draw(page, state: state, dark: dark, name: page.rawValue, minimumColours: page == .watch ? 2 : 12)
             // (Watch with no world is a card on a plain page: few colours, but not one)
             let n = colours(rep)
             #expect(n > (page == .watch ? 2 : 12), "\(page.rawValue) dark=\(dark): \(n) colours")
         }
+    }
+
+    @Test(arguments: [false, true])
+    func theFiltersAndTheSearchDraw(dark: Bool) async throws {
+        guard everything || !dark else { return }
+        let unfinished = try await draw(.worlds, state: .sixty, dark: dark, name: "worlds-sixty-unfinished") { $0.filter = .unfinished }
+        #expect(colours(unfinished) > 25)
+        guard everything else { return }
+        let found = try await draw(.worlds, state: .sixty, dark: dark, name: "worlds-sixty-search") {
+            $0.query = "research box"
+            $0.select("world_001")
+        }
+        #expect(colours(found) > 25)
+        let none = try await draw(.worlds, state: .sixty, dark: dark, name: "worlds-sixty-nomatch") { $0.query = "zzz" }
+        #expect(colours(none) > 25)
     }
 }

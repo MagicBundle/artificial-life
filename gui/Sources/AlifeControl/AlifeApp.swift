@@ -8,17 +8,18 @@ struct AlifeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var controller = RunController.shared
     @StateObject private var shell = ShellModel(session: .shared)
+    @StateObject private var library = WorldLibrary.forApp(run: .shared)
     private let appName = (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? LaunchMode.alife.plan.appName
 
     var body: some Scene {
         Window(appName, id: AppShell.mainWindowID) {
-            AppShellView(shell: shell, controller: controller)
+            AppShellView(shell: shell, controller: controller, library: library)
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 1280, height: 800)
         .commands {
             QuitCommands(appName: appName)
-            ShellCommands(shell: shell, controller: controller)
+            ShellCommands(shell: shell, controller: controller, library: library)
         }
 
         // The Lab page's "Open 3D viewer" opens this window until PR-F makes the observer a form of Watch.
@@ -35,6 +36,7 @@ struct AlifeApp: App {
 struct ShellCommands: Commands {
     @ObservedObject var shell: ShellModel
     let controller: RunController
+    let library: WorldLibrary
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -42,7 +44,11 @@ struct ShellCommands: Commands {
             Divider()
             Button("Close World") { shell.closeWorld() }
                 .disabled(!shell.worldIsOpen)
-            Button("Reveal in Finder") { controller.revealInFinder() }
+            Button("Reveal in Finder") {
+                // The world that is chosen while the Worlds page is in view (a world that is gone is told, and no other folder is shown in
+                // its place); on any other page the Lab's run, else the alife folder.
+                Task { await library.revealFromMenu(page: shell.page) { controller.revealInFinder() } }
+            }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
         }
         CommandGroup(before: .windowList) {

@@ -217,7 +217,7 @@ package enum PlayCatalogScanner {
         return entries(in: directory, fileManager: fm) == [PlayLockProbe.lockFile]
     }
 
-    private static func entries(in directory: URL, fileManager fm: FileManager) -> Set<String> {
+    static func entries(in directory: URL, fileManager fm: FileManager) -> Set<String> {
         Set((try? fm.contentsOfDirectory(atPath: directory.path)) ?? []).subtracting([".DS_Store"])
     }
 
@@ -231,7 +231,7 @@ package enum PlayCatalogScanner {
         ((try? fm.contentsOfDirectory(atPath: url.path)) ?? []).contains { !$0.hasPrefix(".") }
     }
 
-    private static func readJSON(_ url: URL) -> [String: Any]? {
+    static func readJSON(_ url: URL) -> [String: Any]? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }

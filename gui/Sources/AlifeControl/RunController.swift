@@ -120,6 +120,13 @@ final class RunController: ObservableObject {
     /// Never used by itself; nil when the folder exists or none was found.
     @Published private(set) var detectedRepo: String?
     @Published private(set) var runs: [String] = []
+    /// Whether the two-second ticker lists `runs/` (and probes every lock) again. The Lab's pickers read that list; the `alife` window's
+    /// library scans on its own, off the main thread, and turns this off while the Lab is not shown (docs/APP.md §5.3). The two old apps
+    /// leave it on.
+    var pollsRunList = true
+    /// Asks whether a directory must not be continued (the `alife` window's library: a played world, a world in use). Nil in the two old
+    /// apps, which keep today's checks.
+    var resumeRefusal: ((String) -> String?)?
     /// The runs whose `play.lock` is held by a process (a world being played or saving).
     @Published private(set) var playLocked: Set<String> = []
     /// The runs with a `director.jsonl`: what a random director can be yoked to (newest first).
@@ -215,6 +222,7 @@ final class RunController: ObservableObject {
         if settings.mode == .resume, playLocked.contains(settings.sourceRun) {
             errors.append("'runs/\(settings.sourceRun)' is being played in the World window (play.lock).")
         }
+        if settings.mode == .resume, let refusal = resumeRefusal?(settings.sourceRun) { errors.append(refusal) }
         return errors
     }
 
@@ -353,6 +361,7 @@ final class RunController: ObservableObject {
     /// The Lab's form set to the first research run of someone who has none: a new run of the small planet preset, 30,000 steps (the
     /// "Small planet" recipe of docs/APP.md §3.2, about two minutes), so that it only has to be started. Does not start it.
     func prepareSmallPlanetRun() {
+        refreshRuns()  // (the name below must be free; the list is not polled while another page is shown)
         settings.mode = .new
         settings.preset = .tiny3s
         settings.steps = "30000"
@@ -770,7 +779,7 @@ final class RunController: ObservableObject {
 
     // MARK: Ticker (1 s): timer, elapsed time; every 2 s: metrics and run list
 
-    private func tick() {
+    func tick() {
         tickCount += 1
         if job == .run, let started = startedAt {
             let now = Date()
@@ -784,7 +793,7 @@ final class RunController: ObservableObject {
             }
         }
         if tickCount % 2 == 0 {
-            refreshRuns()
+            if pollsRunList { refreshRuns() }
             pollMetrics()
             pollDirector()
         }

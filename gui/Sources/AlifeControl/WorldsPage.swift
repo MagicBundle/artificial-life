@@ -1,22 +1,24 @@
 import AlifeCore
 import SwiftUI
 
-/// The Worlds page of the `alife` window (docs/APP.md §2.4, PR-B): the launcher's content as a page. What to do next is said first;
-/// below are the worlds that can be played and the form that makes a planet (the launcher's "New planet" form, with the words of
-/// §2.5). Every grey button has its reason beside it. PR-C gives the list its states and nesting; PR-D replaces the form.
+/// The Worlds page of the `alife` window (docs/APP.md §2.4, PR-C): what to do next first, then the library of worlds with its search, its
+/// filters and a card for each world (its kind, shape, state in plain words and the actions that make sense for it), and the unfinished
+/// builds with the reason each stopped. Every grey button has its reason beside it. The planet form opens from a world's card (a sheet);
+/// PR-D replaces it with the set-up page.
 struct WorldsPage: View {
     @ObservedObject var shell: ShellModel
     @ObservedObject var controller: RunController
     @ObservedObject var play: PlayController
     @ObservedObject var model: WorldLauncherModel
+    @ObservedObject var library: WorldLibrary
     @AppStorage("worlds.advanced") private var advancedOpen = false
-    @State private var showUnfinished = false
+    @State private var planetSheet = false
 
     private var facts: WorldsGuide.Facts {
         WorldsGuide.Facts(
             folderExists: controller.repoFolderExists, folderProblem: Self.folderSentence(controller), engineReady: controller.repoReady,
-            catalog: model.catalog, openWorld: play.isActive ? play.world : nil, openWorldIsStarting: play.phase == .starting,
-            saving: model.saving)
+            catalog: library.state.catalog, openWorld: play.isActive ? play.world : nil, openWorldIsStarting: play.phase == .starting,
+            saving: Set(play.retiredWorlds), growing: controller.runningRunName)
     }
 
     /// What the page says about a folder that is not there: what the folder is for. (The form below says what is wrong with the one
@@ -31,47 +33,61 @@ struct WorldsPage: View {
                 VStack(alignment: .leading, spacing: 20) {
                     if let note = shell.launchNote { launchNote(note) }
                     if let failure = shell.startFailure { failureCard(failure) }
+                    if let gone = library.vanished { goneNote(gone) }
                     nextStepCard
                     if play.phase == .starting { startingBox }
-                    // With nothing to start from the card above says what to do, and that is all the page needs to say.
-                    if controller.repoReady, !(model.catalog.worlds.isEmpty && model.catalog.sources.isEmpty) {
-                        playSection
-                        planetSection.id("planet-form")
-                    }
-                    if controller.repoReady, !model.catalog.unfinished.isEmpty { unfinishedSection }
+                    // With no folder or no engine the card above says what to do, and that is all the page needs to say.
+                    if controller.repoReady, showsLibrary { librarySection }
                 }
                 .padding(24)
                 .frame(maxWidth: 860, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
-            .onChange(of: shell.planetFormRequests) { _, _ in withAnimation { proxy.scrollTo("planet-form", anchor: .top) } }
-        }
-        .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear { refresh() }
-        // While a research run grows, its save points appear in its directory without any other sign: look again every few seconds, so that
-        // a run that can already become a planet is offered as one.
-        .task(id: controller.hasRunJob) {
-            while controller.hasRunJob, !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(3))
-                refresh()
+            .onChange(of: library.reveal) { _, request in
+                if let request { withAnimation { proxy.scrollTo(request.name, anchor: .center) } }
+            }
+            .onAppear {
+                if let request = library.reveal, request.name == library.selected { proxy.scrollTo(request.name, anchor: .center) }
             }
         }
-        .onChange(of: controller.repoReady) { _, _ in refresh() }
-        .onChange(of: controller.runs) { _, _ in refresh() }
-        .onChange(of: play.retiredWorlds) { _, _ in refresh() }
-        .onChange(of: play.phase) { _, _ in refresh() }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refresh() }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear {
+            library.refresh()
+            handlePlanetFormRequest()
+        }
+        .onChange(of: shell.planetFormRequests) { _, _ in handlePlanetFormRequest() }
+        .sheet(isPresented: $planetSheet) {
+            PlanetSheet(model: model, advancedOpen: $advancedOpen, reasons: planetReasons, onMake: makePlanet)
+        }
     }
 
-    private func refresh() { model.refresh(saving: play.retiredWorlds) }
+    /// File > Make Planet… opens the form on the world that is chosen, else on the newest.
+    private func handlePlanetFormRequest() {
+        guard shell.planetFormRequests != shell.planetFormHandled else { return }
+        shell.planetFormHandled = shell.planetFormRequests
+        openPlanetForm(from: library.selected)
+    }
+
+    private func openPlanetForm(from name: String?) {
+        model.prepareForm(from: name)
+        planetSheet = true
+    }
 
     /// Play and Make planet are the player's own action: the world that goes live from them is shown (`ShellModel.playerStartsWorld`).
-    private func playWorld(_ world: PlayWorld) {
-        shell.playerStartsWorld()
-        model.resume(world)
+    private func playWorld(_ name: String) {
+        // The folder is looked at off the main thread with a deadline; an answer that does not come does not stop the play (the engine says).
+        Task {
+            guard await library.checkThere(name) != .gone else { return library.noteGone(name) }
+            guard let world = library.state.catalog.worlds.first(where: { $0.name == name }) else { return }
+            // (The reason is read again at the moment of the click: another process may have taken the world since the card was drawn.)
+            guard WorldsGuide.reason(forPlaying: world, in: facts) == nil else { return }
+            shell.playerStartsWorld()
+            model.resume(world)
+        }
     }
 
     private func makePlanet() {
+        planetSheet = false
         shell.playerStartsWorld()
         model.startPlanet()
     }
@@ -84,6 +100,19 @@ struct WorldsPage: View {
             Text(text).textSelection(.enabled)
             Spacer()
             Button("Dismiss") { shell.launchNote = nil }
+        }
+        .padding(12)
+        .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// A world that was there a moment ago and is not: it was removed outside the app, or its drive went away.
+    private func goneNote(_ name: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "questionmark.folder").foregroundStyle(.orange)
+            Text("\(name) is no longer in this folder. It may have been moved or removed, or its drive may have been disconnected.")
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Button("Dismiss") { library.vanished = nil }
         }
         .padding(12)
         .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
@@ -155,20 +184,29 @@ struct WorldsPage: View {
                 if let growing = WorldsGuide.growingNote(source: source, growing: controller.runningRunName) {
                     Text(growing).font(.caption).foregroundStyle(.secondary)
                 }
-                makePlanetButton(prominent: true)
+                HStack {
+                    Button("Make planet…") { openPlanetForm(from: source) }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(WorldsGuide.reasonToMakePlanet(facts) != nil)
+                    if let why = WorldsGuide.reasonToMakePlanet(facts) {
+                        Text(why).font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text("You can choose the name and the weather before it starts.").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             case .play(let name):
                 header("play.circle", "Play \(name)")
-                if let world = model.catalog.worlds.first(where: { $0.name == name }) {
+                if let world = library.state.catalog.worlds.first(where: { $0.name == name }) {
                     Text(WorldsGuide.summary(world)).foregroundStyle(.secondary)
                 }
                 HStack {
-                    Button("Play") { if let w = model.catalog.worlds.first(where: { $0.name == name }) { playWorld(w) } }
+                    Button("Play") { playWorld(name) }
                         .buttonStyle(.borderedProminent)
                     Text("Opens at 1x. Nothing starts until you press Play.").font(.caption).foregroundStyle(.secondary)
                 }
             case .waitForSave:
                 header("hourglass", "The worlds are busy")
-                Text("Every world is being saved, or is in use by another app. Wait a moment, or make a new planet below.")
+                Text("Every played world is being saved, or is in use by another app. Wait a moment, or choose a world below and press Make planet…")
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             case .watch(let name):
                 header("eye", "\(name) is open")
@@ -214,95 +252,213 @@ struct WorldsPage: View {
         }
     }
 
-    // MARK: Play
 
-    private var playSection: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 0) {
-                if model.catalog.worlds.isEmpty {
-                    Text("No world to play yet. Make a planet from one of your runs below.")
-                        .foregroundStyle(.secondary).padding(8)
-                } else {
-                    ForEach(model.catalog.worlds) { world in
-                        if world.id != model.catalog.worlds.first?.id { Divider() }
-                        row(world)
-                    }
+    // MARK: The library
+
+    /// With nothing in the folder (no world, no build, nothing left out) the card above says what to do, and a list with zeros would repeat it.
+    private var showsLibrary: Bool {
+        let s = library.state
+        return !library.hasScanned || !s.rows.isEmpty || !s.unfinished.isEmpty || !s.offline.isEmpty || !s.others.isEmpty
+    }
+
+    private var librarySection: some View {
+        let state = library.state
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Your worlds").font(.title3.weight(.semibold))
+                Spacer()
+                searchField
+            }
+            Picker("Show", selection: $library.filter) {
+                ForEach(LibraryFilter.allCases) { Text("\($0.title) \(state.counts.count($0))").tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .accessibilityLabel("Show")
+            if !library.hasScanned {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Looking at your worlds…").foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 8)
+            } else if library.filter == .unfinished {
+                unfinishedGrid
+            } else {
+                worldGrid
+            }
+            footnotes
+        }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
+            TextField("Search worlds", text: $library.query)
+                .textFieldStyle(.plain)
+                .accessibilityLabel("Search worlds")
+            if !library.query.isEmpty {
+                Button { library.query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                    .buttonStyle(.plain)
+                    .help("Clear the search")
+                    .accessibilityLabel("Clear the search")
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .frame(width: 240)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 7))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.secondary.opacity(0.3)))
+    }
+
+    private static let columns = [GridItem(.adaptive(minimum: 250, maximum: 420), spacing: 12, alignment: .top)]
+
+    @ViewBuilder private var worldGrid: some View {
+        let state = library.state
+        let rows = state.visible(filter: library.filter, query: library.query)
+        if rows.isEmpty {
+            emptyMessage
+        } else {
+            let f = facts
+            let playable = Dictionary(state.catalog.worlds.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
+            let seeds = Self.seedParents(LibraryState.tree(state.rows))
+            TimelineView(.everyMinute) { context in
+            let now = context.date
+            LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 12) {
+                ForEach(rows) { row in
+                    WorldCard(
+                        row: row, seedOf: seeds[row.name], selected: library.selected == row.name, now: now,
+                        play: CardAction(label: "Play", reason: playable[row.name].flatMap { WorldsGuide.reason(forPlaying: $0, in: f) }),
+                        makePlanet: CardAction(label: "Make planet…", reason: WorldsGuide.reasonToMakePlanet(from: row, in: f)),
+                        isOpen: f.openWorld == row.name,
+                        onSelect: { library.select(row.name, scroll: false) },
+                        onPlay: { playWorld(row.name) },
+                        onWatch: { shell.select(.watch) },
+                        onMakePlanet: { library.select(row.name, scroll: false); openPlanetForm(from: row.name) },
+                        onReveal: { Task { await library.reveal(row.name) } })
+                        .id(row.name)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } label: {
-            Text("Play").font(.headline)
-        }
-    }
-
-    private func row(_ world: PlayWorld) -> some View {
-        let f = facts
-        let reason = WorldsGuide.reason(forPlaying: world, in: f)
-        return HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(world.name).font(.body.weight(.medium))
-                Text(WorldsGuide.summary(world)).font(.caption).foregroundStyle(.secondary)
             }
-            Spacer()
-            if let reason { Text(reason).font(.caption).foregroundStyle(.secondary) }
-            Button("Play") { playWorld(world) }.disabled(reason != nil)
         }
-        .padding(8)
     }
 
-    // MARK: Make a planet
+    /// For each research world that nests under a played world, the played world's name.
+    static func seedParents(_ nodes: [LibraryNode]) -> [String: String] {
+        var out: [String: String] = [:]
+        for node in nodes { for child in node.children { out[child.name] = node.row.name } }
+        return out
+    }
 
-    private var planetSection: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 10) {
-                PlanetForm(model: model, advancedOpen: $advancedOpen)
-                Divider()
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(planetReasons, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
-                    }
-                    Spacer()
-                    makePlanetButton(prominent: false)
+    @ViewBuilder private var unfinishedGrid: some View {
+        let state = library.state
+        let builds = state.unfinishedRows(query: library.query)
+        if builds.isEmpty {
+            emptyMessage
+        } else {
+            let f = facts
+            Text("A planet that was cancelled or failed while it was being made. It cannot be played, and nothing is deleted.")
+                .font(.caption).foregroundStyle(.secondary)
+            TimelineView(.everyMinute) { context in
+            let now = context.date
+            LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 12) {
+                ForEach(builds) { build in
+                    let spec = model.startedSpecs[build.name]
+                    let source = spec?.source ?? build.source?.name
+                    let step = spec.map { $0.sourceStep } ?? build.source?.step
+                    UnfinishedCard(
+                        build: build, selected: library.selected == build.name, now: now,
+                        again: CardAction(
+                            label: "Make again with a new name",
+                            reason: WorldsGuide.reasonToMakeAgain(
+                                source: source, sourceStep: step ?? nil,
+                                sourceSteps: source.flatMap { s in state.catalog.sources.first { $0.name == s }?.checkpoints }, in: f)),
+                        onSelect: { library.select(build.name, scroll: false) },
+                        onMakeAgain: {
+                            model.prepareAgain(build)
+                            planetSheet = true
+                        },
+                        onReveal: { Task { await library.reveal(build.name) } })
+                        .id(build.name)
                 }
             }
-            .padding(4)
-        } label: {
-            Text("Make a planet").font(.headline)
+            }
         }
     }
 
-    /// The words beside a grey Make planet: the page's reason first, then the form's own.
+    private var emptyMessage: some View {
+        let text = WorldsGuide.emptyList(filter: library.filter, query: library.query, counts: library.state.counts)
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(text).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if !library.query.isEmpty {
+                Button("Clear the search") { library.query = "" }
+            } else if library.filter != .all {
+                Button("Show all worlds") { library.filter = .all }
+            }
+        }
+        .padding(.vertical, 8)
+    }
+
+    /// What the list leaves out, said once under it: links to a drive that is not connected, and folders that are not worlds.
+    @ViewBuilder private var footnotes: some View {
+        let unfinished = library.state.unfinished.count
+        if library.hasScanned {
+            VStack(alignment: .leading, spacing: 4) {
+                if let offline = library.offlineSentence {
+                    Label(offline, systemImage: "externaldrive.badge.xmark").font(.caption).foregroundStyle(.secondary)
+                }
+                if library.filter != .unfinished, unfinished > 0 {
+                    Text(unfinished == 1 ? "1 unfinished build is under Unfinished." : "\(unfinished) unfinished builds are under Unfinished.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(library.problemSentences, id: \.self) { sentence in
+                    Label(sentence, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary)
+                }
+                if let others = library.othersSentence { Text(others).font(.caption).foregroundStyle(.secondary) }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// The words beside a grey Make planet in the form's sheet: the page's reason first, then the form's own.
     private var planetReasons: [String] {
         if let why = WorldsGuide.reasonToMakePlanet(facts) { return [why] }
-        return model.planetErrors
+        return model.planetMessages
     }
+}
 
-    private func makePlanetButton(prominent: Bool) -> some View {
-        let reasons = planetReasons
-        return HStack {
-            if prominent {
-                Button("Make planet") { makePlanet() }.buttonStyle(.borderedProminent).disabled(!reasons.isEmpty)
-                if let first = reasons.first { Text(first).font(.caption).foregroundStyle(.secondary) }
-            } else {
-                Button("Make planet") { makePlanet() }.disabled(!reasons.isEmpty)
+/// The planet form in a sheet, opened from a world's card or File > Make Planet…
+struct PlanetSheet: View {
+    @ObservedObject var model: WorldLauncherModel
+    @Binding var advancedOpen: Bool
+    let reasons: [String]
+    let onMake: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Make a planet").font(.title2.weight(.semibold))
+            Text("A planet is a new world made from a save point of a world you have. Nothing is changed in the world it starts from.")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            ScrollView {
+                PlanetForm(model: model, advancedOpen: $advancedOpen).padding(.trailing, 6)
+            }
+            .frame(maxHeight: 420)
+            Divider()
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(reasons, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                }
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Make planet", action: onMake)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!reasons.isEmpty)
             }
         }
-    }
-
-    // MARK: Unfinished
-
-    private var unfinishedSection: some View {
-        DisclosureGroup(isExpanded: $showUnfinished) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("A planet that was cancelled or failed while it was being made. It cannot be played, and nothing is deleted.")
-                    .font(.caption).foregroundStyle(.secondary)
-                ForEach(model.catalog.unfinished, id: \.self) { Text($0).font(.caption.monospaced()) }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 4)
-        } label: {
-            Text("Unfinished (\(model.catalog.unfinished.count))").font(.callout).foregroundStyle(.secondary)
-        }
+        .padding(20)
+        .frame(width: 540)
     }
 }
 
@@ -333,7 +489,7 @@ struct PlanetForm: View {
                 }
                 Toggle("Turn the weather on", isOn: Binding(get: { model.planet.storm }, set: { model.setStorm($0) }))
                     .disabled(model.selectedSource?.weatherOn == true || model.weatherObstacle != nil)
-                if let obstacle = model.weatherObstacle { note(obstacle) }
+                if let obstacle = model.weatherNote { note(obstacle) }
                 if model.planet.storm {
                     Stepper("Weather warm-up: \(WorldsGuide.grouped(model.planet.weatherSpinup)) steps",
                             value: $model.planet.weatherSpinup, in: 1...200_000, step: 1000)
@@ -350,7 +506,7 @@ struct PlanetForm: View {
                             ForEach(PlayHouses.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                         }
                         .pickerStyle(.segmented)
-                        if let housesNote = model.housesNote { note(housesNote) }
+                        if let housesNote = model.housesMessage { note(housesNote) }
                     }
                     .padding(.top, 6)
                 }
