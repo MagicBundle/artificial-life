@@ -24,11 +24,14 @@ package struct SwitchRequest: Equatable, Sendable {
     package var goal: Goal
     /// How long saving `open` is expected to take, in seconds (`SwitchWording.estimateSeconds`).
     package var estimateSeconds: Int
+    /// `open` has a save point to measure the estimate from. Without one the first save may be large, and no number is claimed.
+    package var hasSave: Bool
 
-    package init(open: String, goal: Goal, estimateSeconds: Int = SwitchWording.minimumSeconds) {
+    package init(open: String, goal: Goal, estimateSeconds: Int = SwitchWording.minimumSeconds, hasSave: Bool = true) {
         self.open = open
         self.goal = goal
         self.estimateSeconds = estimateSeconds
+        self.hasSave = hasSave
     }
 
     private func quoted(_ name: String) -> String { "\u{2018}\(name)\u{2019}" }
@@ -50,8 +53,10 @@ package struct SwitchRequest: Equatable, Sendable {
 
     /// What happens to the open world, with the estimate.
     package var detail: String {
-        "\(quoted(open)) is saved first, which takes \(SwitchWording.estimateText(estimateSeconds)). Nothing is lost: you can play it "
-            + "again from Worlds whenever you like."
+        let time = hasSave
+            ? "which takes \(SwitchWording.estimateText(estimateSeconds))"
+            : "which usually takes a few seconds; it has no save point yet, so the first one may take longer"
+        return "\(quoted(open)) is saved first, \(time). You can play it again from Worlds whenever you like."
     }
 
     /// The safe button: nothing changes, and it is the default.
@@ -67,13 +72,39 @@ package struct SwitchRequest: Equatable, Sendable {
     /// The sheet while the open world is saved.
     package var savingTitle: String { "Saving \(quoted(open))\u{2026}" }
 
+    /// The sheet when the save did not end well, or took too long: what happened, and that the other world was not opened.
+    package var failedTitle: String { "\(quoted(open)) did not finish saving" }
+
+    package func failedDetail(_ reason: String?) -> String {
+        let what: String
+        switch goal {
+        case .play(let w): what = "\(quoted(w)) was not opened."
+        case .makePlanet(let w): what = "The planet \(quoted(w)) was not made."
+        }
+        return "\(reason.map { $0 + ". " } ?? "")Its last save point is still there. \(what) Play it from Worlds once \(quoted(open)) has gone."
+    }
+
+    /// The panel that hides the wait: it is not a Cancel.
+    package var closePanelLabel: String { "Close Panel" }
+
+    /// What the Worlds page says when the window was closed while the save went on, so the other world was not opened.
+    package var droppedNote: String {
+        let what: String
+        switch goal {
+        case .play(let w): what = "\(quoted(w)) was not opened"
+        case .makePlanet(let w): what = "the planet \(quoted(w)) was not made"
+        }
+        return "The window was closed while \(quoted(open)) was being saved, so \(what). \(quoted(open)) was saved and closed."
+    }
+
     package func savingDetail(elapsed seconds: Int) -> String {
         let then: String
         switch goal {
         case .play(let w): then = "\(quoted(w)) opens as soon as it is saved."
         case .makePlanet(let w): then = "The planet \(quoted(w)) starts as soon as it is saved."
         }
-        return "\(then) Waited \(max(0, seconds)) s; expected \(SwitchWording.estimateText(estimateSeconds))."
+        let expected = hasSave ? "; expected \(SwitchWording.estimateText(estimateSeconds))" : ""
+        return "\(then) Waited \(max(0, seconds)) s\(expected). You can close this panel: the save goes on."
     }
 }
 

@@ -4,11 +4,11 @@ import Foundation
 // the window says about running a run and a world together (R1). Pure: the app asks, a test checks every case without a window.
 
 /// What closing the window does while a run is going, as the person chose it. The question appears while the answer is `ask`; the
-/// question's own checkbox ("Remember my choice") and Settings set the other two.
+/// question's own checkbox and Settings can make it `keep`. **Stop and Quit cannot be remembered**: one reflex on Command-W would then end a run
+/// of hours, with no question. A stored "stop" (an earlier build allowed it) is read as `ask`.
 package enum ClosePreference: String, CaseIterable, Identifiable, Sendable {
     case ask
     case keep
-    case stop
 
     package var id: String { rawValue }
 
@@ -19,7 +19,6 @@ package enum ClosePreference: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .ask: return "Ask me"
         case .keep: return "Keep it running"
-        case .stop: return "Stop it and quit"
         }
     }
 
@@ -28,8 +27,7 @@ package enum ClosePreference: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .ask: return "A question appears each time you close the window while a run is going."
         case .keep:
-            return "The window closes and the run carries on in the background. The Dock icon shows how far it has got and bounces when it ends."
-        case .stop: return "The run writes a save point, then alife quits. Continue the run later with Keep growing."
+            return "The window closes and the run carries on in the background. The Dock icon shows how far it has got and bounces when it ends; alife stays open until you quit it."
         }
     }
 }
@@ -44,13 +42,23 @@ package struct CloseFacts: Equatable, Sendable {
     package var runStopping: Bool
     /// The played world that is open (starting or live), nil when none is.
     package var world: String?
+    /// The open world is still starting (its fork and warm-up read no stdin: closing the window interrupts it, nothing of it is saved).
+    package var worldStarting: Bool
+    /// What is starting is a planet being made (stage 2): it needs the window and cannot be kept running without one.
+    package var planetBeingMade: Bool
 
-    package init(runGoing: Bool, runName: String? = nil, runStopping: Bool = false, world: String? = nil) {
+    package init(runGoing: Bool, runName: String? = nil, runStopping: Bool = false, world: String? = nil, worldStarting: Bool = false,
+                 planetBeingMade: Bool = false) {
         self.runGoing = runGoing
         self.runName = runName
         self.runStopping = runStopping
         self.world = world
+        self.worldStarting = worldStarting
+        self.planetBeingMade = planetBeingMade
     }
+
+    /// What the question was about: the same decision is taken again when this changed while it was up.
+    package var situation: [Bool] { [runGoing && !runStopping, worldStarting, planetBeingMade] }
 }
 
 /// The question put to the person who closes the window with a run going. The default answer is the first, `keepLabel`: it loses
@@ -62,6 +70,8 @@ package struct CloseQuestion: Equatable, Sendable {
     package var stopLabel: String
     package var cancelLabel: String
     package var rememberLabel: String
+    /// A run can be kept going (three buttons and the checkbox). A planet being made cannot: Cancel and Stop and Quit only.
+    package var offersKeepRunning = true
 }
 
 /// The answer to the question.
@@ -90,12 +100,16 @@ package enum SessionRules {
     /// waits for its save point and there is nothing to ask), and not when only a world is open (it is saved and the app quits, no data is
     /// lost: as before).
     package static func decideClose(_ facts: CloseFacts, preference: ClosePreference) -> CloseDecision {
-        guard facts.runGoing, !facts.runStopping else { return .closeAndQuit }
-        switch preference {
-        case .keep: return .keepRunning
-        case .stop: return .stopAndQuit
-        case .ask: return .ask(question(facts))
+        if facts.runGoing, !facts.runStopping {
+            switch preference {
+            case .keep: return .keepRunning
+            case .ask: return .ask(question(facts))
+            }
         }
+        // A world still starting, a planet above all, needs the window: closing it ends the app, and the build with it. Asked every time;
+        // there is nothing to keep and nothing to remember.
+        if facts.worldStarting { return .ask(startingQuestion(facts)) }
+        return .closeAndQuit
     }
 
     /// The run in a sentence: the world a planet grows from is "the world for 'planet-1'", any other run "the run 'X'".
@@ -108,26 +122,38 @@ package enum SessionRules {
     }
 
     package static func question(_ facts: CloseFacts) -> CloseQuestion {
-        var detail = "Keep Running closes the window and lets it carry on in the background. The Dock icon shows how far it has got and "
-            + "bounces when it ends; a click on the icon brings the window back.\n\n"
-            + "Stop and Quit asks it to write a save point first (up to \(QuitWording.runWaitSeconds) seconds), then quits. "
-            + "Continue it later with Keep growing."
+        var closing = "closes the window"
         if let world = facts.world, !world.isEmpty {
-            detail += "\n\nThe open world \u{2018}\(world)\u{2019} is saved and closed when the window closes."
+            closing += facts.worldStarting
+                ? ", stops \u{2018}\(world)\u{2019} (it is still starting, so nothing of it is saved)"
+                : ", saves and closes the open world \u{2018}\(world)\u{2019}"
         }
+        let detail = "Keep Running \(closing) and lets the run carry on in the background. The Dock icon shows how far it has got and "
+            + "bounces when it ends; a click on the icon brings the window back, and alife stays open until you quit it.\n\n"
+            + "Stop and Quit asks the run to write a save point first (up to \(QuitWording.runWaitSeconds) seconds), then quits. "
+            + "Continue it later with Keep growing, on its card in Worlds."
         return CloseQuestion(
             title: "\(runSubject(facts.runName)) is still growing.", detail: detail, keepLabel: "Keep Running", stopLabel: "Stop and Quit",
-            cancelLabel: "Cancel", rememberLabel: "Remember my choice (change it in Settings)")
+            cancelLabel: "Cancel", rememberLabel: "Remember Keep Running (change it in Settings)")
     }
 
-    /// What ticking "Remember my choice" stores for an answer. Cancel is not a choice, so nothing is stored for it.
+    /// The question for a world that is still starting: closing the window stops it.
+    package static func startingQuestion(_ facts: CloseFacts) -> CloseQuestion {
+        let world = (facts.world?.isEmpty == false ? facts.world! : "the world")
+        let name = facts.world?.isEmpty == false ? "\u{2018}\(world)\u{2019}" : world
+        let detail = facts.planetBeingMade
+            ? "\(name) needs the window: closing it quits alife, which stops the planet before it is ready. Nothing is deleted. "
+                + "The unfinished build stays in Worlds, under Unfinished, and can be made again."
+            : "\(name) is not open yet. Closing the window quits alife, which stops it. Nothing is lost: you can play it again from Worlds."
+        return CloseQuestion(
+            title: facts.planetBeingMade ? "Stop making \(name) and quit?" : "Stop opening \(name) and quit?", detail: detail, keepLabel: "",
+            stopLabel: "Stop and Quit", cancelLabel: "Cancel", rememberLabel: "", offersKeepRunning: false)
+    }
+
+    /// What ticking the checkbox stores for an answer: only Keep Running. Stop and Quit and Cancel are never remembered.
     package static func remembered(_ answer: CloseAnswer, remember: Bool) -> ClosePreference? {
-        guard remember else { return nil }
-        switch answer {
-        case .keepRunning: return .keep
-        case .stopAndQuit: return .stop
-        case .cancel: return nil
-        }
+        guard remember, answer == .keepRunning else { return nil }
+        return .keep
     }
 
     // MARK: R1: one played world, one run
@@ -139,8 +165,25 @@ package enum SessionRules {
 
     // MARK: When the window is closed and the run stays
 
-    /// The note the Worlds page shows after the window came back and a world had been open when it closed.
-    package static func closedWorldNote(_ world: String) -> String {
-        "The window was closed, so \u{2018}\(world)\u{2019} was saved and closed. Press Play to continue it."
+    /// What became of the world that was open when the window was closed with a run going. Said as it is: "being saved" until the process has
+    /// gone, "saved" only then and only if it ended well.
+    package enum ClosedWorld: Equatable, Sendable {
+        case saving
+        case saved
+        case saveFailed(String?)
+        /// It was still starting: it was stopped, and nothing of it was saved.
+        case neverOpened
+    }
+
+    package static func closedWorldNote(_ world: String, _ outcome: ClosedWorld = .saved) -> String {
+        let name = "\u{2018}\(world)\u{2019}"
+        switch outcome {
+        case .saving: return "The window was closed. \(name) is being saved and closed."
+        case .saved: return "The window was closed, so \(name) was saved and closed. Press Play to continue it."
+        case .saveFailed(let detail):
+            return "The window was closed, and \(name) did not finish saving\(detail.map { " (\($0))" } ?? ""). Play continues it from its last save point."
+        case .neverOpened:
+            return "The window was closed while \(name) was still starting, so it was stopped before it opened. Press Play to start it again."
+        }
     }
 }

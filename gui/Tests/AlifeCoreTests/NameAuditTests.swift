@@ -55,7 +55,7 @@ import Testing
         ("Stop and Play", "switch-and-play"),
         ("Stop and Make Planet", "switch-and-make-planet"),
         ("Run", "run-clock"),
-        ("Hide", "hide-switch-sheet"),
+        ("Close Panel", "close-switch-panel"),
         ("Dismiss", "dismiss"),
     ]
 

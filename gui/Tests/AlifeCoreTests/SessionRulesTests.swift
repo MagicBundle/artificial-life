@@ -6,8 +6,9 @@ import Testing
 /// R3 and R1 of docs/APP.md (PR-E): what closing the window does while a run is going (owner decision D3 = C), and what the window says
 /// about a run and a world sharing the GPU. Pure: every case without a window.
 @Suite("Closing the window with a run going (D3) and the rules around it") struct SessionRulesTests {
-    private func facts(run: Bool = true, name: String? = "exp-1", stopping: Bool = false, world: String? = nil) -> CloseFacts {
-        CloseFacts(runGoing: run, runName: name, runStopping: stopping, world: world)
+    private func facts(run: Bool = true, name: String? = "exp-1", stopping: Bool = false, world: String? = nil, starting: Bool = false,
+                       planet: Bool = false) -> CloseFacts {
+        CloseFacts(runGoing: run, runName: name, runStopping: stopping, world: world, worldStarting: starting, planetBeingMade: planet)
     }
 
     // MARK: Whether to ask
@@ -27,7 +28,6 @@ import Testing
         }
         #expect(question.keepLabel == "Keep Running" && question.stopLabel == "Stop and Quit" && question.cancelLabel == "Cancel")
         #expect(SessionRules.decideClose(facts(), preference: .keep) == .keepRunning)
-        #expect(SessionRules.decideClose(facts(), preference: .stop) == .stopAndQuit)
     }
 
     @Test func aRunThatIsAlreadyStoppingAsksNothingAndRemembersNothingElse() {
@@ -41,7 +41,9 @@ import Testing
         #expect(ClosePreference(stored: nil) == .ask)
         #expect(ClosePreference(stored: "") == .ask)
         #expect(ClosePreference(stored: "always") == .ask)
-        #expect(ClosePreference(stored: "keep") == .keep && ClosePreference(stored: "stop") == .stop && ClosePreference(stored: "ask") == .ask)
+        #expect(ClosePreference(stored: "keep") == .keep && ClosePreference(stored: "ask") == .ask)
+        #expect(ClosePreference(stored: "stop") == .ask, "an earlier build could store it: Stop and Quit cannot be remembered, so it asks")
+        #expect(ClosePreference.allCases == [.ask, .keep])
     }
 
     // MARK: The words
@@ -49,25 +51,63 @@ import Testing
     @Test func theQuestionSaysWhatEachButtonDoesInPlainWords() {
         let q = SessionRules.question(facts(name: "planet-1-grow", world: nil))
         #expect(q.title == "The world for \u{2018}planet-1\u{2019} is still growing.")
-        #expect(q.detail.contains("Keep Running closes the window and lets it carry on in the background"))
+        #expect(q.detail.contains("Keep Running closes the window and lets the run carry on in the background"))
         #expect(q.detail.contains("bounces when it ends") && q.detail.contains("brings the window back"))
-        #expect(q.detail.contains("Stop and Quit asks it to write a save point first (up to 120 seconds)"))
-        #expect(q.detail.contains("Keep growing"), "the way back to a stopped run is the app's own word")
+        #expect(q.detail.contains("alife stays open until you quit it"), "the app does not end by itself after the run")
+        #expect(q.detail.contains("Stop and Quit asks the run to write a save point first (up to 120 seconds)"))
+        #expect(q.detail.contains("Keep growing, on its card in Worlds"), "the way back to a stopped run is the app's own word, and where it is")
         #expect(!q.detail.contains("open world"), "no world, no sentence about one")
         #expect(SessionRules.question(facts(name: "exp-2")).title == "The run \u{2018}exp-2\u{2019} is still growing.")
         #expect(SessionRules.question(facts(name: nil)).title == "The run is still growing.")
     }
 
-    @Test func anOpenWorldIsToldItIsSavedAndClosed() {
+    @Test func anOpenWorldIsToldItIsSavedAndClosedInTheSentenceOfKeepRunning() {
         let q = SessionRules.question(facts(world: "mini3s_a"))
-        #expect(q.detail.contains("The open world \u{2018}mini3s_a\u{2019} is saved and closed when the window closes."))
+        #expect(q.detail.hasPrefix("Keep Running closes the window, saves and closes the open world \u{2018}mini3s_a\u{2019} and lets the run carry on"),
+                "the world is closed too: said where Keep Running is explained, not after the other button")
         #expect(!SessionRules.question(facts(world: "")).detail.contains("open world"))
+        // a world still starting has nothing to save
+        let starting = SessionRules.question(facts(world: "p", starting: true))
+        #expect(starting.detail.contains("stops \u{2018}p\u{2019} (it is still starting, so nothing of it is saved)") && !starting.detail.contains("saves and closes"))
+    }
+
+    @Test func aPlanetBeingMadeAsksItsOwnQuestionWhateverWasRemembered() {
+        let making = facts(run: false, name: nil, world: "planet-2", starting: true, planet: true)
+        for preference in ClosePreference.allCases {
+            guard case .ask(let q) = SessionRules.decideClose(making, preference: preference) else {
+                Issue.record("a planet being made must ask")
+                continue
+            }
+            #expect(q.title == "Stop making \u{2018}planet-2\u{2019} and quit?" && !q.offersKeepRunning)
+            #expect(q.stopLabel == "Stop and Quit" && q.cancelLabel == "Cancel")
+            #expect(q.detail.contains("Nothing is deleted") && q.detail.contains("Unfinished") && q.detail.contains("made again"))
+        }
+        // a world opening with Play is not "making"
+        guard case .ask(let q) = SessionRules.decideClose(facts(run: false, name: nil, world: "w", starting: true), preference: .keep) else {
+            Issue.record("a world starting asks too")
+            return
+        }
+        #expect(q.title == "Stop opening \u{2018}w\u{2019} and quit?" && q.detail.contains("you can play it again"))
+        // a live world, nothing starting: as before, nothing asked
+        #expect(SessionRules.decideClose(facts(run: false, name: nil, world: "w"), preference: .ask) == .closeAndQuit)
+        // with a run going the run's question comes first and names the starting world
+        guard case .ask(let both) = SessionRules.decideClose(facts(world: "p", starting: true, planet: true), preference: .ask) else { return }
+        #expect(both.offersKeepRunning && both.detail.contains("stops \u{2018}p\u{2019}"))
+    }
+
+    @Test func theQuestionIsTakenAgainWhenWhatItWasAboutChangedWhileItWasUp() {
+        let run = facts()
+        #expect(run.situation == facts().situation)
+        #expect(facts(run: false, name: nil).situation != run.situation, "the run ended")
+        #expect(facts(stopping: true).situation != run.situation, "it began to stop")
+        #expect(facts(run: false, name: nil, world: "p", starting: true, planet: true).situation != run.situation, "a planet began")
+        #expect(facts(world: "w").situation == run.situation, "a world opening or closing is not what the run's question is about")
     }
 
     @Test func theSafeChoiceIsTheDefaultAndCancelIsNotRememberable() {
         // the first answer is the one that loses nothing and does what closing meant; the destructive one is never a default
         #expect(SessionRules.remembered(.keepRunning, remember: true) == .keep)
-        #expect(SessionRules.remembered(.stopAndQuit, remember: true) == .stop)
+        #expect(SessionRules.remembered(.stopAndQuit, remember: true) == nil, "Stop and Quit is never remembered: one reflex would end a run of hours")
         #expect(SessionRules.remembered(.cancel, remember: true) == nil)
         #expect(SessionRules.remembered(.keepRunning, remember: false) == nil)
         #expect(SessionRules.remembered(.stopAndQuit, remember: false) == nil)
@@ -75,8 +115,8 @@ import Testing
 
     @Test func eachPreferenceHasATitleAndAnEffectLineThatDiffer() {
         let titles = Set(ClosePreference.allCases.map(\.title)), effects = Set(ClosePreference.allCases.map(\.effect))
-        #expect(titles.count == 3 && effects.count == 3)
-        #expect(ClosePreference.keep.effect.contains("carries on in the background") && ClosePreference.stop.effect.contains("Keep growing"))
+        #expect(titles.count == 2 && effects.count == 2)
+        #expect(ClosePreference.keep.effect.contains("carries on in the background") && ClosePreference.keep.effect.contains("until you quit it"))
     }
 
     // MARK: R1
@@ -87,9 +127,16 @@ import Testing
         #expect(SessionRules.gpuNote(runGoing: false, worldOpen: true) == nil)
     }
 
-    @Test func theWorldThatWasOpenIsToldOnTheWayBack() {
+    @Test func theWorldThatWasOpenIsToldOnTheWayBackAsItIsNotBeforeItIsTrue() {
         #expect(SessionRules.closedWorldNote("w").contains("\u{2018}w\u{2019} was saved and closed"))
         #expect(SessionRules.closedWorldNote("w").contains("Press Play"))
+        #expect(SessionRules.closedWorldNote("w", .saving) == "The window was closed. \u{2018}w\u{2019} is being saved and closed.", "saving until the process has gone")
+        #expect(!SessionRules.closedWorldNote("w", .saving).contains("was saved"))
+        let failed = SessionRules.closedWorldNote("w", .saveFailed("it exited with code 1"))
+        #expect(failed.contains("did not finish saving (it exited with code 1)") && failed.contains("last save point") && !failed.contains("was saved"))
+        #expect(SessionRules.closedWorldNote("w", .saveFailed(nil)).contains("did not finish saving."))
+        let never = SessionRules.closedWorldNote("w", .neverOpened)
+        #expect(never.contains("still starting") && never.contains("stopped before it opened") && !never.contains("saved"))
     }
 
     // MARK: Only the alife window
