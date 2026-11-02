@@ -574,7 +574,10 @@ final class SetupModel: ObservableObject {
         case .makePlanet:
             spec = makePlanetSpec
         }
-        guard !(switcher?.isBusy ?? false) else { return }  // (the open world is being saved for another switch)
+        if let switcher, switcher.isBusy {  // (the open world is being saved for another switch: its sheet comes back, the click is answered)
+            switcher.showAgain()
+            return
+        }
         let go: @MainActor () -> Void = { [weak self] in
             guard let self else { return }
             refusal = coordinator.begin(setup, planet: spec, timing: timing)

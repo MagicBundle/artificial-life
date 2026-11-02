@@ -51,6 +51,9 @@ final class ShellModel: ObservableObject {
     private var startingWorld: String?
     private var phaseObserver: AnyCancellable?
     private var awayObserver: AnyCancellable?
+    private var retiredObserver: AnyCancellable?
+    /// The world whose save the closed-window note waits for, and the number of ends seen before it was asked to stop.
+    private var closedWorld: (world: String, after: Int)?
     private var previousPhase: PlayPhase
     /// The player pressed Play or Make planet on the Worlds page, or `--world` started a world: the next world to go live is theirs and
     /// is shown. (A world is never pulled in front of someone who went on to Activity while it started; the set-up page counts as the page it was started from, since it shows the wait.)
@@ -67,6 +70,9 @@ final class ShellModel: ObservableObject {
         session.model.setWatchActive(page == .watch)
         phaseObserver = session.play.$phase.sink { [weak self] phase in
             MainActor.assumeIsolated { self?.phaseChanged(to: phase) }
+        }
+        retiredObserver = session.play.$lastRetiredEnd.sink { [weak self] end in
+            MainActor.assumeIsolated { self?.retiredEnded(end) }
         }
         awayHold = session.model.awayHold
         awayObserver = session.model.$awayHold.removeDuplicates().sink { [weak self] hold in
@@ -114,12 +120,26 @@ final class ShellModel: ObservableObject {
         AppDelegate.current?.showMainWindowIfNeeded()
     }
 
-    /// The window was closed with a run going and stays closed: the world that was open was saved and closed. When the window comes back,
-    /// Worlds says what became of it (Watch would only say that no world is open).
-    func windowClosedWithRun(world: String?) {
-        if let world, !world.isEmpty { closedNote = SessionRules.closedWorldNote(world) }
-        if page == .watch { page = .worlds }
+    /// The window was closed with a run going and stays closed. The world that was open is being saved: the note says "being saved" until its
+    /// process has gone, and then what happened (`RetiredEnd`); a world that was still starting was stopped and nothing of it was saved. The
+    /// player comes back to the page they left, except Watch, which has no world to show any more (Worlds, with the note).
+    func windowClosedWithRun(world: String?, starting: Bool = false) {
+        if let world, !world.isEmpty {
+            closedNote = SessionRules.closedWorldNote(world, starting ? .neverOpened : .saving)
+            closedWorld = starting ? nil : (world, session.play.lastRetiredEnd?.serial ?? 0)
+            if page == .watch { page = .worlds }
+        }
     }
+
+    /// The process of a world that was asked to stop has gone: the note says how it ended.
+    func retiredEnded(_ end: RetiredEnd?) {
+        guard let end, let waiting = closedWorld, NameFolding.same(waiting.world, end.world), end.serial > waiting.after else { return }
+        closedWorld = nil
+        closedNote = SessionRules.closedWorldNote(end.world, end.saved ? .saved : .saveFailed(end.reason))
+    }
+
+    /// A switch the window being closed had waiting was dropped: A is closed (saved), B was not opened.
+    func switchDropped(_ note: String) { closedNote = note }
 
     /// What the Unfinished card says about a world that was being started when it ended in this session.
     static func buildNote(failed: Bool) -> String {

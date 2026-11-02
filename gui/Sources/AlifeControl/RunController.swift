@@ -578,6 +578,12 @@ final class RunController: ObservableObject {
         deadline = nil
         logLines.removeAll()
         jobLogStart = nextLogID
+        if kind == .run {
+            // The numbers of the run before are not this run's: the Dock's bar and the pages read them until the first poll of the new one.
+            metrics = nil
+            pollCount += 1
+            appliedPoll = pollCount  // (a poll of the old run still on its way is not applied)
+        }
         appendLines(["$ " + ([executable.path] + arguments).map(shellQuote).joined(separator: " ")], isError: false)
         let launched = launch(executable, arguments, prefix: "") { [weak self] status, reason in
             self?.finish(kind, status: status, reason: reason)

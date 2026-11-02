@@ -175,9 +175,13 @@ final class QuitPanel {
         let alert = closeAlert(question)
         let response = alert.runModal()
         let remember = alert.suppressionButton?.state == .on
+        if !question.offersKeepRunning {
+            // (Cancel, the default and Escape, then Stop and Quit)
+            return response == .alertSecondButtonReturn ? (.stopAndQuit, false) : (.cancel, false)
+        }
         switch response {
         case .alertFirstButtonReturn: return (.keepRunning, remember)
-        case .alertSecondButtonReturn: return (.stopAndQuit, remember)
+        case .alertSecondButtonReturn: return (.stopAndQuit, false)
         default: return (.cancel, false)
         }
     }
@@ -188,12 +192,18 @@ final class QuitPanel {
         alert.messageText = question.title
         alert.informativeText = question.detail
         alert.alertStyle = .informational
-        alert.addButton(withTitle: question.keepLabel)  // the default button (Return)
-        let stop = alert.addButton(withTitle: question.stopLabel)
-        stop.hasDestructiveAction = true
-        alert.addButton(withTitle: question.cancelLabel)  // Escape
-        alert.showsSuppressionButton = true
-        alert.suppressionButton?.title = question.rememberLabel
+        if question.offersKeepRunning {
+            alert.addButton(withTitle: question.keepLabel)  // the default button (Return)
+            let stop = alert.addButton(withTitle: question.stopLabel)
+            stop.hasDestructiveAction = true
+            alert.addButton(withTitle: question.cancelLabel)  // Escape
+            alert.showsSuppressionButton = true
+            alert.suppressionButton?.title = question.rememberLabel
+        } else {
+            alert.addButton(withTitle: question.cancelLabel)  // the default button and Escape: nothing changes
+            let stop = alert.addButton(withTitle: question.stopLabel)
+            stop.hasDestructiveAction = true
+        }
         return alert
     }
 }

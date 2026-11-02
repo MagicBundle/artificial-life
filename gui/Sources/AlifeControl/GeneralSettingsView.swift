@@ -19,10 +19,20 @@ struct GeneralSettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("While you are away") {
-                    Picker("When I close the window while a run is going", selection: $closeWithRun) {
+                    // (an old stored "stop" reads as Ask me: Stop and Quit cannot be remembered)
+                    let remembered = ClosePreference(stored: closeWithRun)
+                    Picker("When I close the window while a run is going", selection: Binding(
+                        get: { ClosePreference(stored: closeWithRun).rawValue }, set: { closeWithRun = $0 })) {
                         ForEach(ClosePreference.allCases) { Text($0.title).tag($0.rawValue) }
                     }
-                    Text(ClosePreference(stored: closeWithRun).effect).font(.caption).foregroundStyle(.secondary)
+                    Text(remembered.effect).font(.caption).foregroundStyle(.secondary)
+                    if remembered == .keep {
+                        HStack {
+                            Text("Remembered from the question: Keep it running.").font(.caption).foregroundStyle(.secondary)
+                            Button("Ask me again") { closeWithRun = ClosePreference.ask.rawValue }
+                                .controlSize(.small)
+                        }
+                    }
                     Toggle("Pick up where I left off", isOn: $pickUp)
                     Text(pickUp
                          ? "Leaving the Watch page pauses the world you are playing, and it continues when you come back. A world you paused yourself, or that stopped at a chapter or an alert, stays paused."

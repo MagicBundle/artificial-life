@@ -101,6 +101,7 @@ struct SessionViewTests {
             _ = engine
             switcher = WorldSwitcher(play: play)
             switcher.isQuitting = { false }
+            switcher.windowShown = { true }
         }
         func openA() async -> Bool {
             play.start(.resume(PlayResume(run: "a")), executable: scratch.url.appendingPathComponent("alife"), directory: scratch.url, arguments: [])
@@ -123,7 +124,7 @@ struct SessionViewTests {
             #expect(alert.buttons.map(\.title) == ["Keep Running", "Stop and Quit", "Cancel"], "the first is the default, the last answers Escape")
             #expect(alert.buttons[0].keyEquivalent == "\r" && alert.buttons[2].keyEquivalent == "\u{1b}")
             #expect(alert.buttons[1].hasDestructiveAction && !alert.buttons[0].hasDestructiveAction)
-            #expect(alert.showsSuppressionButton && alert.suppressionButton?.title == "Remember my choice (change it in Settings)")
+            #expect(alert.showsSuppressionButton && alert.suppressionButton?.title == "Remember Keep Running (change it in Settings)")
             alert.layout()
             let window = alert.window
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
@@ -134,6 +135,28 @@ struct SessionViewTests {
             try save(rep, name, dark: dark)
             #expect(colours(rep) > 4)
         }
+    }
+
+    @Test(arguments: [false, true])
+    func theQuestionForAPlanetBeingMadeHasTwoButtonsAndNoCheckbox(dark: Bool) throws {
+        guard everything || !dark else { return }
+        let facts = CloseFacts(runGoing: false, world: "planet-2", worldStarting: true, planetBeingMade: true)
+        guard case .ask(let question) = SessionRules.decideClose(facts, preference: .keep) else {
+            Issue.record("a planet being made asks, whatever was remembered")
+            return
+        }
+        let alert = QuitPanel.closeAlert(question)
+        #expect(alert.buttons.map(\.title) == ["Cancel", "Stop and Quit"], "Cancel is the default and answers Escape; no Keep Running exists here")
+        #expect(alert.buttons[1].hasDestructiveAction && !alert.showsSuppressionButton, "and nothing here can be remembered")
+        alert.layout()
+        let window = alert.window
+        window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+        guard let content = window.contentView else { Issue.record("no content"); return }
+        content.layoutSubtreeIfNeeded()
+        let rep = try #require(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+        content.cacheDisplay(in: content.bounds, to: rep)
+        try save(rep, "e-close-making", dark: dark)
+        #expect(colours(rep) > 4)
     }
 
     // MARK: Settings

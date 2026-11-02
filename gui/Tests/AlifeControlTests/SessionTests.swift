@@ -312,7 +312,7 @@ struct SessionTests {
         var asked: [CloseQuestion] = []
         d.askClose = { asked.append($0); return (.keepRunning, false) }
         var told: [String?] = []
-        d.onKeptRunning = { told.append($0) }
+        d.onKeptRunning = { world, _ in told.append(world) }
         #expect(d.mainWindowShouldClose(), "the window may close")
         #expect(asked.count == 1 && asked[0].title == "The run \u{2018}exp-1\u{2019} is still growing." && asked[0].keepLabel == "Keep Running")
         #expect(!d.applicationShouldTerminateAfterLastWindowClosed(NSApp), "the run is the reason to stay")
@@ -373,13 +373,21 @@ struct SessionTests {
         #expect(stored == [.keep])
         d.askClose = { _ in Issue.record("remembered: no question"); return (.cancel, false) }
         #expect(d.mainWindowShouldClose() && !d.applicationShouldTerminateAfterLastWindowClosed(NSApp))
-        // a remembered Stop and Quit also asks nothing, and keeps the window up for the quit
-        current = .stop
+        // Stop and Quit is not rememberable: ticking the box and choosing it stores nothing, and an old stored "stop" asks
+        stored = []
+        current = .ask
+        d.askClose = { _ in (.stopAndQuit, true) }
         var terminated = 0
         d.terminate = { terminated += 1 }
         #expect(!d.mainWindowShouldClose())
+        #expect(stored.isEmpty, "nothing was stored")
         #expect(await eventually { terminated == 1 })
         d.terminationGate.abandonWait()
+        let old = delegate(rig.controller, rig.play)
+        old.closePreference = { ClosePreference(stored: "stop") }
+        var asked = 0
+        old.askClose = { _ in asked += 1; return (.cancel, false) }
+        #expect(!old.mainWindowShouldClose() && asked == 1, "an earlier build's stored Stop and Quit is read as the question")
     }
 
     @Test func aRunAlreadyStoppingIsNotAskedAboutAndTheQuitWaitsForIt() async throws {
@@ -432,11 +440,11 @@ struct SessionTests {
         var asked: [CloseQuestion] = []
         d.askClose = { asked.append($0); return (.keepRunning, false) }
         var told: [String?] = []
-        d.onKeptRunning = { told.append($0) }
+        d.onKeptRunning = { world, _ in told.append(world) }
         var streams = 0
         d.stopStream = { streams += 1 }
         #expect(d.mainWindowShouldClose())
-        #expect(asked[0].detail.contains("The open world \u{2018}mini3s_a\u{2019} is saved and closed when the window closes."))
+        #expect(asked[0].detail.contains("saves and closes the open world \u{2018}mini3s_a\u{2019}"))
         d.mainWindowClosed(windows: { [] })
         #expect(told == ["mini3s_a"], "the shell is told which world was closed")
         #expect(streams == 1, "the 3D viewer's stream goes with the window")
@@ -445,18 +453,59 @@ struct SessionTests {
         #expect(rig.controller.job == .run, "and the run never noticed")
     }
 
-    @Test func theShellSaysWhatBecameOfTheWorldWhenTheWindowComesBack() throws {
+    @Test func theShellSaysWhatBecameOfTheWorldAsItBecomesTrueOnThePageThePlayerLeft() async throws {
         let rig = try WorldRig(page: .watch)
         defer { rig.finish() }
-        rig.shell.windowClosedWithRun(world: "mini3s_a")
-        #expect(rig.shell.page == .worlds, "Watch would only say that no world is open")
-        #expect(rig.shell.closedNote?.contains("\u{2018}mini3s_a\u{2019} was saved and closed") == true)
+        #expect(await rig.start())
+        rig.clock(rate: 0, reason: .userPause)
+        // the window closes with a run going: the world is stopped, and the note says "being saved" until its process has gone
+        rig.play.stop()
+        rig.shell.windowClosedWithRun(world: "w")
+        #expect(rig.shell.page == .worlds, "Watch has no world to show any more")
+        #expect(rig.shell.closedNote?.contains("is being saved and closed") == true && rig.shell.closedNote?.contains("was saved") == false)
+        #expect(await rig.settled { rig.shell.closedNote?.contains("was saved and closed") == true }, "and then that it was: \(rig.shell.closedNote ?? "")")
+        // a close that had no world does not erase an unread note, and does not move the page
         rig.shell.windowClosedWithRun(world: nil)
-        #expect(rig.shell.closedNote != nil, "a close that had no world does not erase a note that is still unread")
-        let other = try WorldRig(page: .setup)
-        defer { other.finish() }
-        other.shell.windowClosedWithRun(world: nil)
-        #expect(other.shell.page == .setup && other.shell.closedNote == nil, "the page the player was on stays")
+        #expect(rig.shell.closedNote?.contains("was saved and closed") == true)
+        for page in [ShellPage.setup, .activity, .worlds] {
+            let other = try WorldRig(page: page)
+            defer { other.finish() }
+            other.shell.windowClosedWithRun(world: "w")
+            #expect(other.shell.page == page, "the page the player was on stays: \(page)")
+        }
+        let watching = try WorldRig(page: .watch)
+        defer { watching.finish() }
+        watching.shell.windowClosedWithRun(world: nil)
+        #expect(watching.shell.page == .watch && watching.shell.closedNote == nil, "Watch with no world in it stays Watch")
+    }
+
+    @Test func aWorldStillStartingIsNotSaidToHaveBeenSaved() throws {
+        let rig = try WorldRig(page: .activity)
+        defer { rig.finish() }
+        rig.shell.windowClosedWithRun(world: "planet-2", starting: true)
+        let note = try #require(rig.shell.closedNote)
+        #expect(note.contains("still starting") && note.contains("stopped before it opened") && !note.contains("saved"))
+    }
+
+    @Test func aSaveThatDidNotEndWellIsSaidSoAndNotSaved() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        // an engine that dies with an error while it "saves"
+        let engine = try scratch.script("alife", "cat \"\(Repo.playFixtureURL("3d_n70").path)\"\nwhile IFS= read -r line; do if [ \"$line\" = quit ]; then echo 'disk full' >&2; exit 1; fi; done")
+        let suite = "alife-failsave-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let play = PlayController()
+        defer { play.shutdown() }
+        let session = WorldSession(play: play, defaults: defaults)
+        let shell = ShellModel(session: session, defaults: defaults)
+        play.start(.resume(PlayResume(run: "w")), executable: engine, directory: scratch.url, arguments: [])
+        #expect(await eventually { play.phase == .live })
+        play.stop()
+        shell.windowClosedWithRun(world: "w")
+        #expect(await eventually { shell.closedNote?.contains("did not finish saving") == true }, "\(shell.closedNote ?? "")")
+        #expect(shell.closedNote?.contains("exited with code 1: disk full") == true && shell.closedNote?.contains("was saved") == false)
+        #expect(play.lastRetiredEnd?.saved == false && play.lastRetiredEnd?.reason?.contains("code 1") == true)
     }
 
     @Test func aRememberedKeepRunningAloneKeepsTheAppAlive() async throws {
@@ -483,7 +532,7 @@ struct SessionTests {
         var asked: [CloseQuestion] = []
         d.askClose = { asked.append($0); return (.keepRunning, false) }
         var told: [String?] = []
-        d.onKeptRunning = { told.append($0) }
+        d.onKeptRunning = { world, _ in told.append(world) }
         #expect(d.closeFacts.world == nil)
         #expect(d.mainWindowShouldClose())
         #expect(!asked[0].detail.contains("mini3s_a"))
@@ -637,19 +686,30 @@ struct SessionTests {
         d.terminationGate.abandonWait()
     }
 
-    @Test func closingWhileThePlanetIsBeingMadeAsksNothingAndTheQuitCancelsIt() async throws {
+    @Test func closingWhileThePlanetIsBeingMadeAsksAndTheQuitCancelsIt() async throws {
         let rig = try PipelineRig(mode: "ok:slow")
         defer { rig.finish() }
         #expect(await rig.create("planet-1").isEmpty)
         #expect(await rig.waitForState { $0 == .making(cancelling: false) })
         #expect(await patiently { rig.coordinator.plan?.making.phase != .starting })
         let d = delegate(rig.controller, rig.play)
-        d.askClose = { _ in Issue.record("no run is going: there is nothing to keep"); return (.cancel, false) }
-        #expect(d.mainWindowShouldClose(), "there is no run job in stage two")
-        #expect(d.applicationShouldTerminateAfterLastWindowClosed(NSApp), "so the app ends with its window, as PR-D's table says")
+        var asked: [CloseQuestion] = []
+        d.askClose = { asked.append($0); return (.cancel, false) }
+        #expect(!d.mainWindowShouldClose(), "Cancel: the window stays and the planet goes on")
+        #expect(asked.count == 1 && asked[0].title == "Stop making \u{2018}planet-1\u{2019} and quit?" && !asked[0].offersKeepRunning)
+        #expect(rig.play.phase == .starting && rig.coordinator.plan?.state == .making(cancelling: false))
+        // Stop and Quit: the window stays up for the quit, which interrupts the planet being built
+        d.askClose = { asked.append($0); return (.stopAndQuit, true) }
+        var stored: [ClosePreference] = []
+        d.storeClosePreference = { stored.append($0) }
+        var terminated = 0
+        d.terminate = { terminated += 1 }
+        #expect(!d.mainWindowShouldClose())
+        #expect(stored.isEmpty && asked.count == 2)
+        #expect(await eventually { terminated == 1 })
         rig.looking = false
         rig.coordinator.isQuitting = { d.terminationGate.isWaiting }
-        #expect(d.applicationShouldTerminate(NSApp) == .terminateLater, "the gate interrupts the planet being built")
+        #expect(d.applicationShouldTerminate(NSApp) == .terminateLater, "the gate interrupts the planet being built, and asks nothing more")
         #expect(await patiently { !rig.play.hasProcess }, "the planet being built was interrupted and has gone")
         #expect(rig.play.phase != .live)
         d.terminationGate.abandonWait()
@@ -699,5 +759,175 @@ struct SessionTests {
         #expect(await patiently { rig.controller.job == nil })
         #expect(d.mainWindowShouldClose(), "no run now")
         #expect(d.applicationShouldTerminateAfterLastWindowClosed(NSApp), "the flag from the last close does not outlive it")
+    }
+
+    // MARK: Review fixes (PR-E review: M1, M5, L1)
+
+    /// The reviewer's test (M5): the player pauses and leaves before the clock says so; the app must not run what it did not pause.
+    @Test func aPauseTheClockHasNotConfirmedYetIsNotTheAppsToUndo() async throws {
+        let rig = try WorldRig()
+        defer { rig.finish() }
+        #expect(await rig.start())
+        rig.clock(rate: 1, reason: .running)
+        rig.play.pause()  // the player's own pause; the clock has not said so yet
+        rig.shell.select(.worlds)
+        rig.clock(rate: 0, reason: .userPause)
+        rig.shell.select(.watch)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(rig.lines("run") == 0, "the player paused it: \(rig.sent)")
+        #expect(rig.model.awayHold == .none)
+    }
+
+    /// Calls `mainWindowShouldClose` as AppKit does, from the run loop and not from inside an actor job, so that what happens while the alert
+    /// is up (a run's exit) can be delivered.
+    private func closeAsAppKitDoes(_ d: AppDelegate) async -> Bool {
+        await withCheckedContinuation { c in
+            RunLoop.main.perform(inModes: [.common]) { c.resume(returning: MainActor.assumeIsolated { d.mainWindowShouldClose() }) }
+        }
+    }
+
+    private func spinUntil(_ seconds: Double = 10, _ condition: () -> Bool) {
+        let until = Date().addingTimeInterval(seconds)
+        while !condition(), Date() < until { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+    }
+
+    /// The reviewer's test (M1): the run ends while the question is up.
+    @Test func aRunThatEndsWhileTheQuestionIsUpLeavesNothingToKeep() async throws {
+        let rig = try PipelineRig(mode: "long:ok")
+        defer { rig.finish() }
+        try await growing(rig, name: "exp-1")
+        let d = delegate(rig.controller, rig.play)
+        var asked = 0
+        d.askClose = { _ in
+            asked += 1
+            rig.controller.stop()  // the run ends while the person reads the question
+            self.spinUntil { rig.controller.job == nil }
+            return (.keepRunning, false)
+        }
+        let closed = await closeAsAppKitDoes(d)
+        #expect(closed)
+        #expect(asked == 1 && rig.controller.job == nil, "not asked again: nothing is left to ask about")
+        #expect(d.applicationShouldTerminateAfterLastWindowClosed(NSApp), "no run is going: the app ends with its window, it does not wait for nothing")
+    }
+
+    @Test func aPlanetThatBeganWhileTheQuestionWasUpIsAskedAboutAndNotInterruptedBehindKeepRunning() async throws {
+        let rig = try PipelineRig(mode: "brief:slow")
+        defer { rig.finish() }
+        rig.looking = true
+        #expect(await rig.create("planet-1").isEmpty)
+        #expect(await rig.waitForGrowing())
+        let d = delegate(rig.controller, rig.play)
+        var asked: [CloseQuestion] = []
+        d.askClose = { question in
+            asked.append(question)
+            if asked.count == 1 {
+                // stage 1 ends and stage 2 starts while the person reads the first question
+                self.spinUntil(30) { rig.play.phase == .starting }
+                return (.keepRunning, false)
+            }
+            return (.cancel, false)
+        }
+        let closed = await closeAsAppKitDoes(d)
+        #expect(!closed, "the second question was answered Cancel: the window stays")
+        #expect(asked.count == 2)
+        #expect(asked[0].offersKeepRunning && asked[1].title == "Stop making \u{2018}planet-1\u{2019} and quit?" && !asked[1].offersKeepRunning)
+        #expect(rig.play.phase == .starting && rig.play.world == "planet-1", "Keep Running did not interrupt the planet, and nothing claimed it was saved")
+        #expect(d.applicationShouldTerminateAfterLastWindowClosed(NSApp))
+        d.askClose = { _ in (.stopAndQuit, false) }
+        var terminated = 0
+        d.terminate = { terminated += 1 }
+        #expect(!(await closeAsAppKitDoes(d)))
+        #expect(await eventually { terminated == 1 })
+        d.terminationGate.abandonWait()
+    }
+
+    @Test func aCancelIsFinalEvenIfTheRunEndedWhileTheQuestionWasUp() async throws {
+        let rig = try PipelineRig(mode: "long:ok")
+        defer { rig.finish() }
+        try await growing(rig, name: "exp-1")
+        let d = delegate(rig.controller, rig.play)
+        var asked = 0
+        d.askClose = { _ in
+            asked += 1
+            rig.controller.stop()
+            self.spinUntil { rig.controller.job == nil }
+            return (.cancel, false)
+        }
+        #expect(!(await closeAsAppKitDoes(d)), "Cancel: the window stays, and the person is not asked again")
+        #expect(asked == 1)
+    }
+
+    @Test func aRunThatBeganToStopWhileTheQuestionWasUpIsNotKept() async throws {
+        let rig = try PipelineRig(mode: "long:ok")
+        defer { rig.finish() }
+        try await growing(rig, name: "exp-1")
+        let d = delegate(rig.controller, rig.play)
+        var asked = 0
+        d.askClose = { _ in
+            asked += 1
+            rig.controller.stop()  // Stop pressed (Activity, Command-period) while the question is up
+            return (.keepRunning, false)
+        }
+        #expect(await closeAsAppKitDoes(d))
+        #expect(asked == 1)
+        #expect(d.applicationShouldTerminateAfterLastWindowClosed(NSApp), "a run that is stopping is not kept: the quit waits for its save point")
+        #expect(await patiently { rig.controller.job == nil })
+    }
+
+    /// A window that says it is minimised (a borderless one cannot be): the Dock click must take it out of the Dock.
+    private final class MinimisedWindow: NSWindow {
+        var minimised = true
+        var restored = 0
+        override var isMiniaturized: Bool { minimised }
+        override var isVisible: Bool { true }  // (whatever it reports, the check is for `isMiniaturized`)
+        override func deminiaturize(_ sender: Any?) {
+            minimised = false
+            restored += 1
+        }
+    }
+
+    @Test func aDockClickBringsAMinimisedWindowOutOfTheDockInsteadOfOpeningANewOne() throws {
+        let rig = try PipelineRig(mode: "ok:ok")
+        defer { rig.finish() }
+        let d = delegate(rig.controller, rig.play)
+        var opened = 0
+        d.reopenMainWindow = { opened += 1 }
+        let window = MinimisedWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.borderless], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        window.identifier = NSUserInterfaceItemIdentifier(AppShell.mainWindowID)
+        d.windowsProvider = { [window] }
+        #expect(!d.mainWindowIsShown, "a window in the Dock is not shown")
+        #expect(d.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false) == false)
+        #expect(window.restored == 1 && opened == 0, "taken out of the Dock; no second window asked for")
+        #expect(d.mainWindowIsShown)
+        #expect(d.applicationShouldHandleReopen(NSApp, hasVisibleWindows: true) == true && window.restored == 1)
+        window.minimised = true
+        #expect(d.showMainWindowIfNeeded() && window.restored == 2, "a menu command with the window in the Dock does the same")
+    }
+
+    @Test func howAWorldThatWasAskedToStopEndedIsToldWithoutGuessing() {
+        func end(_ status: Int32, signalled: Bool = false, starting: Bool = false, detail: String? = nil) -> RetiredEnd {
+            RetiredEnd(world: "w", starting: starting, status: status, signalled: signalled, detail: detail, serial: 1)
+        }
+        #expect(end(0).saved && end(0).reason == nil, "quit, then exit 0: saved")
+        #expect(end(130).saved, "the runner's own interrupt path saves too")
+        #expect(!end(1).saved && end(1, detail: "disk full").reason == "it exited with code 1: disk full")
+        #expect(!end(0, signalled: true).saved && end(0, signalled: true).reason == "it was ended before it was done", "a signal may have cut the save, whatever the number says")
+        #expect(!end(130, signalled: true).saved)
+        #expect(!end(0, starting: true).saved && end(0, starting: true).reason == nil, "a world that was still starting saved nothing, and failed at nothing")
+        #expect(!end(137).saved)
+    }
+
+    @Test func anEndThatWasNotTheClosedWorldsOwnDoesNotChangeItsNote() throws {
+        let rig = try WorldRig(page: .activity)
+        defer { rig.finish() }
+        rig.shell.windowClosedWithRun(world: "w")
+        let saving = rig.shell.closedNote
+        rig.shell.retiredEnded(RetiredEnd(world: "other", starting: false, status: 0, signalled: false, detail: nil, serial: 9))
+        #expect(rig.shell.closedNote == saving, "another world's end")
+        rig.shell.retiredEnded(RetiredEnd(world: "w", starting: false, status: 0, signalled: false, detail: nil, serial: 0))
+        #expect(rig.shell.closedNote == saving, "an end that was already over when the window closed")
+        rig.shell.retiredEnded(RetiredEnd(world: "W", starting: false, status: 0, signalled: false, detail: nil, serial: 1))
+        #expect(rig.shell.closedNote?.contains("was saved and closed") == true, "its own end, whatever the capitals")
     }
 }

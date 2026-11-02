@@ -21,7 +21,7 @@ struct SwitchAndDockTests {
         var ran = 0
         var order: [String] = []
 
-        init(quitSeconds: Double = 0.4) throws {
+        init(quitSeconds: Double = 0.4, quitStatus: Int = 0) throws {
             scratch = try Scratch()
             repo = scratch.url.appendingPathComponent("alife")
             let bin = repo.appendingPathComponent(".venv/bin")
@@ -35,12 +35,13 @@ struct SwitchAndDockTests {
             try handle.truncate(atOffset: 686_000_000)
             try handle.close()
             let engine = bin.appendingPathComponent("alife")
-            let body = "#!/bin/bash\ncat \"\(Repo.playFixtureURL("3d_n70").path)\"\nwhile IFS= read -r line; do if [ \"$line\" = quit ]; then sleep \(quitSeconds); exit 0; fi; done\n"
+            let body = "#!/bin/bash\ncat \"\(Repo.playFixtureURL("3d_n70").path)\"\nwhile IFS= read -r line; do if [ \"$line\" = quit ]; then sleep \(quitSeconds); echo 'disk full' >&2; exit \(quitStatus); fi; done\n"
             try body.write(to: engine, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: engine.path)
             let runs = repo.appendingPathComponent("runs")
             switcher = WorldSwitcher(play: play, runsDirectory: { runs })
             switcher.isQuitting = { false }
+            switcher.windowShown = { true }
             switcher.poll = .milliseconds(20)
         }
 
@@ -149,6 +150,79 @@ struct SwitchAndDockTests {
         #expect(!rig.switcher.isBusy)
     }
 
+    @Test func withTheWindowClosedTheOtherWorldIsNotOpenedAndTheWorldsPageSaysSo() async throws {
+        let rig = try SwitchRig(quitSeconds: 0.4)
+        defer { rig.finish() }
+        #expect(await rig.openA())
+        var shown = true
+        rig.switcher.windowShown = { shown }
+        var dropped: [String] = []
+        rig.switcher.onDropped = { dropped.append($0) }
+        _ = rig.switcher.ask(.play("b")) { rig.ran += 1 }
+        rig.switcher.confirm()
+        rig.switcher.sheetDismissed()  // Close Panel
+        shown = false  // and the window is closed (Keep Running) while A is saved
+        #expect(await eventually { !rig.switcher.isBusy })
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(rig.ran == 0, "nothing starts in an app with no window, by this route either")
+        #expect(rig.play.phase == .idle && !rig.play.hasProcess, "A is closed and nothing else was opened")
+        #expect(dropped == [SwitchRequest(open: "a", goal: .play("b")).droppedNote])
+        // with the window back, the next request works as before
+        shown = true
+        #expect(await rig.openA())
+        _ = rig.switcher.ask(.play("b")) { rig.ran += 1 }
+        rig.switcher.confirm()
+        #expect(await eventually { rig.ran == 1 })
+    }
+
+    @Test func aSaveThatEndedBadlyIsToldAndTheOtherWorldIsNotOpened() async throws {
+        let rig = try SwitchRig(quitSeconds: 0.2, quitStatus: 1)
+        defer { rig.finish() }
+        #expect(await rig.openA())
+        _ = rig.switcher.ask(.play("b")) { rig.ran += 1 }
+        rig.switcher.confirm()
+        rig.switcher.sheetDismissed()  // the person closed the panel: the failure brings it back
+        #expect(await eventually { rig.switcher.phase.isFailure })
+        guard case .failed(let reason) = rig.switcher.phase else { return }
+        #expect(reason?.contains("exited with code 1") == true && reason?.contains("disk full") == true)
+        #expect(rig.switcher.request != nil, "the sheet is back, so that it is read")
+        #expect(rig.ran == 0)
+        rig.switcher.sheetDismissed()  // OK
+        #expect(rig.switcher.request == nil && !rig.switcher.isBusy && rig.switcher.phase == .asking)
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(rig.ran == 0)
+    }
+
+    @Test func aSaveThatIsStillGoingAfterTheLongestWaitDoesNotLetTheOtherWorldStartOverIt() async throws {
+        let rig = try SwitchRig(quitSeconds: 1.5)
+        defer { rig.finish() }
+        #expect(await rig.openA())
+        rig.switcher.maxWait = .milliseconds(300)
+        _ = rig.switcher.ask(.play("b")) { rig.ran += 1 }
+        rig.switcher.confirm()
+        #expect(await eventually { rig.switcher.phase.isFailure })
+        guard case .failed(let reason) = rig.switcher.phase else { return }
+        #expect(reason?.contains("taking longer than expected") == true)
+        #expect(rig.play.hasProcess, "A is still being written")
+        #expect(await eventually { !rig.play.hasProcess })
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(rig.ran == 0, "the action was dropped, not delayed")
+    }
+
+    @Test func aClickWhileASaveHoldsTheSwitchBringsTheSheetBack() async throws {
+        let rig = try SwitchRig(quitSeconds: 1.0)
+        defer { rig.finish() }
+        #expect(await rig.openA())
+        _ = rig.switcher.ask(.play("b")) { rig.ran += 1 }
+        rig.switcher.confirm()
+        rig.switcher.sheetDismissed()
+        #expect(rig.switcher.request == nil && rig.switcher.isBusy)
+        #expect(rig.switcher.ask(.play("c")) { rig.ran += 100 }, "the click is taken")
+        #expect(rig.switcher.request?.goal == .play("b") && rig.switcher.phase == .saving, "and answered: the wait is shown again")
+        rig.switcher.showAgain()
+        #expect(await eventually { rig.ran == 1 })
+    }
+
     @Test func nothingStartsWhileTheAppIsQuitting() async throws {
         let rig = try SwitchRig(quitSeconds: 0.3)
         defer { rig.finish() }
@@ -169,6 +243,7 @@ struct SwitchAndDockTests {
         await rig.scan()
         let switcher = WorldSwitcher.forApp(controller: rig.controller, play: rig.play)
         switcher.isQuitting = { false }
+        switcher.windowShown = { true }
         rig.setup.switcher = switcher
         rig.play.start(.resume(PlayResume(run: "mini3s_a")), executable: rig.controller.alifeURL, directory: rig.repo)
         #expect(await patiently { rig.play.phase == .live })
@@ -190,6 +265,7 @@ struct SwitchAndDockTests {
         defer { rig.finish() }
         let switcher = WorldSwitcher.forApp(controller: rig.controller, play: rig.play)
         switcher.isQuitting = { false }
+        switcher.windowShown = { true }
         rig.setup.switcher = switcher
         try LibraryTestFolders.played(rig.runs, "mini3s_a")
         await rig.scan()
@@ -212,6 +288,7 @@ struct SwitchAndDockTests {
         defer { rig.finish() }
         let switcher = WorldSwitcher.forApp(controller: rig.controller, play: rig.play)
         switcher.isQuitting = { false }
+        switcher.windowShown = { true }
         rig.coordinator.hooks.switchWorld = { goal, then in switcher.ask(goal, then: then) }
         try LibraryTestFolders.played(rig.runs, "mini3s_a")
         await rig.scan()
@@ -406,5 +483,101 @@ struct SwitchAndDockTests {
         }
         #expect(changed(half) > 10 && changed(full) > changed(half), "\(changed(half)) \(changed(full))")
         #expect(changed(unknown) == 0, "no fraction, no fill")
+    }
+
+    @Test func theTargetOfABranchIsItsStartPlusItsLength() throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let dir = scratch.url.appendingPathComponent("runs/br")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try #"{"run": {"steps": 40000}}"#.write(to: dir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+        try #"{"status": "running", "start_step": 10000}"#.write(to: dir.appendingPathComponent("meta.json"), atomically: true, encoding: .utf8)
+        #expect(DockTileController.configTarget(run: "br", repo: scratch.url) == 50_000, "the run ends `steps` after the step it started from")
+        try "not json".write(to: dir.appendingPathComponent("meta.json"), atomically: true, encoding: .utf8)
+        #expect(DockTileController.configTarget(run: "br", repo: scratch.url) == 40_000, "no start step: from 0")
+        try #"{"start_step": 9223372036854775807}"#.write(to: dir.appendingPathComponent("meta.json"), atomically: true, encoding: .utf8)
+        #expect(DockTileController.configTarget(run: "br", repo: scratch.url) == Int.max, "no trap")
+    }
+
+    @Test func aNewRunStartsWithNoNumbersOfTheRunBefore() async throws {
+        let rig = try PipelineRig(mode: "ok:ok")
+        defer { rig.finish() }
+        #expect(await rig.create("first", goal: .research).isEmpty)
+        #expect(await patiently { rig.controller.job == nil })
+        rig.tickMetrics()
+        #expect(await patiently { rig.controller.metrics != nil }, "the first run's numbers were read")
+        rig.mode = "long:ok"
+        #expect(await rig.create("second", goal: .research).isEmpty)
+        #expect(rig.controller.job == .run)
+        #expect(rig.controller.metrics == nil, "the Dock's bar would show the old step over the new target until the first poll")
+        #expect(await rig.waitForGrowing("second"))
+        rig.controller.stop()
+        #expect(await patiently { rig.controller.job == nil })
+    }
+
+    @Test func aParkedPlanetPressedWhileAWorldIsStillStartingSaysWhyAndIsNotADeadEnd() async throws {
+        let rig = try PipelineRig(mode: "ok:ok")
+        defer { rig.finish() }
+        rig.looking = false
+        #expect(await rig.create("planet-1").isEmpty)
+        #expect(await rig.waitForState { if case .parked = $0 { return true } else { return false } })
+        let slow = try rig.scratch.script("slow", "sleep 20")
+        try LibraryTestFolders.played(rig.runs, "mini3s_a")
+        rig.play.start(.resume(PlayResume(run: "mini3s_a")), executable: slow, directory: rig.repo, arguments: [])
+        #expect(rig.play.phase == .starting)
+        let before = rig.coordinator.banner?.detail
+        rig.coordinator.press(.makePlanet)
+        let after = try #require(rig.coordinator.banner?.detail)
+        #expect(after.contains("mini3s_a is still starting") && after.contains("press Make planet again") && after != before)
+        #expect(rig.play.world == "mini3s_a" && rig.play.phase == .starting, "nothing was stopped or started")
+        rig.play.stop()
+        #expect(await patiently { !rig.play.hasProcess })
+        rig.coordinator.press(.makePlanet)  // closed: it goes, and the note is gone with the change of state
+        #expect(await rig.waitForState { $0 == .live })
+        #expect(rig.coordinator.banner?.detail.contains("still starting") != true)
+    }
+
+    @Test func aPollOfTheRunBeforeCannotAnswerForTheNewRun() async throws {
+        let rig = try PipelineRig(mode: "ok:ok")
+        defer { rig.finish() }
+        #expect(await rig.create("first", goal: .research).isEmpty)
+        #expect(await patiently { rig.controller.job == nil })
+        rig.mode = "long:ok"
+        await rig.scan()
+        rig.setup.openCreate(.recipe(Recipes.smallPlanet.id))
+        rig.setup.goal = .research
+        rig.setup.name = "second"
+        rig.tickMetrics()  // a read of the first run's numbers is on its way ...
+        rig.setup.start()  // ... when the second run starts
+        #expect(rig.controller.job == .run)
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(rig.controller.metrics?.step != 30_000 || rig.controller.metrics == nil, "the old run's step was not put back")
+        #expect(rig.controller.metrics == nil, "nothing of the new run has been read yet")
+        rig.controller.stop()
+        #expect(await patiently { rig.controller.job == nil })
+    }
+
+    @Test func aClickOnTheFormWhileAClosedPanelsSaveGoesOnBringsThePanelBack() async throws {
+        let rig = try PipelineRig(mode: "ok:ok")
+        defer { rig.finish() }
+        let switcher = WorldSwitcher.forApp(controller: rig.controller, play: rig.play)
+        switcher.isQuitting = { false }
+        switcher.windowShown = { true }
+        rig.setup.switcher = switcher
+        try LibraryTestFolders.played(rig.runs, "mini3s_a")
+        await rig.scan()
+        rig.play.start(.resume(PlayResume(run: "mini3s_a")), executable: rig.controller.alifeURL, directory: rig.repo)
+        #expect(await patiently { rig.play.phase == .live })
+        #expect(switcher.ask(.play("planet_b")) {})
+        await rig.scan()
+        rig.setup.openCreate(.recipe(Recipes.smallPlanet.id))
+        rig.setup.name = "planet-x"
+        switcher.confirm()
+        switcher.sheetDismissed()  // Close Panel
+        #expect(switcher.request == nil && switcher.isBusy)
+        rig.setup.start()
+        #expect(switcher.request != nil, "the click was answered with the panel, not swallowed")
+        #expect(rig.coordinator.plan == nil && rig.controller.job == nil, "and nothing was started behind it")
+        #expect(await eventually { !switcher.isBusy })
     }
 }

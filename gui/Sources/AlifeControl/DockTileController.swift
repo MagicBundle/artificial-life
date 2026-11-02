@@ -164,12 +164,16 @@ final class DockProgressView: NSView {
 }
 
 extension DockTileController {
-    /// The run's target: the pipeline's when it grows the run, else the `run.steps` its own `config.json` was written with.
+    /// The run's target: the pipeline's when it grows the run, else the step its own `config.json` and `meta.json` say it ends at: `run.steps`
+    /// more than the step it started from (`start_step`, which is not 0 for a branch or a resume).
     static func configTarget(run: String, repo: URL) -> Int? {
-        let url = repo.appendingPathComponent("runs/\(run)/config.json")
-        guard let data = try? Data(contentsOf: url),
-              let config = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let steps = (config["run"] as? [String: Any])?["steps"] as? Int, steps >= 1 else { return nil }
-        return steps
+        let directory = repo.appendingPathComponent("runs/\(run)")
+        func json(_ name: String) -> [String: Any]? {
+            guard let data = try? Data(contentsOf: directory.appendingPathComponent(name)) else { return nil }
+            return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        }
+        guard let steps = ((json("config.json")?["run"] as? [String: Any])?["steps"] as? Int), steps >= 1 else { return nil }
+        let start = (json("meta.json")?["start_step"] as? Int) ?? 0
+        return start >= 0 ? start.saturatingAdding(steps) : steps
     }
 }

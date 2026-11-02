@@ -88,24 +88,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var askClose: (CloseQuestion) -> (answer: CloseAnswer, remember: Bool) = { QuitPanel.askToCloseWindow($0) }
     /// The window is closing and the run goes on: the app lives on with no window. Read by `applicationShouldTerminateAfterLastWindowClosed`.
     private(set) var keepsAliveForRun = false
-    /// Told when the window closed and the run stays (the world that had been open, now saved and closed, if any). Set by the shell.
-    var onKeptRunning: ((String?) -> Void)?
+    /// Told when the window closed and the run stays: the world that had been open, if any, and whether it was still starting. Set by the shell.
+    var onKeptRunning: ((String?, Bool) -> Void)?
 
     /// What the app knows when the window is asked to close.
     var closeFacts: CloseFacts {
-        CloseFacts(runGoing: run.hasRunJob, runName: run.runningRunName, runStopping: run.hasRunJob && run.stopRequested,
-                   world: play.isActive ? play.world : nil)
+        let starting = play.phase == .starting
+        var making = false
+        if starting, case .planet? = play.request { making = true }
+        return CloseFacts(runGoing: run.hasRunJob, runName: run.runningRunName, runStopping: run.hasRunJob && run.stopRequested,
+                          world: play.isActive ? play.world : nil, worldStarting: starting, planetBeingMade: making)
     }
 
-    /// `windowShouldClose` of the main window: with a run going, asks "Keep it running / Stop and quit / Cancel" (or does what the person
-    /// asked to be remembered). True lets the window close. "Stop and Quit" does not close it: the quit goes on with the window up, through
-    /// the same gate and panel as a Command-Q, and the question is not asked again. Called once per attempt to close, so a Cancel leaves
-    /// everything as it was, window included.
+    /// `windowShouldClose` of the main window: with a run going, asks "Keep it running / Stop and quit / Cancel" (or keeps it running when
+    /// that was remembered); with a planet being made, asks "Stop making 'X' and quit?". True lets the window close. "Stop and Quit" does not
+    /// close it: the quit goes on with the window up, through the same gate and panel as a Command-Q, and the question is not asked again.
+    /// Called once per attempt to close, so a Cancel leaves everything as it was, window included. **The facts are read again after the
+    /// question**: a run that ended while the person read it leaves nothing to keep, and a planet that began meanwhile is a different question.
     func mainWindowShouldClose() -> Bool {
         guard plan.asksWhenClosingWithRun else { return true }
         guard !questionOpen else { return false }  // (a second attempt while the question is up is the first one's business)
-        let decision = SessionRules.decideClose(closeFacts, preference: closePreference())
-        switch decision {
+        return decideClose(attempt: 0)
+    }
+
+    private func decideClose(attempt: Int) -> Bool {
+        let facts = closeFacts
+        switch SessionRules.decideClose(facts, preference: closePreference()) {
         case .closeAndQuit:
             keepsAliveForRun = false
             return true
@@ -120,6 +128,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let (answer, remember) = askClose(question)
             questionOpen = false
             if let preference = SessionRules.remembered(answer, remember: remember) { storeClosePreference(preference) }
+            if answer != .cancel, closeFacts.situation != facts.situation, attempt < 2 {
+                return decideClose(attempt: attempt + 1)  // the question no longer describes what is going on
+            }
             switch answer {
             case .keepRunning:
                 keepsAliveForRun = true
@@ -145,9 +156,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// of the world when the window comes back. The run is not touched.
     private func closeWhatTheWindowNeeded() {
         let world = play.isActive ? play.world : nil
+        let starting = play.phase == .starting
         play.stop()
         stopStream()
-        onKeptRunning?(world)
+        onKeptRunning?(world, starting)
     }
 
     /// Stops the 3D viewer's stream (the shared one; tests replace it).
@@ -172,7 +184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The main window of the `alife` window is on screen.
     var mainWindowIsShown: Bool {
-        windowsProvider().contains { $0.isVisible && $0.identifier?.rawValue == AppShell.mainWindowID }
+        windowsProvider().contains { $0.isVisible && !$0.isMiniaturized && $0.identifier?.rawValue == AppShell.mainWindowID }
     }
 
     /// The windows the reopen and the close look at (tests replace it).
@@ -195,6 +207,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func showMainWindowIfNeeded() -> Bool {
         guard plan.isShell, let reopenMainWindow else { return false }
         guard !mainWindowIsShown else { return false }
+        // A window in the Dock is brought out of it; `openWindow` does not do that for a window that exists.
+        if let minimised = windowsProvider().first(where: { $0.isMiniaturized && $0.identifier?.rawValue == AppShell.mainWindowID }) {
+            minimised.deminiaturize(nil)
+            return true
+        }
         reopenMainWindow()
         return true
     }

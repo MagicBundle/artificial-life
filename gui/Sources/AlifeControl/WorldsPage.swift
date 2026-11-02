@@ -36,7 +36,6 @@ struct WorldsPage: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     if let note = shell.launchNote { launchNote(note) }
-                    if let note = shell.closedNote { closedNote(note) }
                     if let failure = shell.startFailure { failureCard(failure) }
                     if let gone = library.vanished { goneNote(gone) }
                     // (while a world is being made the bar says so, and the card would offer to start another)
@@ -122,18 +121,6 @@ struct WorldsPage: View {
         }
         .padding(12)
         .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    /// What became of the world that was open when the window was closed with a run going.
-    private func closedNote(_ text: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: "info.circle.fill").foregroundStyle(.tint)
-            Text(text).fixedSize(horizontal: false, vertical: true)
-            Spacer()
-            Button("Dismiss") { shell.closedNote = nil }
-        }
-        .padding(12)
-        .background(.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
     }
 
     /// A world that was there a moment ago and is not: it was removed outside the app, or its drive went away.

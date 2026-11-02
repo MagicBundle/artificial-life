@@ -16,6 +16,29 @@ enum PlayPhase: Equatable, Sendable {
     case failed(String)
 }
 
+/// How the process of a world that was asked to stop ended (docs/APP.md D3, R2): the window says "saved" only when it did, and says what
+/// happened when it did not.
+struct RetiredEnd: Equatable {
+    var world: String
+    /// It was still starting (interrupted: nothing of it was saved).
+    var starting: Bool
+    var status: Int32
+    var signalled: Bool
+    var detail: String?
+    /// Counts the ends, so that two equal ends are still two events.
+    var serial: Int
+
+    /// A world's stop ends well with `quit` (exit 0) or the runner's own interrupt path (130); a signal that killed it may have cut the save.
+    var saved: Bool { !starting && !signalled && (status == 0 || status == 130) }
+
+    /// Why it did not end well, in a few words (nil when it did).
+    var reason: String? {
+        if saved || starting { return nil }
+        if signalled { return "it was ended before it was done" }
+        return "it exited with code \(status)" + (detail.map { ": " + $0 } ?? "")
+    }
+}
+
 /// What to start.
 enum PlayRequest: Equatable, Sendable {
     case resume(PlayResume)
@@ -72,6 +95,9 @@ final class PlayController: ObservableObject {
     /// The absolute chapter the numbering of this world starts after (`made_at_step / chapter` of a planet, 0 otherwise): the
     /// chapter bar shows `CLCK.chapter - originChapter`, so the first chapter of a fork is "Chapter 1" (DESIGN §34.2.1).
     @Published private(set) var originChapter = 0
+    /// How the newest world that was asked to stop ended.
+    @Published private(set) var lastRetiredEnd: RetiredEnd?
+    private var retiredEnds = 0
 
     /// What the world sent. Read by the renderer and the views; changes are announced by `revision` and `onDelivery`.
     var store = WorldStore()  // (settable for the tests, which feed it frames)
@@ -109,7 +135,7 @@ final class PlayController: ObservableObject {
     private(set) var request: PlayRequest?
 
     private var session: EngineSession?
-    private var retired: [(session: EngineSession, world: String)] = []
+    private var retired: [(session: EngineSession, world: String, starting: Bool)] = []
 
     init() {}
 
@@ -204,7 +230,7 @@ final class PlayController: ObservableObject {
         } else {
             old.requestStop(quit: try? PlayCommand.quit.encoded(), ladder: ladder)
         }
-        retired.append((old, world ?? ""))  // its end is ignored from now on, but the app quitting must still end it
+        retired.append((old, world ?? "", interrupt))  // its end is ignored from now on, but the app quitting must still end it
         session = nil
         retiredWorlds = retired.map(\.world)
     }
@@ -337,6 +363,11 @@ final class PlayController: ObservableObject {
 
     private func finish(_ session: EngineSession, status: Int32, reason: Process.TerminationReason) {
         session.release()
+        if let entry = retired.first(where: { $0.session === session }) {
+            retiredEnds += 1
+            lastRetiredEnd = RetiredEnd(world: entry.world, starting: entry.starting, status: status, signalled: reason == .uncaughtSignal,
+                                        detail: session.lastError, serial: retiredEnds)
+        }
         retired.removeAll { $0.session === session }
         retiredWorlds = retired.map(\.world)
         guard self.session === session else { return }  // a newer world replaced it, or it was asked to stop

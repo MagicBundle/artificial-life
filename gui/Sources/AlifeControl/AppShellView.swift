@@ -40,6 +40,10 @@ struct AppShellView: View {
                 .navigationSplitViewColumnWidth(min: 190, ideal: 215, max: 280)
         } detail: {
             VStack(spacing: 0) {
+                // What became of the world that was open when the window was closed: on whatever page the player comes back to.
+                if let note = shell.closedNote {
+                    ClosedNoteStrip(text: note) { shell.closedNote = nil }
+                }
                 // The pipeline's bar is on every page but the one that shows it in full: the wait is never out of sight.
                 if showsStrip {
                     PipelineStrip(coordinator: setup.coordinator) { shell.select(.setup) }
@@ -65,7 +69,7 @@ struct AppShellView: View {
         .onAppear {
             // A click on the Dock icon brings a closed window back (`AppDelegate.applicationShouldHandleReopen`).
             AppDelegate.current?.reopenMainWindow = { openWindow(id: AppShell.mainWindowID) }
-            AppDelegate.current?.onKeptRunning = { [weak shell] world in shell?.windowClosedWithRun(world: world) }
+            AppDelegate.current?.onKeptRunning = { [weak shell] world, starting in shell?.windowClosedWithRun(world: world, starting: starting) }
             // A world that stopped while it was starting is an unfinished build; the library keeps what this session knows of it.
             shell.buildEnded = { [weak library] world, note in library?.note(note, forBuild: world) }
             controller.pollsRunList = shell.page == .setup
@@ -170,6 +174,7 @@ struct AppShellView: View {
     /// What the pipeline needs of the window: where to show things, and what other processes hold (from the library).
     private func wireSetup() {
         setup.switcher = switcher
+        switcher.onDropped = { [weak shell] note in shell?.switchDropped(note) }
         setup.coordinator.hooks.switchWorld = { [weak switcher] goal, then in switcher?.ask(goal, then: then) ?? false }
         setup.show = { [weak shell] in shell?.select(.setup) }
         setup.coordinator.hooks.playerStartsWorld = { [weak shell] in shell?.playerStartsWorld() }
@@ -217,6 +222,24 @@ struct AppShellView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .help(controller.repoReady ? controller.repoPath : "Open Worlds or Settings to fix it.")
+    }
+}
+
+/// A note over the page, with Dismiss (the strip of the pipeline's bar, in the same place and the same size).
+struct ClosedNoteStrip: View {
+    let text: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "info.circle.fill").foregroundStyle(.tint).accessibilityHidden(true)
+            Text(text).font(.caption).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Button("Dismiss", action: dismiss).controlSize(.small)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background { ZStack { Color(nsColor: .windowBackgroundColor); Color.accentColor.opacity(0.12) } }
     }
 }
 

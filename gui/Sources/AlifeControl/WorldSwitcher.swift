@@ -12,6 +12,8 @@ final class WorldSwitcher: ObservableObject, Identifiable {
         case asking
         /// The open world was asked to stop; the sheet waits for its save.
         case saving
+        /// The save did not end well, or took too long: what happened (the other world was not opened).
+        case failed(String?)
     }
 
     /// The question or the wait on the sheet; nil when no sheet is wanted.
@@ -25,12 +27,19 @@ final class WorldSwitcher: ObservableObject, Identifiable {
     var runsDirectory: () -> URL?
     /// The app is quitting: nothing starts then (the quit's own wait is ending the world).
     var isQuitting: @MainActor () -> Bool = { AppDelegate.current?.terminationGate.isWaiting == true }
-    /// The longest the open world is waited for; its own ladder ends it sooner (30 s, then 10 s).
+    /// The main window is shown: nothing starts without one, by any route (a world opened with nobody there runs unseen).
+    var windowShown: @MainActor () -> Bool = { AppDelegate.current?.mainWindowIsShown ?? false }
+    /// The longest the open world is waited for; its own ladder ends it sooner (30 s, then 10 s). **Past it the other world is not started**:
+    /// the open one is still being written, and the sheet says so.
     var maxWait: Duration = .seconds(60)
     var poll: Duration = .milliseconds(100)
+    /// What was asked for was dropped because the window was closed: the sentence for the Worlds page.
+    var onDropped: (@MainActor (String) -> Void)?
 
     private var action: (@MainActor () -> Void)?
     private var waiting: Task<Void, Never>?
+    /// The request of the switch under way, kept so that the sheet can come back after it was closed.
+    private var current: SwitchRequest?
 
     init(play: PlayController, runsDirectory: @escaping () -> URL? = { nil }) {
         self.play = play
@@ -40,36 +49,49 @@ final class WorldSwitcher: ObservableObject, Identifiable {
     deinit { waiting?.cancel() }
 
     /// A switch is under way (the sheet asks or waits): a second request is not taken.
-    var isBusy: Bool { request != nil || waiting != nil }
+    var isBusy: Bool { current != nil }
 
     /// `goal` needs the open world to stop. Returns true when a sheet takes the request (`then` runs once the world is saved, if the person
     /// confirms); false when nothing needs to stop (no world is live, or the one open is still starting: the caller goes on, or says why not).
+    /// While another switch is under way and its sheet was closed, the sheet comes back: the click is answered, not swallowed.
     @discardableResult
     func ask(_ goal: SwitchRequest.Goal, then action: @escaping @MainActor () -> Void) -> Bool {
+        if isBusy {
+            showAgain()
+            return true
+        }
         guard play.phase == .live, let open = play.world, !open.isEmpty else { return false }
-        guard !isBusy else { return true }
         let save = runsDirectory().flatMap { SwitchWording.newestSave(of: open, in: $0) }
         let seconds = SwitchWording.estimateSeconds(newestSaveBytes: save?.bytes, compressed: save?.compressed ?? false)
-        request = SwitchRequest(open: open, goal: goal, estimateSeconds: seconds)
+        let made = SwitchRequest(open: open, goal: goal, estimateSeconds: seconds, hasSave: save != nil)
+        request = made
+        current = made
         phase = .asking
         elapsed = 0
         self.action = action
         return true
     }
 
+    /// The sheet of a switch under way comes back (after "Close Panel").
+    func showAgain() {
+        if request == nil, let current { request = current }
+    }
+
     /// "Keep Playing": nothing changes.
     func keepPlaying() {
         guard phase == .asking else { return }
         request = nil
+        current = nil
         action = nil
     }
 
-    /// "Stop and Play": the open world is stopped through its ladder (it saves), and `action` runs when it has gone.
+    /// "Stop and Play": the open world is stopped through its ladder (it saves), and `action` runs when it has gone, and has saved.
     func confirm() {
         guard let request, phase == .asking else { return }
         phase = .saving
         elapsed = 0
         let open = request.open
+        let endsBefore = play.lastRetiredEnd?.serial ?? 0
         play.stop()
         waiting = Task { @MainActor [weak self] in
             let clock = ContinuousClock()
@@ -84,18 +106,45 @@ final class WorldSwitcher: ObservableObject, Identifiable {
             let go = self.action
             self.action = nil
             self.waiting = nil
+            // Still being written after the longest wait: the other world does not start over it.
+            if self.play.retiredWorlds.contains(where: { NameFolding.same($0, open) }) {
+                self.fail(request, "\(request.open) is taking longer than expected to save")
+                return
+            }
+            // It ended, but not well.
+            if let end = self.play.lastRetiredEnd, end.serial > endsBefore, NameFolding.same(end.world, open), !end.saved {
+                self.fail(request, end.reason)
+                return
+            }
             self.request = nil
+            self.current = nil
             self.phase = .asking
-            if !self.isQuitting() { go?() }
+            if self.isQuitting() { return }
+            // Nobody is there to see it: it is not opened. The open world is saved and closed, and the Worlds page says so.
+            guard self.windowShown() else {
+                self.onDropped?(request.droppedNote)
+                return
+            }
+            go?()
         }
     }
 
+    private func fail(_ request: SwitchRequest, _ reason: String?) {
+        self.request = request
+        current = request
+        phase = .failed(reason)
+    }
+
     /// The sheet went away by another way than its buttons (Escape, or the quit ending sheets). Asking: it is "Keep Playing". Saving: the
-    /// sheet is only hidden, the world is already stopping and what was asked for follows.
+    /// sheet is only closed, the world is already stopping and what was asked for follows (it comes back if the save fails). A failure is read.
     func sheetDismissed() {
         switch phase {
         case .asking: keepPlaying()
         case .saving: request = nil
+        case .failed:
+            request = nil
+            current = nil
+            phase = .asking
         }
     }
 }
@@ -116,41 +165,64 @@ struct SwitchSheet: View {
     @ObservedObject var switcher: WorldSwitcher
     let request: SwitchRequest
 
+    private var symbol: String {
+        switch switcher.phase {
+        case .asking: return "arrow.left.arrow.right.circle"
+        case .saving: return "externaldrive.badge.checkmark"
+        case .failed: return "exclamationmark.triangle"
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 14) {
-                Image(systemName: switcher.phase == .asking ? "arrow.left.arrow.right.circle" : "externaldrive.badge.checkmark")
-                    .font(.system(size: 34)).foregroundStyle(.tint)
+                Image(systemName: symbol)
+                    .font(.system(size: 34)).foregroundStyle(switcher.phase.isFailure ? Color.orange : Color.accentColor)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 8) {
-                    if switcher.phase == .asking {
+                    switch switcher.phase {
+                    case .asking:
                         Text(request.title).font(.headline)
                         Text(request.reason)
                         Text(request.detail).foregroundStyle(.secondary)
-                    } else {
+                    case .saving:
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small)
                             Text(request.savingTitle).font(.headline)
                         }
                         Text(request.savingDetail(elapsed: switcher.elapsed)).foregroundStyle(.secondary)
+                    case .failed(let reason):
+                        Text(request.failedTitle).font(.headline)
+                        Text(request.failedDetail(reason)).foregroundStyle(.secondary)
                     }
                 }
                 .fixedSize(horizontal: false, vertical: true)
             }
             HStack {
                 Spacer()
-                if switcher.phase == .asking {
+                switch switcher.phase {
+                case .asking:
                     Button(request.confirmLabel) { switcher.confirm() }
                     Button(request.keepLabel) { switcher.keepPlaying() }
                         .keyboardShortcut(.defaultAction)
-                } else {
-                    Button("Hide") { switcher.sheetDismissed() }
-                        .help("Close this window. The world still opens when the other one is saved.")
+                case .saving:
+                    Button(request.closePanelLabel) { switcher.sheetDismissed() }
+                        .help("Close this panel. The save goes on, and the other world opens when it is done.")
+                case .failed:
+                    Button("OK") { switcher.sheetDismissed() }
+                        .keyboardShortcut(.defaultAction)
                 }
             }
         }
         .padding(20)
         .frame(width: 470)
         .onExitCommand { switcher.sheetDismissed() }
+    }
+}
+
+extension WorldSwitcher.Phase {
+    var isFailure: Bool {
+        if case .failed = self { return true }
+        return false
     }
 }
