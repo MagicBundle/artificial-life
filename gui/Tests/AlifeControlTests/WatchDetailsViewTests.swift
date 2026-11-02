@@ -210,9 +210,8 @@ struct WatchDetailsViewTests {
 
     @Test(arguments: [false, true])
     func detailsOfABranchAndOfAWorldWithNoNumbers(dark: Bool) async throws {
-        guard everything || !dark else { return }
+        guard everything else { return }  // (a normal run draws four pictures: these tests hold the main actor, and other suites' timed waits run on it)
         #expect(colours(try await drawShell(Stage(page: .details, selected: "planet-2-branch-1", dark: dark, name: "f-details-branch"))) > 20)
-        guard everything else { return }
         #expect(colours(try await drawShell(Stage(page: .details, selected: "bare_run", dark: dark, name: "f-details-bare", minimumColours: 20))) > 20)
         #expect(colours(try await drawShell(Stage(page: .details, selected: "died_out", dark: dark, name: "f-details-diedout"))) > 25)
         #expect(colours(try await drawShell(Stage(page: .details, selected: "flat_1", dark: dark, name: "f-details-flat"))) > 25)
@@ -220,13 +219,13 @@ struct WatchDetailsViewTests {
 
     @Test(arguments: [false, true])
     func detailsOfAPlayedWorld(dark: Bool) async throws {
-        guard everything || !dark else { return }
+        guard everything else { return }
         #expect(colours(try await drawShell(Stage(page: .details, selected: "planet-4", dark: dark, name: "f-details-played"))) > 20)
     }
 
     @Test(arguments: [false, true])
     func detailsOfAGrowingWorldHasItsClock(dark: Bool) async throws {
-        guard everything || !dark else { return }
+        guard everything else { return }
         #expect(colours(try await drawShell(Stage(page: .details, selected: "planet-3-grow", growing: "planet-3-grow", dark: dark, name: "f-details-growing"))) > 20)
     }
 
@@ -249,7 +248,7 @@ struct WatchDetailsViewTests {
 
     @Test(arguments: [false, true])
     func theResearchWatchWaitsForTheFirstSavePointOfAWorldThatGrows(dark: Bool) async throws {
-        guard everything || !dark else { return }
+        guard everything else { return }
         let scratchless = try await drawShell(Stage(page: .watch, observe: "planet-3-grow", growing: "planet-3-grow", dark: dark, name: "f-watch-research-growing"))
         #expect(colours(scratchless) > 25)
     }
@@ -306,7 +305,7 @@ struct WatchDetailsViewTests {
 
     @Test(arguments: [false, true])
     func theWorldsPageCardsHaveWatchAndDetails(dark: Bool) async throws {
-        guard everything || !dark else { return }
+        guard everything else { return }
         #expect(colours(try await drawShell(Stage(page: .worlds, dark: dark, name: "f-worlds-cards"))) > 30)
     }
 
