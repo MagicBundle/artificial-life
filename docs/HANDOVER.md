@@ -966,10 +966,10 @@ unit (§37.4).
      **Run panel**: Numbers (every number the Lab's Status had, height, floor and surface for a 3D world, the feature groups folded), Autopilot (interventions and
      journal), Log. While this app grows the world the panel says "Step 12,300 of 30,000" with **Stop**; a finished world says when it was saved. Is the picture
      there, does it move (Follow while it grows, Re-simulate after), do Pause, Run, Step/Newest, Colour, Show, Orbit/Fly, Reset view and Snapshot work, is anything cut at 1,100 x 700?
-  2. **Keys of the observer** (click the picture first): Space pause/run, `.` step (or the newest save point while following), `-` `+` steps per frame, `c` colour,
+  2. **Keys of the observer** (they work whichever view has the focus, the sidebar list included; not while you type in a field): Space pause/run, `.` step (or the newest save point while following), `-` `+` steps per frame, `c` colour,
      `f` field slice, `[` `]` field layer, `s` snapshot, `o` orbit/fly, `r` reset view, `1` `2` `3` agents, bonds, frame. The same letters mean other things when you
      play a world (`f` follows an organism, `s` is the side view, `r` the overview): the **World** menu lists the table of the form in view with the key in the title
-     (a letter is never a menu shortcut), and its items work only on the Watch page. **Stop** (Command-period) is in the menu while a run grows. A played world: Space, `.`,
+     (a letter is never a menu shortcut), and its items work only on the Watch page. **Stop \<world\>** (Command-period) is in the menu while the run Watch shows grows, and does nothing on any other page. A played world: Space, `.`,
      `[` `]`, `g`, `h`, `f`, `n`, `p`, `a`, `k`, `c`; the hint on the map says "H overview" (the old apps still say "H home").
   3. **Leave Watch.** The observer ends with the page (no `alife stream` is left); the world goes on growing. Come back: it starts again; a world that was playing is
      paused and continues as in PR-E. Open a played world while an observer is shown: Watch shows the played world and the research world is not brought back behind it.
@@ -981,8 +981,8 @@ unit (§37.4).
      Autopilot) starts from them. (Test with an address nothing listens on first; the scripted run did, and read "FAIL connection: ConnectionRefusedError".)
   6. **Help.** alife Help and World Controls (Help menu) open one window of seven topics; the Watch topic says what a research world can and cannot do.
   7. **One menu word per action** (the audit): Watch, Details, Check World, Stop, Open Classic 2D Viewer are the same words on the cards, Details, the menus and the panel.
-  **Open, for you:** the control center's clock strip still says **Resume** for the pause button (shared with the old apps, left as it was; §2.5 says Pause/Run); Help > World Controls and the dock's View > Controls... are two places for "the controls" (the hint on the map and the tables); Cmd-R stays the
-  set-up page's button and is not in the World menu (it would start a world from any page); two Stop buttons are on Watch while a run grows (the bar's and the panel's: one action).
+  **Open, for you:** Help > World Controls and the dock's View > Controls... are two places for "the controls" (the hint on the map and the tables); Cmd-R stays the
+  set-up page's button and is not in the World menu (it would start a world from any page); a research world cannot be watched while a played world is open (an accepted loss: the old 3D Viewer was a second window; `docs/APP.md` §7.5 says why), and the sidebar's Watch row could not be clicked by the scripted driver (a real click is yours).
   What was **not** exercised and is yours: the Metal picture on a lit display (every window composite in the scripted runs was blank: the status line showed frames
   arriving), a real mouse and trackpad on the new controls, the toolbar items (a window server that composes nothing), VoiceOver, 13 inches, and the app on a folder of yours.
 
