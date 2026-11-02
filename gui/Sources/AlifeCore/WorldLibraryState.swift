@@ -132,6 +132,8 @@ package struct LibraryRow: Equatable, Identifiable, Sendable {
     package var unmadePlanet: String?
     /// The engine says every organism died out in it: no planet can be made from it.
     package var diedOut = false
+    /// The world a research world was branched from (`meta.json`'s `parent`: `runs/NAME:STEP`); nil for one that was created, and for a played world.
+    package var parent: SourceRef?
 
     package var id: String { name }
     package var hasSavePoint: Bool { step != nil }
@@ -321,6 +323,7 @@ package struct LibraryState: Equatable, Sendable {
             note: kind == .research && state == .saved ? endNote(r.status, cutOff: cutOff) ?? stoppedNote(r) : nil, step: r.steps.last,
             lastSaved: r.lastSaved, madeFrom: SourceRef.parse(r.play?.planet?.source), targetSteps: r.targetSteps)
         row.diedOut = kind == .research && r.status == "extinct"
+        row.parent = kind == .research ? r.parent : nil
         return row
     }
 

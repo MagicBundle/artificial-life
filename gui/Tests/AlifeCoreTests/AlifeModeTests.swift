@@ -45,14 +45,15 @@ import Testing
 
 @Suite struct ShellPageTests {
     @Test func theCommandKeysFollowTheSidebarOrder() {
-        #expect(ShellPage.allCases.map(\.key) == ["1", "2", "3", "4"])
-        #expect(ShellPage.allCases == [.worlds, .watch, .activity, .setup])
+        #expect(ShellPage.allCases.map(\.key) == ["1", "2", "3", "4", "5"])
+        #expect(ShellPage.allCases == [.worlds, .watch, .activity, .setup, .details])
+        #expect(ShellPage.sidebarPages == [.worlds, .watch, .activity, .setup], "Details has no row of its own: a world's row opens it")
         #expect(Set(ShellPage.allCases.map(\.key)).count == ShellPage.allCases.count)
         #expect(Set(ShellPage.allCases.map(\.title)).count == ShellPage.allCases.count)
     }
 
     @Test func theNamesAreTheSpecsOnes() {
-        #expect(ShellPage.allCases.map(\.title) == ["Worlds", "Watch", "Activity", "New world"])
+        #expect(ShellPage.allCases.map(\.title) == ["Worlds", "Watch", "Activity", "New world", "Details"])
         // Resume, Home and Continue are not page names; "Watch" is the picture
         for page in ShellPage.allCases { #expect(!["Resume", "Home", "World", "3D Viewer"].contains(page.title)) }
     }

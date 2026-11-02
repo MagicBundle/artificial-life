@@ -99,6 +99,15 @@ package enum WorldTitle {
         header?.planet.source.map { "forked from \($0)" }
     }
 
+    /// The line under the heading in the `alife` window, in its words: a planet made from the world that was grown for it is "made from its
+    /// grown world", not "forked from runs/planet-1-grow:30000" (the directory and the engine's word are for Details).
+    package static func plainSubtitle(world: String?, header: PlayHeader?) -> String? {
+        guard let source = SourceRef.parse(header?.planet.source) else { return nil }
+        let name = (world ?? "").trimmingCharacters(in: .whitespaces)
+        if !name.isEmpty, NameFolding.same(source.name, name + SetupPlan.growSuffix) { return "made from its grown world" }
+        return "made from " + SetupIntent.shown(source.name)
+    }
+
     /// The window's title.
     package static func window(world: String?, header: PlayHeader?) -> String {
         world == nil ? "World" : heading(world: world, header: header)
