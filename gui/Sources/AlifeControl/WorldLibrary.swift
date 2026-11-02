@@ -309,13 +309,22 @@ final class WorldLibrary: ObservableObject {
         recompute()
     }
 
+    /// Every folder name a scan has listed: a world that was never listed cannot have vanished (a run that has just started is chosen by the
+    /// Watch page before the next scan lists it).
+    private var everListed: Set<String> = []
+
     private func recompute() {
         let resolved = LibraryState.resolve(snapshot, live: live, notes: notes, noteTimes: noteTimes)
         if resolved != state { state = resolved }
+        if hasScanned { everListed.formUnion(snapshot.names) }
         if let chosen = selected, state.row(named: chosen) == nil, !state.unfinished.contains(where: { $0.name == chosen }) {
             // The chosen world is no longer listed. It is *gone* only when the folder is gone; a folder that is still there but is no longer a
             // world (its save points were pruned, a build was restarted) is just not chosen any more.
-            if hasScanned, !snapshot.names.contains(chosen) { vanished = chosen }
+            if hasScanned, !snapshot.names.contains(chosen) {
+                // A name no scan has listed yet is a world that is about to appear: it stays chosen, and is not "gone".
+                guard everListed.contains(chosen) else { return }
+                vanished = chosen
+            }
             selected = nil
         }
     }
@@ -374,7 +383,7 @@ final class WorldLibrary: ObservableObject {
     /// File > Reveal in Finder: the chosen world while the Worlds page is the one in view (a world that is gone is told, and nothing else is
     /// shown instead), else `fallback` (the Lab's run, or the alife folder).
     func revealFromMenu(page: ShellPage, fallback: () -> Void) async {
-        if page == .worlds, let name = selected {
+        if page == .worlds || page == .details, let name = selected {
             await reveal(name)
             return
         }
@@ -446,7 +455,7 @@ extension SidebarItem {
     /// the world chosen on the Worlds page, else the page.
     @MainActor
     static func current(page: ShellPage, library: WorldLibrary) -> SidebarItem {
-        if page == .worlds {
+        if page == .worlds || page == .details {
             if let anchor = library.sidebarAnchor {
                 switch anchor {
                 case .allWorlds where library.filter == .all && library.selected == nil && library.query.isEmpty: return anchor

@@ -20,9 +20,12 @@ struct PresetGuideViewTests {
     /// The view drawn at `width` x `height` in the given appearance; written as `name-light.png` or `name-dark.png` when asked for.
     private func draw<V: View>(_ view: V, width: CGFloat, height: CGFloat, dark: Bool, name: String) throws -> NSBitmapImageRep {
         let host = NSHostingView(rootView: view.frame(width: width, height: height, alignment: .topLeading))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.borderless], backing: .buffered, defer: true)
+        let window = QuietWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.borderless], backing: .buffered, defer: true)
         window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         window.contentView = host
+        window.alphaValue = 0
+        window.ignoresMouseEvents = true
+        window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
         host.frame = NSRect(x: 0, y: 0, width: width, height: height)
         host.layoutSubtreeIfNeeded()
         let rep = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
@@ -114,8 +117,11 @@ struct PresetGuideViewTests {
         let c = controller()
         c.settings.mode = .new
         let host = NSHostingView(rootView: ContentView(controller: c, presetGuide: content).frame(width: 1000, height: 760))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 760), styleMask: [.borderless], backing: .buffered, defer: true)
+        let window = QuietWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 760), styleMask: [.borderless], backing: .buffered, defer: true)
         window.contentView = host
+        window.alphaValue = 0  // (this one was ordered in at the origin of the display, at full opacity, for as long as the test took)
+        window.ignoresMouseEvents = true
+        window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
         window.orderBack(nil)
         defer { window.orderOut(nil) }
         host.layoutSubtreeIfNeeded()

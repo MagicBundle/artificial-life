@@ -36,7 +36,7 @@ import Testing
     /// neither a `ScrollView` nor an AppKit-backed control).
     private func inked<V: View>(_ view: V, width: CGFloat, height: CGFloat) throws -> Int {
         let host = NSHostingView(rootView: view.frame(width: width, height: height, alignment: .topLeading))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.borderless], backing: .buffered, defer: true)
+        let window = QuietWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.borderless], backing: .buffered, defer: true)
         window.contentView = host
         host.frame = NSRect(x: 0, y: 0, width: width, height: height)
         host.layoutSubtreeIfNeeded()

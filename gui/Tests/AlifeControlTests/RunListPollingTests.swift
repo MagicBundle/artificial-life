@@ -76,7 +76,7 @@ import Testing
         let library = WorldLibrary(runsDirectory: { root.appendingPathComponent("runs") }, observesApp: false)
         let size = CGSize(width: AppShell.minWidth, height: AppShell.minHeight)
         let host = NSHostingView(rootView: AppShellView(shell: shell, controller: controller, library: library, arguments: []))
-        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: true)
+        let window = QuietWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: true)
         window.contentView = host
         host.frame = NSRect(origin: .zero, size: size)
         window.alphaValue = 0

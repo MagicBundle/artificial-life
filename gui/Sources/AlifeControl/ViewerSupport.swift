@@ -1,4 +1,5 @@
 import AlifeCore
+import AppKit
 import Foundation
 
 // Small pure pieces of the 3D viewer, kept apart from the AppKit and Metal code so that tests can reach them.
@@ -20,40 +21,6 @@ enum CameraMode: String, CaseIterable, Identifiable, Sendable {
     case orbit = "Orbit"
     case fly = "Fly"
     var id: String { rawValue }
-}
-
-// MARK: - Keys
-
-/// What a key does. The keys follow the 2D viewer (DESIGN §20.2) where there is an equivalent.
-enum ViewerAction: Equatable, Sendable {
-    case togglePause, step, faster, slower
-    case cycleColor, toggleFields, fieldLayerDown, fieldLayerUp
-    case snapshot
-    case toggleAgents, toggleBonds, toggleFrame
-    case toggleCameraMode, resetCamera
-}
-
-enum ViewerKeys {
-    /// The action of a key, from `NSEvent.charactersIgnoringModifiers`; nil for a key that does nothing.
-    static func action(for characters: String) -> ViewerAction? {
-        switch characters.lowercased() {
-        case " ": return .togglePause
-        case ".": return .step
-        case "+", "=": return .faster
-        case "-", "_": return .slower
-        case "c": return .cycleColor
-        case "f", "4": return .toggleFields
-        case "[": return .fieldLayerDown
-        case "]": return .fieldLayerUp
-        case "s", "p": return .snapshot
-        case "1": return .toggleAgents
-        case "2": return .toggleBonds
-        case "3": return .toggleFrame
-        case "o": return .toggleCameraMode
-        case "r": return .resetCamera
-        default: return nil
-        }
-    }
 }
 
 // MARK: - Speed
@@ -183,4 +150,48 @@ extension Camera {
         case (.fly, .pageDown): move(up: -step)
         }
     }
+}
+
+// MARK: - Keys that follow the window
+
+/// The observer's keys in the `alife` window reach it whichever view of the window has the focus, as the played world's do (`WorldMTKView`): after
+/// a click in the sidebar or in the Run panel the focus is there, and Space, `c` or `s` would otherwise do nothing, or press the focused button. The
+/// picture does not take the focus when it appears (showing Watch must not take the keyboard from the sidebar, a click on the picture does).
+/// A text being edited keeps its keys, a Command or Control chord is the menu's, and the arrow and Page keys are the focused view's own (the
+/// sidebar's list moves with them): they steer the camera only while the picture has the focus.
+@MainActor
+final class ViewerKeyMonitor {
+    private var monitor: Any?
+
+    /// The action a key event asks for; nil when it is not the observer's: a chord, a key that is not in the table, or a text being edited.
+    /// `eventWindow` is the window the event was sent to; only the keys of `window` itself are the observer's (the Settings window and the
+    /// Help window have their own). It is a parameter, not read off the event, because a window that is not on a screen has no number to find it by.
+    static func action(for event: NSEvent, eventWindow: NSWindow?, in window: NSWindow?, firstResponder: NSResponder?) -> ViewerAction? {
+        guard let window, eventWindow === window else { return nil }
+        if firstResponder is NSText { return nil }
+        if event.modifierFlags.contains(.command) || event.modifierFlags.contains(.control) { return nil }
+        guard let characters = event.charactersIgnoringModifiers else { return nil }
+        return ViewerKeys.action(for: characters)
+    }
+
+    func install(in view: NSView, perform: @escaping @MainActor (ViewerAction) -> Void) {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak view] event in
+            nonisolated(unsafe) let key = event
+            let handled = MainActor.assumeIsolated { () -> Bool in
+                guard let view, let window = view.window,
+                      let action = Self.action(for: key, eventWindow: key.window, in: window, firstResponder: window.firstResponder) else { return false }
+                perform(action)
+                return true
+            }
+            return handled ? nil : event
+        }
+    }
+
+    func remove() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+    }
+
+    var isInstalled: Bool { monitor != nil }
 }

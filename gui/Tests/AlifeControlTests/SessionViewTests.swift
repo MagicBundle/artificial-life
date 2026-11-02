@@ -38,7 +38,7 @@ struct SessionViewTests {
     private func draw(_ view: some View, size: CGSize, dark: Bool, name: String, background: Bool = true) throws -> NSBitmapImageRep {
         let root = view.frame(width: size.width, height: size.height).background(Color(nsColor: .windowBackgroundColor))
         let host = NSHostingView(rootView: root)
-        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: true)
+        let window = QuietWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: true)
         window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         window.contentView = host
         host.frame = NSRect(origin: .zero, size: size)
@@ -214,7 +214,7 @@ struct SessionViewTests {
         shell.closedNote = closedNote
         let size = CGSize(width: AppShell.minWidth, height: AppShell.minHeight)
         let host = NSHostingView(rootView: AppShellView(shell: shell, controller: rig.controller, library: rig.library, setup: rig.setup, arguments: []))
-        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: true)
+        let window = QuietWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: true)
         window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         window.contentView = host
         host.frame = NSRect(origin: .zero, size: size)

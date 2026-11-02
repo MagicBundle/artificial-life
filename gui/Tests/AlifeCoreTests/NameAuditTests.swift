@@ -40,13 +40,20 @@ import Testing
         ("Open in window", "open-setup-window"),
         ("Reset all", "reset-remembered"),
         ("Copy command", "copy-command"),
-        ("Watch in 3D viewer", "watch-3d-viewer"),
         ("Open Classic 2D Viewer", "open-classic-viewer"),
         ("Check world", "check-world"),
+        ("Check World", "check-world"),  // the World menu's item
+        ("Details", "show-details"),  // a card's icon, the Run panel's and the toolbar's button, the Activity row's, and the World window's page
+        ("Test connection", "test-language-model"),
+        ("Use the defaults", "use-default-model"),
+        ("Try again", "retry-viewer"),
+        ("alife Help", "open-help"),
+        ("World Controls", "open-world-controls"),
+        ("What can I do here?", "open-help-watch"),
         ("Overview", "camera-overview"),
         ("Set up engine", "set-up-engine"),
         ("Check again", "check-engine"),
-        ("Stop", "stop-run"),
+        ("Stop", "stop-run"),  // the bar's, the Run panel's and the World menu's: one action
         ("Force stop", "force-stop"),
         ("Cancel", "cancel"),
         ("Keep Running", "close-keep-running"),
@@ -62,10 +69,12 @@ import Testing
     /// The page sources that are new in PR-B (the Lab page is `LabPage.swift`).
     static let sources = ["WorldsPage.swift", "ActivityPage.swift", "WatchPage.swift", "GeneralSettingsView.swift", "AppShellView.swift",
                           "AlifeApp.swift", "WorldCards.swift", "WorldLibrary.swift", "SetupPage.swift", "SetupModel.swift", "PipelineViews.swift",
-                          "PipelineCoordinator.swift", "RunNumbersView.swift", "WorldSwitcher.swift", "DockTileController.swift"]
+                          "PipelineCoordinator.swift", "RunNumbersView.swift", "WorldSwitcher.swift", "DockTileController.swift", "DetailsPage.swift",
+                          "RunPanel.swift", "ResearchWatchPage.swift", "AutopilotSettings.swift", "HelpView.swift", "WorldActionSet.swift", "ControlCenterView.swift"]
     static let coreSources = ["WorldsGuide.swift", "ActivityGuide.swift", "WatchCue.swift", "ShellPage.swift", "WorldLibraryState.swift",
                               "LibraryScanner.swift", "Recipe.swift", "PipelinePlan.swift", "SetupPlan.swift", "SetupSettings.swift",
-                              "DirectoryGuard.swift", "SessionRules.swift", "WorldSwitch.swift", "AwayPause.swift", "DockProgress.swift"]
+                              "DirectoryGuard.swift", "SessionRules.swift", "WorldSwitch.swift", "AwayPause.swift", "DockProgress.swift", "WatchGuide.swift",
+                              "DetailsGuide.swift", "HelpTopics.swift"]
 
     /// The words §2.5 retires or reserves, and the engine's own names, which a page of the new window does not show to the user.
     static let banned = ["Resume", "Checkpoint", "Fork", "Home", "spin-up", "Spin-up", "director.enabled", "Storm Worlds", "Source",
@@ -106,6 +115,7 @@ import Testing
             "new-world": ["Choose something else…", "New World…", "New world"],
             "make-planet": ["Make planet", "Make planet from here"],
             "show-activity": ["Show Activity", "Show log"],
+            "check-world": ["Check World", "Check world"],
         ])
     }
 
@@ -140,8 +150,30 @@ import Testing
         }
     }
 
+    /// The clock strip's button runs the paused clock: *Run* in this window (§2.5), *Resume* in the two old apps; the word *Resume* is not in the
+    /// view's source at all (`ClockWords` has it), so the audit above, which bans it, reads the view too.
+    @Test func theClockStripSaysRunHereAndResumeInTheOldApps() {
+        #expect(ClockWords.run(plain: true) == "Run" && ClockWords.run(plain: false) == "Resume")
+        #expect(NameAuditTests.actions.contains { $0.label == "Run" && $0.action == "run-clock" })
+    }
+
+    /// What no render can show without a lit display, pinned in the source: the clock strip reads the window's words, the strip of the pipeline's bar
+    /// has no Command-period and no Stop on Watch, and the bar's own Stop key is for the set-up page's card.
+    @Test func theViewsThatSayTheWordsAndOwnTheKeysSayThemThroughTheRulesThisPrAdded() throws {
+        let strip = try read("ControlCenterView.swift", core: false)
+        #expect(strip.contains("ClockWords.run(plain: model.plainNames)") && !strip.contains("\"Resume\""))
+        let bar = try read("PipelineViews.swift", core: false)
+        #expect(bar.contains("BannerButtons(buttons: banner.buttons, stopKey: false, hidesStop: hidesStop)"), "the strip has no key and may hide its Stop")
+        #expect(bar.contains("var stopKey = true") && bar.contains("} else if button == .stop, stopKey {"), "the card keeps Command-period")
+        let keys = try read("ViewerSupport.swift", core: false)
+        #expect(keys.contains("eventWindow: key.window, in: window,"), "the monitor hands the table the window the key was sent to: another window's keys are not the observer's")
+        let shell = try read("AppShellView.swift", core: false)
+        #expect(shell.contains("hidesStop: shell.page == .watch && shell.watchForm == .research && shell.observedGrowing"), "Watch's Run panel holds the one Stop")
+    }
+
     @Test func theLabelsOfTheMenusAndTheSidebarAreThePageTitles() {
-        #expect(ShellPage.allCases.map(\.title) == ["Worlds", "Watch", "Activity", "New world"])
+        #expect(ShellPage.allCases.map(\.title) == ["Worlds", "Watch", "Activity", "New world", "Details"])
+        #expect(ShellPage.sidebarPages.map(\.title) == ["Worlds", "Watch", "Activity", "New world"])
     }
 
     // MARK: The library's words (PR-C)

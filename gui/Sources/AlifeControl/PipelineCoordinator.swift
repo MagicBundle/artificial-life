@@ -19,6 +19,8 @@ final class PipelineCoordinator: ObservableObject {
         var playerStartsWorld: () -> Void = {}
         var showActivity: () -> Void = {}
         var showWatch: () -> Void = {}
+        /// A research run was started for this world (stage 1, or Keep growing): Watch follows it (docs/APP.md §3.2 "Lands").
+        var researchStarted: (String) -> Void = { _ in }
         /// A planet is to be made while a world is open: the sheet asks to stop it first (R5). True when it took the request (`then` runs
         /// after the world is saved); false when no world has to stop.
         var switchWorld: (SwitchRequest.Goal, @escaping @MainActor () -> Void) -> Bool = { _, _ in false }
@@ -205,6 +207,7 @@ final class PipelineCoordinator: ObservableObject {
         stageStartedAt = hooks.now()
         elapsed = 0
         startTicker()
+        hooks.researchStarted(first.world)
         return nil
     }
 
@@ -385,6 +388,7 @@ final class PipelineCoordinator: ObservableObject {
                 stageStartedAt = hooks.now()
                 elapsed = 0
                 seenExit = controller.lastRunExit?.serial ?? seenExit
+                hooks.researchStarted(grow)
             } else {
                 plan?.state = .failed(.growing(controller.startBlockedReason ?? "The engine could not be started. Activity has what it said."))
             }

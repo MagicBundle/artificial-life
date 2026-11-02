@@ -117,6 +117,9 @@ final class SphereLabModel {
 final class SphereLabMTKView: MTKView {
     weak var viewer: ViewerModel?
     var renderer: SphereRenderer?
+    /// As `ViewerMTKView.keysFollowWindow`.
+    var keysFollowWindow = false
+    private let keyMonitor = ViewerKeyMonitor()
     private var downPoint: CGPoint?
     private var dragging = false
 
@@ -125,7 +128,13 @@ final class SphereLabMTKView: MTKView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        window?.makeFirstResponder(self)
+        keyMonitor.remove()
+        guard window != nil else { return }
+        if keysFollowWindow {
+            keyMonitor.install(in: self) { [weak self] action in self?.viewer?.perform(action) }
+        } else {
+            window?.makeFirstResponder(self)
+        }
     }
 
     private func point(of event: NSEvent) -> CGPoint {
@@ -175,6 +184,8 @@ final class SphereLabMTKView: MTKView {
 struct SphereLabMetalView: NSViewRepresentable {
     @ObservedObject var stream: StreamController
     @ObservedObject var model: ViewerModel
+    /// The keys follow the window, not the focus (the `alife` window's Watch).
+    var keysFollowWindow = false
 
     final class Coordinator {
         var renderer: SphereRenderer?
@@ -187,6 +198,7 @@ struct SphereLabMetalView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> SphereLabMTKView {
         let view = SphereLabMTKView(frame: .zero, device: nil)
+        view.keysFollowWindow = keysFollowWindow
         view.viewer = model
         view.colorPixelFormat = SphereRenderer.colorFormat
         view.depthStencilPixelFormat = SphereRenderer.depthFormat

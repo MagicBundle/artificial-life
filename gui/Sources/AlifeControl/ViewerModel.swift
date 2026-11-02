@@ -25,11 +25,21 @@ final class ViewerModel: ObservableObject {
 
     /// What the colour pop-up shows, apart from the stream, which publishes with every frame (see `DistinctState`).
     let colour: DistinctState<ViewerColourInputs>
+    /// What the controls of the `alife` window's Watch show (the Show menu, the buttons, the stepper), apart from the stream.
+    let controls: DistinctState<ViewerControlInputs>
+    /// What the page's body reads of the stream (the picture to make, the overlay's words).
+    let page: DistinctState<ViewerPageInputs>
 
     init(stream: StreamController) {
         self.stream = stream
         colour = DistinctState(initial: ViewerColourInputs(stream: stream), sources: [stream.objectWillChange]) { [weak stream] in
             stream.map { ViewerColourInputs(stream: $0) }
+        }
+        controls = DistinctState(initial: ViewerControlInputs(stream: stream), sources: [stream.objectWillChange]) { [weak stream] in
+            stream.map { ViewerControlInputs(stream: $0) }
+        }
+        page = DistinctState(initial: ViewerPageInputs(stream: stream), sources: [stream.objectWillChange]) { [weak stream] in
+            stream.map { ViewerPageInputs(stream: $0) }
         }
     }
 
@@ -43,7 +53,15 @@ final class ViewerModel: ObservableObject {
 
     // MARK: Actions
 
+    /// Says something in the status line (steps per frame while following, where a snapshot went).
+    func say(_ text: String) { note = text }
+
     func perform(_ action: ViewerAction) {
+        // Steps per frame belong to a re-simulation: while following, the key does nothing, and says why (never silence).
+        if (action == .faster || action == .slower), stream.source?.follow == true {
+            say(WatchGuide.stepsPerFrameNote)
+            return
+        }
         switch action {
         case .togglePause: stream.togglePause()
         case .step: stream.step()

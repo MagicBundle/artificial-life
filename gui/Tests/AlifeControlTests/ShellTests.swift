@@ -347,3 +347,152 @@ private struct ShellRig {
         #expect(rig.shell.page == .worlds && rig.shell.planetFormRequests == before + 1)
     }
 }
+
+// MARK: - The two forms of Watch (PR-F)
+
+@MainActor
+@Suite("The two forms of Watch") struct WatchFormTests {
+    @Test func withNothingOpenWatchShowsNothingAndTheWorldModelHasTheKeys() throws {
+        let rig = try ShellRig()
+        defer { rig.finish() }
+        #expect(rig.shell.watchForm == nil && rig.shell.observed == nil)
+        rig.shell.select(.watch)
+        #expect(rig.session.model.watchActive, "no research world in view: the world model keeps its keys on the Watch page, as before")
+    }
+
+    @Test func chosingAResearchWorldToWatchShowsItAsAnObserverAndGivesTheKeysToTheObserver() throws {
+        let rig = try ShellRig(page: .worlds)
+        defer { rig.finish() }
+        rig.shell.shapeOf = { $0 == "r" ? .planet : nil }
+        rig.shell.observe("r")
+        #expect(rig.shell.observed == "r" && rig.shell.watchForm == .research && rig.shell.page == .watch && rig.shell.observedShape == .planet)
+        #expect(!rig.session.model.watchActive, "the world model's keys must not act on the page of an observer")
+        rig.shell.select(.worlds)
+        #expect(!rig.session.model.watchActive)
+        #expect(rig.shell.watchForm == .research, "the choice is kept while the player is elsewhere; the stream is not (the page ends it)")
+    }
+
+    @Test func aPlayedWorldThatOpensReplacesTheObservedOneAndIsNotBroughtBack() async throws {
+        let rig = try ShellRig(page: .worlds)
+        defer { rig.finish() }
+        rig.shell.observe("research")
+        #expect(rig.shell.watchForm == .research)
+        rig.start()
+        #expect(await eventually { rig.play.phase == .live })
+        #expect(rig.shell.watchForm == .played && rig.shell.observed == nil)
+        #expect(rig.session.model.watchActive, "Watch is the page and the form is the world's")
+        rig.play.stop()
+        #expect(await eventually { rig.play.phase != .live })
+        #expect(rig.shell.observed == nil, "the research world seen before is not brought back behind the world")
+    }
+
+    @Test func aWorldThatIsOpenIsWhatWatchShowsAndNoObserverCanReplaceIt() async throws {
+        let rig = try ShellRig(page: .worlds)
+        defer { rig.finish() }
+        rig.start()
+        #expect(await eventually { rig.play.phase == .live })
+        rig.shell.select(.worlds)
+        rig.shell.observe("research")
+        #expect(rig.shell.observed == nil && rig.shell.watchForm == .played && rig.shell.page == .worlds, "a card's Watch cannot replace a world that is open (R1)")
+        rig.shell.researchStarted("research")
+        #expect(rig.shell.watchForm == .played && rig.shell.page == .worlds, "a run started meanwhile does not either: it is kept for when the world is closed")
+    }
+
+    @Test func aRunStartedFromTheSetUpPageTakesThePersonToWatchButNoOneElse() throws {
+        let rig = try ShellRig(page: .setup)
+        defer { rig.finish() }
+        rig.shell.researchStarted("r1")
+        #expect(rig.shell.page == .watch && rig.shell.observed == "r1" && rig.shell.watchForm == .research)
+
+        let other = try ShellRig(page: .activity)
+        defer { other.finish() }
+        other.shell.researchStarted("r1")
+        #expect(other.shell.page == .activity && other.shell.observed == "r1", "a person who went on to another page is not moved")
+        other.shell.select(.watch)
+        #expect(other.shell.watchForm == .research)
+    }
+
+    @Test func aRunStartedWhileAWorldIsOpenIsWhatWatchShowsWhenTheWorldIsClosed() async throws {
+        let rig = try ShellRig(page: .setup)
+        defer { rig.finish() }
+        rig.start()
+        #expect(await eventually { rig.play.phase == .live })
+        rig.shell.researchStarted("r1")
+        #expect(rig.shell.watchForm == .played && rig.shell.observed == "r1", "the world stays what Watch shows; the run is kept, not lost")
+        #expect(rig.shell.page == .setup, "nobody is moved in front of a world being played")
+        rig.play.stop()
+        #expect(await eventually { rig.play.phase != .live })
+        #expect(rig.shell.observed == "r1", "phase \(rig.play.phase)")
+        #expect(rig.shell.watchForm == .research, "the run is what Watch shows once the world is closed (phase \(rig.play.phase))")
+    }
+
+    @Test func theObservedWorldIsGrowingOnlyWhenTheRunIsItsOwn() throws {
+        let rig = try ShellRig(page: .worlds)
+        defer { rig.finish() }
+        rig.shell.observe("planet-1-grow")
+        rig.shell.runningRun = nil
+        #expect(!rig.shell.observedGrowing)
+        rig.shell.runningRun = "other"
+        #expect(!rig.shell.observedGrowing, "another world's run is not this one's")
+        rig.shell.runningRun = "PLANET-1-GROW"
+        #expect(rig.shell.observedGrowing, "capitals do not tell worlds apart")
+    }
+
+    @Test func theFormTableCoversEveryPhase() {
+        #expect(ShellModel.form(of: .idle, observed: nil) == nil)
+        #expect(ShellModel.form(of: .idle, observed: "r") == .research)
+        #expect(ShellModel.form(of: .starting, observed: "r") == .played)
+        #expect(ShellModel.form(of: .live, observed: nil) == .played)
+        #expect(ShellModel.form(of: .ended("x"), observed: nil) == .played)
+        #expect(ShellModel.form(of: .ended("x"), observed: "r") == .research)
+        #expect(ShellModel.form(of: .failed("x"), observed: nil) == .played)
+        #expect(ShellModel.form(of: .failed("x"), observed: "r") == .research)
+    }
+
+    @Test func theWorldMenuIsEnabledOnlyOnWatchWithSomethingInIt() {
+        #expect(WorldCommands.itemsAreEnabled(page: .watch, form: .played))
+        #expect(WorldCommands.itemsAreEnabled(page: .watch, form: .research))
+        #expect(!WorldCommands.itemsAreEnabled(page: .watch, form: nil))
+        for page in [ShellPage.worlds, .activity, .setup, .details] {
+            #expect(!WorldCommands.itemsAreEnabled(page: page, form: .played), "\(page)")
+            #expect(!WorldCommands.itemsAreEnabled(page: page, form: .research), "\(page)")
+        }
+    }
+
+    @Test func theObserverMenusExtraItemsKnowWhenTheyCanWork() {
+        // Stop is for the run Watch shows, and only from Watch: never from another page, never for another world's run
+        #expect(WorldCommands.canStop(page: .watch, form: .research, observedGrowing: true))
+        #expect(!WorldCommands.canStop(page: .watch, form: .research, observedGrowing: false))
+        #expect(!WorldCommands.canStop(page: .watch, form: .played, observedGrowing: true))
+        #expect(!WorldCommands.canStop(page: .watch, form: nil, observedGrowing: true))
+        for page in [ShellPage.worlds, .activity, .setup, .details] { #expect(!WorldCommands.canStop(page: page, form: .research, observedGrowing: true), "\(page)") }
+        #expect(WorldCommands.canCheck(runGoing: false, repoReady: true))
+        #expect(!WorldCommands.canCheck(runGoing: true, repoReady: true), "a run holds the engine's one job")
+        #expect(!WorldCommands.canCheck(runGoing: false, repoReady: false))
+        #expect(WorldCommands.canOpenClassic(shape: .flat, repoReady: true))
+        #expect(!WorldCommands.canOpenClassic(shape: .planet, repoReady: true) && !WorldCommands.canOpenClassic(shape: .box, repoReady: true))
+        #expect(!WorldCommands.canOpenClassic(shape: nil, repoReady: true) && !WorldCommands.canOpenClassic(shape: .flat, repoReady: false))
+    }
+
+    @Test func aMenuItemGoesToTheWorldOrToTheViewerAccordingToItsForm() {
+        var world: [WorldAction] = [], viewer: [ViewerAction] = []
+        for form in [WatchForm.played, .research] {
+            for entry in ControlTables.menu(form) { WorldCommands.dispatch(entry, world: { world.append($0) }, observer: { viewer.append($0) }) }
+        }
+        #expect(world == ControlTables.menu(.played).compactMap { if case .world(let a)? = $0.action { a } else { nil } })
+        #expect(viewer == ControlTables.menu(.research).compactMap { if case .observer(let a)? = $0.action { a } else { nil } })
+        #expect(world.count == 12 && viewer.count == 9)
+        // a row with no single action does nothing
+        WorldCommands.dispatch(ControlTables.played.first { $0.action == nil }!, world: { _ in Issue.record("acted") }, observer: { _ in Issue.record("acted") })
+    }
+
+    @Test func theHintSaysOverviewInTheNewWindowAndHomeInTheOldApps() throws {
+        let rig = try ShellRig()
+        defer { rig.finish() }
+        #expect(rig.session.model.usesOverviewWord && rig.session.model.plainNames)
+        #expect(rig.session.model.hint(planet: false).contains("H overview") && rig.session.model.hint(planet: true).contains("H overview"))
+        let old = WorldModel(play: PlayController())
+        #expect(!old.usesOverviewWord && !old.plainNames)
+        #expect(old.hint(planet: false) == WorldModel.hintText && old.hint(planet: true).contains("H home"))
+    }
+}

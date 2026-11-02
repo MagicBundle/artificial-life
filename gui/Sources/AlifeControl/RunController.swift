@@ -143,6 +143,8 @@ final class RunController: ObservableObject {
     /// Asks whether a directory must not be continued (the `alife` window's library: a played world, a world in use). Nil in the two old
     /// apps, which keep today's checks.
     var resumeRefusal: ((String) -> String?)?
+    /// The language model Settings > Autopilot names, applied to the form of a new world (the `alife` window only; nil in the two old apps).
+    var autopilotDefaults: (@MainActor (inout DirectorSettings) -> Void)?
     /// The runs whose `play.lock` is held by a process (a world being played or saving).
     @Published private(set) var playLocked: Set<String> = []
     /// The runs with a `director.jsonl`: what a random director can be yoked to (newest first).
@@ -463,6 +465,8 @@ final class RunController: ObservableObject {
         offered.yokeRuns = runsWithLog
         settings.director = offered.baseline
         settings.director.mode = offered.initialMode
+        // A new world starts from the model Settings > Autopilot names (the `alife` window); a branch or a continuation keeps its source's.
+        if settings.mode == .new { autopilotDefaults?(&settings.director) }
         settings.directorContext = offered
         directorWarning = offered.warning
         llmCheck = .idle

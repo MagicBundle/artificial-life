@@ -958,6 +958,34 @@ unit (§37.4).
   Command-W (the menu item was disabled with the window not key), a real Dock click and the bounce, the "Saving" state of the sheet with a big save (the
   unit tests run it with a slow engine), VoiceOver.
 
+- **Click-through list for PR-F of the one-app program** (the owner's hands; `docs/APP.md` §3.4, §3.7, §3.8, §7.5; DESIGN §33.4.15, row I86; the same
+  `alife Preview.app`). Watch has two forms and each has its own keys: read **Help > World Controls** first (both tables, the one in view first). The scripted
+  real-bundle runs (display asleep, the app never active) are in §7.5; the picture itself (the Metal canvas) and a real mouse are yours:
+  1. **A research world in Watch.** Worlds > a research card > *Watch* (or *Create* with the goal *A research world*, which takes you there). The toolbar says
+     **Observer**; one line says "This is an observer view. To play it, make a planet from it." (a flat world adds that it has no weather). Beside the picture the
+     **Run panel**: Numbers (every number the Lab's Status had, height, floor and surface for a 3D world, the feature groups folded), Autopilot (interventions and
+     journal), Log. While this app grows the world the panel says "Step 12,300 of 30,000" with **Stop**; a finished world says when it was saved. Is the picture
+     there, does it move (Follow while it grows, Re-simulate after), do Pause, Run, Step/Newest, Colour, Show, Orbit/Fly, Reset view and Snapshot work, is anything cut at 1,100 x 700?
+  2. **Keys of the observer** (they work whichever view has the focus, the sidebar list included; not while you type in a field): Space pause/run, `.` step (or the newest save point while following), `-` `+` steps per frame, `c` colour,
+     `f` field slice, `[` `]` field layer, `s` snapshot, `o` orbit/fly, `r` reset view, `1` `2` `3` agents, bonds, frame. The same letters mean other things when you
+     play a world (`f` follows an organism, `s` is the side view, `r` the overview): the **World** menu lists the table of the form in view with the key in the title
+     (a letter is never a menu shortcut), and its items work only on the Watch page. **Stop \<world\>** (Command-period) is in the menu while the run Watch shows grows, and does nothing on any other page. A played world: Space, `.`,
+     `[` `]`, `g`, `h`, `f`, `n`, `p`, `a`, `k`, `c`; the hint on the map says "H overview" (the old apps still say "H home").
+  3. **Leave Watch.** The observer ends with the page (no `alife stream` is left); the world goes on growing. Come back: it starts again; a world that was playing is
+     paused and continues as in PR-E. Open a played world while an observer is shown: Watch shows the played world and the research world is not brought back behind it.
+  4. **Details.** Choose a world in the sidebar (or the info icon on a card, or Window > Details, Command-5). Read it as someone who does not know the engine: what
+     this world is (kind, where it came from, its branches), what you can do (every button with the reason beside a grey one), how it is doing (the state in a
+     sentence, every number, the autopilot's journal; for a world that is **not** growing too), the settings it was made with, and the folder in small type. A planet
+     made from its grown world says "made from its grown world"; no title, subtitle or bar on the default path shows `planet-1-grow`.
+  5. **Settings (Command-comma) > Autopilot.** The address and the name of the local model, *Test connection*, *Use the defaults*. A new world's form (Advanced >
+     Autopilot) starts from them. (Test with an address nothing listens on first; the scripted run did, and read "FAIL connection: ConnectionRefusedError".)
+  6. **Help.** alife Help and World Controls (Help menu) open one window of seven topics; the Watch topic says what a research world can and cannot do.
+  7. **One menu word per action** (the audit): Watch, Details, Check World, Stop, Open Classic 2D Viewer are the same words on the cards, Details, the menus and the panel.
+  **Open, for you:** Help > World Controls and the dock's View > Controls... are two places for "the controls" (the hint on the map and the tables); Cmd-R stays the
+  set-up page's button and is not in the World menu (it would start a world from any page); a research world cannot be watched while a played world is open (an accepted loss: the old 3D Viewer was a second window; `docs/APP.md` §7.5 says why), and the sidebar's Watch row could not be clicked by the scripted driver (a real click is yours).
+  What was **not** exercised and is yours: the Metal picture on a lit display (every window composite in the scripted runs was blank: the status line showed frames
+  arriving), a real mouse and trackpad on the new controls, the toolbar items (a window server that composes nothing), VoiceOver, 13 inches, and the app on a folder of yours.
+
 - **3D viewer click-through checklist** (3D PR 5, to add to the checklist above; `gui/README.md`, DESIGN §27.12; not yet
   run by the owner; use the `tiny3d` preset, and `tiny` for the 2D items; run the GPU tests first with the GPU free:
   `cd gui && ALIFE_GPU_TESTS=1 swift test --filter GPURenderTests`, which prints where the PNGs went):

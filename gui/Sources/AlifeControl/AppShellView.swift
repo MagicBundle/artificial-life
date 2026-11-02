@@ -12,19 +12,30 @@ struct AppShellView: View {
     @ObservedObject var stream: StreamController
     @ObservedObject var model: WorldModel
     @ObservedObject var library: WorldLibrary
+    /// The observer of the research Watch and the readers of a world's files (the Run panel's and Details').
+    @ObservedObject var observer: ObserverSession
+    @ObservedObject var watchReader: WorldReader
+    @ObservedObject var detailsReader: WorldReader
     @StateObject private var setup: SetupModel
     /// The sheet that stops the open world before another is played or a planet is made (R5).
     @StateObject private var switcher: WorldSwitcher
-    @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.openWindow) private var openWindow
     private let arguments: [String]
 
     /// `setup` is the app's set-up model (shared with the set-up window); without one the view makes its own (the tests').
     init(shell: ShellModel, controller: RunController, library: WorldLibrary, setup: SetupModel? = nil, switcher: WorldSwitcher? = nil,
+         observer: ObserverSession? = nil, watchReader: WorldReader? = nil, detailsReader: WorldReader? = nil,
          stream: StreamController = .shared, arguments: [String] = CommandLine.arguments) {
         self.shell = shell
         self.controller = controller
         self.library = library
+        let runs: () -> URL? = { [weak controller] in
+            guard let controller, controller.repoReady else { return nil }
+            return controller.repoURL.appendingPathComponent("runs", isDirectory: true)
+        }
+        self.observer = observer ?? ObserverSession(controller: controller, stream: stream)
+        self.watchReader = watchReader ?? WorldReader(runsDirectory: runs)
+        self.detailsReader = detailsReader ?? WorldReader(runsDirectory: runs)
         play = shell.session.play
         self.stream = stream
         model = shell.session.model
@@ -46,21 +57,19 @@ struct AppShellView: View {
                 }
                 // The pipeline's bar is on every page but the one that shows it in full: the wait is never out of sight.
                 if showsStrip {
-                    PipelineStrip(coordinator: setup.coordinator) { shell.select(.setup) }
+                    PipelineStrip(coordinator: setup.coordinator, hidesStop: shell.page == .watch && shell.watchForm == .research && shell.observedGrowing) { shell.select(.setup) }
                 }
                 ZStack {
-                    WatchLayer(play: play, model: model, visible: shell.page == .watch)
+                    WatchLayer(play: play, model: model, visible: shell.page == .watch && shell.watchForm != .research)
                     page
                 }
             }
         }
         .frame(minWidth: AppShell.minWidth, minHeight: AppShell.minHeight)
-        // The 3D viewer window (until PR-F) goes with the main window, so that closing the main window ends the app as it always did.
         // The window is the app's: closing it is closing the last window (the Settings window and the 3D Viewer go with it, so that the app
         // ends through the question and the wait of the quit, as the old apps do).
         // With a run going, closing it asks "Keep it running / Stop and quit / Cancel" first (D3, `AppDelegate.mainWindowShouldClose`).
         .background(WindowCloseObserver(group: "main", shouldClose: { AppDelegate.current?.mainWindowShouldClose() ?? true }) {
-            dismissWindow(id: AppWindow.viewer3d.rawValue)
             AppDelegate.current?.mainWindowClosed()
         })
         .sheet(item: switchRequest) { request in
@@ -73,6 +82,9 @@ struct AppShellView: View {
             // A world that stopped while it was starting is an unfinished build; the library keeps what this session knows of it.
             shell.buildEnded = { [weak library] world, note in library?.note(note, forBuild: world) }
             controller.pollsRunList = shell.page == .setup
+            shell.shapeOf = { [weak library] name in library?.state.row(named: name)?.shape }
+            shell.runningRun = controller.runningRunName
+            observer.inUseElsewhere = { [weak library] world in library?.state.row(named: world)?.state == .inUseElsewhere }
             // The set-up page does not continue a played world, or a directory another process or this window is writing.
             controller.resumeRefusal = { [weak library] name in library?.reasonNotToResume(name) }
             wireSetup()
@@ -82,6 +94,7 @@ struct AppShellView: View {
             library.startTimer()
         }
         // The library follows the folder, what this app does with its worlds, and the planet form follows the library.
+        .onChange(of: controller.runningRunName) { _, run in shell.runningRun = run }
         .onChange(of: controller.repoReady) { _, _ in library.refresh() }
         .onChange(of: controller.repoPath) { _, _ in library.refresh() }
         .onChange(of: liveFacts) { _, facts in library.update(live: facts) }
@@ -113,15 +126,22 @@ struct AppShellView: View {
     @ViewBuilder private var page: some View {
         switch shell.page {
         case .watch:
-            WatchChrome(shell: shell, play: play, model: model, controller: controller)
+            if shell.watchForm == .research, let world = shell.observed {
+                ResearchWatchPage(world: world, shell: shell, observer: observer, stream: stream, controller: controller, library: library,
+                                  reader: watchReader, setup: setup)
+            } else {
+                WatchChrome(shell: shell, play: play, model: model, controller: controller)
+            }
         case .worlds:
             WorldsPage(shell: shell, controller: controller, play: play, setup: setup, library: library, switcher: switcher)
                 .navigationTitle("Worlds")
         case .activity:
-            ActivityPage(shell: shell, controller: controller, play: play, stream: stream)
+            ActivityPage(shell: shell, controller: controller, play: play, stream: stream, library: library)
                 .navigationTitle("Activity")
         case .setup:
             SetupPage(model: setup, controller: controller, coordinator: setup.coordinator, library: library, launcher: setup.launcher)
+        case .details:
+            DetailsPage(shell: shell, controller: controller, play: play, library: library, setup: setup, reader: detailsReader, switcher: switcher)
         }
     }
 
@@ -129,7 +149,7 @@ struct AppShellView: View {
 
     private var sidebar: some View {
         List(selection: sidebarSelection) {
-            ForEach(ShellPage.allCases) { page in
+            ForEach(ShellPage.sidebarPages) { page in
                 let row = rowText(of: page)
                 SidebarRow(page: page, detail: row.text, marked: row.marked)
                     .tag(SidebarItem.page(page))
@@ -180,6 +200,7 @@ struct AppShellView: View {
         setup.coordinator.hooks.playerStartsWorld = { [weak shell] in shell?.playerStartsWorld() }
         setup.coordinator.hooks.showActivity = { [weak shell] in shell?.select(.activity) }
         setup.coordinator.hooks.showWatch = { [weak shell] in shell?.select(.watch) }
+        setup.coordinator.hooks.researchStarted = { [weak shell] world in shell?.researchStarted(world) }
         setup.coordinator.hooks.dismissStartFailure = { [weak shell] in shell?.startFailure = nil }
         setup.coordinator.hooks.openSetup = { [weak setup] intent, suggested in
             switch intent {
@@ -205,10 +226,16 @@ struct AppShellView: View {
             if shell.startFailure != nil { return ("A world did not open", true) }
             return (nil, false)
         case .watch:
+            // (the stream ends with the page: away from Watch the row says what was looked at, not that anything is being observed)
+            if shell.watchForm == .research, let world = shell.observed {
+                return ((shell.page == .watch ? "Observing " : "Last watched ") + SetupIntent.shown(world), false)
+            }
             let cue = model.watchCue(startFailed: shell.startFailure != nil)
             return (cue.text, cue.needsPlayer)
         case .activity:
             return (ActivityGuide.sidebarDetail(ActivityPage.facts(controller: controller, play: play, stream: stream, away: shell.awayHold)), false)
+        case .details:
+            return (nil, false)
         }
     }
 

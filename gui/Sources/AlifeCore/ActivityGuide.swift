@@ -41,7 +41,7 @@ package enum ActivityGuide {
 
     /// The control on a row.
     package enum Control: Equatable, Sendable {
-        case stop, forceStop, cancel, closeWorld, closeViewer
+        case stop, forceStop, cancel, closeWorld, closeViewer, details
 
         /// The words on the button (§2.5: Stop / Force stop end a background job at a save point, Close World ends a live one).
         package var label: String {
@@ -51,6 +51,7 @@ package enum ActivityGuide {
             case .cancel: return "Cancel"
             case .closeWorld: return "Close World"
             case .closeViewer: return "Close viewer"
+            case .details: return "Details"
             }
         }
     }
@@ -79,7 +80,7 @@ package enum ActivityGuide {
             out.append(Item(
                 kind: .run, title: Self.runTitle(name),
                 detail: facts.runStopping ? "Stopping: it writes a save point first." : "Growing. Stop ends it at a save point.",
-                controls: facts.runStopping ? [.forceStop] : [.stop]))
+                controls: facts.runStopping ? [.details, .forceStop] : [.details, .stop]))
         }
         if facts.setupRunning {
             out.append(Item(kind: .setup, title: "Setting up the engine", detail: "Installing packages with uv. Progress is in the log below.",
@@ -101,7 +102,7 @@ package enum ActivityGuide {
             out.append(Item(kind: .saving, title: "Saving \(name)", detail: "Writing its save point. This ends by itself.", controls: []))
         }
         if let run = facts.streamRun {
-            out.append(Item(kind: .stream, title: "3D viewer on \(run)", detail: "Close the 3D Viewer window to end it.", controls: []))
+            out.append(Item(kind: .stream, title: "Watching \(SetupIntent.shown(run))", detail: "The observer view in Watch. It ends when you leave Watch; the world goes on.", controls: []))
         }
         if facts.classicViewerOpen {
             out.append(Item(kind: .viewer, title: "Classic 2D viewer", detail: "A separate window; it shares the GPU with a run.", controls: [.closeViewer]))

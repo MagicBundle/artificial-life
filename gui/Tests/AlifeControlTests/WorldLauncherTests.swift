@@ -372,7 +372,7 @@ import Testing
     private func host(_ model: WorldLauncherModel, play: PlayController, height: CGFloat) -> NSHostingView<some View> {
         let view = WorldLauncherView(model: model, play: play, close: {})
         let host = NSHostingView(rootView: view.frame(width: LauncherLayout.minWidth, height: height))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: LauncherLayout.minWidth, height: height),
+        let window = QuietWindow(contentRect: NSRect(x: 0, y: 0, width: LauncherLayout.minWidth, height: height),
                               styleMask: [.titled], backing: .buffered, defer: true)
         window.contentView = host
         host.frame = NSRect(x: 0, y: 0, width: LauncherLayout.minWidth, height: height)

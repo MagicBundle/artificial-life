@@ -1,3 +1,4 @@
+import AlifeCore
 import AppKit
 import MetalKit
 
@@ -10,6 +11,10 @@ import MetalKit
 @MainActor
 final class ViewerMTKView: MTKView {
     weak var model: ViewerModel?
+    /// The keys reach the observer whichever view has the focus, and the picture does not take the focus when it appears (the `alife` window's
+    /// Watch); the 3D Viewer window of the old apps keeps taking it.
+    var keysFollowWindow = false
+    private let keyMonitor = ViewerKeyMonitor()
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -17,7 +22,13 @@ final class ViewerMTKView: MTKView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        window?.makeFirstResponder(self)  // the keys work as soon as the window opens
+        keyMonitor.remove()
+        guard window != nil else { return }
+        if keysFollowWindow {
+            keyMonitor.install(in: self) { [weak self] action in self?.model?.perform(action) }
+        } else {
+            window?.makeFirstResponder(self)  // the keys work as soon as the window opens
+        }
     }
 
     override func mouseDown(with event: NSEvent) {

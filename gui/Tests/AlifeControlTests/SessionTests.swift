@@ -543,7 +543,7 @@ struct SessionTests {
     // MARK: Reopening
 
     private func window(_ id: String?) -> NSWindow {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.borderless], backing: .buffered, defer: true)
+        let window = QuietWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.borderless], backing: .buffered, defer: true)
         window.isReleasedWhenClosed = false
         window.identifier = id.map { NSUserInterfaceItemIdentifier($0) }
         window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
@@ -599,7 +599,7 @@ struct SessionTests {
         var asked = 0
         var answer = true
         let original = Original()
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled], backing: .buffered, defer: true)
+        let window = QuietWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled], backing: .buffered, defer: true)
         window.isReleasedWhenClosed = false
         window.delegate = original
         let observer = WindowCloseObserver.ObserverView(frame: .zero)
@@ -629,7 +629,7 @@ struct SessionTests {
     }
 
     @Test func aWindowWithoutAGuardKeepsItsOwnDelegate() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled], backing: .buffered, defer: true)
+        let window = QuietWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled], backing: .buffered, defer: true)
         window.isReleasedWhenClosed = false
         let observer = WindowCloseObserver.ObserverView(frame: .zero)
         window.contentView = observer
@@ -828,8 +828,10 @@ struct SessionTests {
             return (.cancel, false)
         }
         let closed = await closeAsAppKitDoes(d)
-        #expect(!closed, "the second question was answered Cancel: the window stays")
-        #expect(asked.count == 2)
+        let facts = "state \(String(describing: rig.coordinator.plan?.state)) play \(rig.play.phase) job \(String(describing: rig.controller.job))"
+        #expect(!closed, "the second question was answered Cancel: the window stays (\(facts))")
+        // (a failed count must not become an index out of range, which ends the whole run's results)
+        try #require(asked.count == 2, "\(facts)")
         #expect(asked[0].offersKeepRunning && asked[1].title == "Stop making \u{2018}planet-1\u{2019} and quit?" && !asked[1].offersKeepRunning)
         #expect(rig.play.phase == .starting && rig.play.world == "planet-1", "Keep Running did not interrupt the planet, and nothing claimed it was saved")
         #expect(d.applicationShouldTerminateAfterLastWindowClosed(NSApp))
@@ -875,7 +877,7 @@ struct SessionTests {
     }
 
     /// A window that says it is minimised (a borderless one cannot be): the Dock click must take it out of the Dock.
-    private final class MinimisedWindow: NSWindow {
+    private final class MinimisedWindow: QuietWindow {
         var minimised = true
         var restored = 0
         override var isMiniaturized: Bool { minimised }

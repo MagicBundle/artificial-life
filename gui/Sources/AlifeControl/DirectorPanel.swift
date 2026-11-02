@@ -187,17 +187,36 @@ private enum DirectorTab: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-/// The last interventions and the journal of the tracked or selected run, tailed from its files.
+/// The last interventions and the journal of the tracked or selected run, tailed from its files (the Lab's).
 struct DirectorLiveView: View {
     @ObservedObject var controller: RunController
     /// "Director" in the two old apps; the `alife` window says Autopilot (docs/APP.md §2.5).
     var title = "Director"
+
+    var body: some View {
+        DirectorSnapshotView(snapshot: controller.director, title: title)
+    }
+}
+
+/// The interventions and the journal of one snapshot. The Lab shows the run it follows; the Run panel and Details show the world they are
+/// about, growing or not (`WorldReader`). `titled` false drops the box (the panel's tab already says "Autopilot").
+struct DirectorSnapshotView: View {
+    var snapshot: DirectorSnapshot?
+    var title = "Director"
+    var titled = true
+    /// What to say when the world ran without an autopilot.
+    var offText: String?
+    /// The height of the list; nil lets it take what the panel has.
+    var listHeight: CGFloat? = 170
     @State private var tab: DirectorTab = .interventions
 
     var body: some View {
-        GroupBox(title) {
+        if titled { GroupBox(title) { content } } else { content }
+    }
+
+    private var content: some View {
             VStack(alignment: .leading, spacing: 6) {
-                if let snapshot = controller.director, snapshot.hasLog {
+                if let snapshot, snapshot.hasLog {
                     Picker("", selection: $tab) {
                         ForEach(DirectorTab.allCases) { Text($0.rawValue).tag($0) }
                     }
@@ -210,15 +229,14 @@ struct DirectorLiveView: View {
                         case .journal: JournalList(rows: snapshot.journal)
                         }
                     }
-                    .frame(height: 170)
+                    .frame(minHeight: listHeight ?? 140, maxHeight: listHeight ?? .infinity)
                     .background(Color(nsColor: .textBackgroundColor))
                 } else {
-                    Text(title == "Director" ? "Director off for this run (no director.jsonl)." : "\(title) is off for this run.").foregroundStyle(.secondary)
+                    Text(offText ?? (title == "Director" ? "Director off for this run (no director.jsonl)." : "\(title) is off for this run.")).foregroundStyle(.secondary)
                 }
             }
             .padding(6)
             .frame(maxWidth: .infinity, alignment: .leading)
-        }
     }
 }
 

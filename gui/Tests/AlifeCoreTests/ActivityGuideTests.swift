@@ -12,9 +12,9 @@ import Testing
 
     @Test func eachJobHasTheControlThatEndsIt() {
         let run = ActivityGuide.items(.init(runName: "r1"))
-        #expect(run.map(\.kind) == [.run] && run[0].controls == [.stop] && run[0].title == "Research run r1")
+        #expect(run.map(\.kind) == [.run] && run[0].controls == [.details, .stop] && run[0].title == "Research run r1")
         let stopping = ActivityGuide.items(.init(runName: "r1", runStopping: true))
-        #expect(stopping[0].controls == [.forceStop])
+        #expect(stopping[0].controls == [.details, .forceStop], "a run has its Details; Stop becomes Force stop while it stops")
         #expect(ActivityGuide.items(.init(setupRunning: true))[0].controls == [.cancel])
         #expect(ActivityGuide.items(.init(checkRunning: true))[0].controls == [.cancel])
         #expect(ActivityGuide.items(.init(worldName: "w"))[0].controls == [.closeWorld])
@@ -31,6 +31,12 @@ import Testing
         #expect(ActivityGuide.sidebarDetail(.init(runName: "r1")) == "Research run r1")
         #expect(ActivityGuide.sidebarDetail(.init(runName: "r1", worldName: "w")) == "2 running")
         #expect(ActivityGuide.sidebarDetail(.init(runName: "r1", saving: ["w"])) == "Research run r1")
+    }
+
+    @Test func theObserverIsWatchesAndEndsWhenWatchIsLeft() {
+        let item = ActivityGuide.items(.init(streamRun: "planet-1-grow"))[0]
+        #expect(item.kind == .stream && item.title == "Watching the grown world of planet-1" && item.controls.isEmpty)
+        #expect(item.detail.contains("leave Watch") && !item.detail.contains("3D Viewer window"))
     }
 
     @Test func rowsHaveDistinctIds() {

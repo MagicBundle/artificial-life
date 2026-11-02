@@ -449,7 +449,7 @@ struct ControlsHintView: View {
         if model.hintVisible {
             // At the top, under the readout and between it and the compass: the bottom corners have the scale bar and the minimap, which a
             // line there lay over in a narrow window.
-            Text(WorldModel.hintText)
+            Text(model.hint(planet: false))
                 .font(.callout)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 14)

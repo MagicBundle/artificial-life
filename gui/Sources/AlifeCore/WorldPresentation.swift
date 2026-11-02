@@ -99,8 +99,28 @@ package enum WorldTitle {
         header?.planet.source.map { "forked from \($0)" }
     }
 
+    /// The line under the heading in the `alife` window, in its words: a planet made from the world that was grown for it is "made from its
+    /// grown world", not "forked from runs/planet-1-grow:30000" (the directory and the engine's word are for Details).
+    package static func plainSubtitle(world: String?, header: PlayHeader?) -> String? {
+        plainSubtitle(world: world, source: header?.planet.source)
+    }
+
+    /// The same from the header's `source` text (`runs/NAME:STEP`).
+    package static func plainSubtitle(world: String?, source text: String?) -> String? {
+        guard let source = SourceRef.parse(text) else { return nil }
+        let name = (world ?? "").trimmingCharacters(in: .whitespaces)
+        if !name.isEmpty, NameFolding.same(source.name, name + SetupPlan.growSuffix) { return "made from its grown world" }
+        return "made from " + SetupIntent.shown(source.name)
+    }
+
     /// The window's title.
     package static func window(world: String?, header: PlayHeader?) -> String {
         world == nil ? "World" : heading(world: world, header: header)
     }
+}
+
+/// The words of the clock strip's buttons that differ between the `alife` window and the two old apps (docs/APP.md §2.5: one word per action).
+package enum ClockWords {
+    /// The button that runs a paused clock again: *Run* here (the toggle of the Space key and the World menu is Pause/Run), *Resume* in the old apps.
+    package static func run(plain: Bool) -> String { plain ? "Run" : "Resume" }
 }

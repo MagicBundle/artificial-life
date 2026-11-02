@@ -2,12 +2,13 @@ import AlifeCore
 import SwiftUI
 
 /// The Activity page (docs/APP.md §2.4): what the app has going, each with the control that ends it, and the log of everything the app
-/// runs (`RunController.logLines`). The numbers and the autopilot of the run that grows are here until the Run panel of PR-F.
+/// runs (`RunController.logLines`). The numbers and the autopilot journal of a world are in the Run panel of Watch and on its Details page.
 struct ActivityPage: View {
     @ObservedObject var shell: ShellModel
     @ObservedObject var controller: RunController
     @ObservedObject var play: PlayController
     @ObservedObject var stream: StreamController
+    @ObservedObject var library: WorldLibrary
 
     static func facts(controller: RunController, play: PlayController, stream: StreamController, away: AwayPause.Hold = .none,
                       picksUp: Bool = true) -> ActivityGuide.Facts {
@@ -45,10 +46,6 @@ struct ActivityPage: View {
                 .padding(.vertical, 4)
                 .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
             }
-            if controller.hasRunJob {
-                RunNumbersView(controller: controller)
-                DirectorLiveView(controller: controller, title: "Autopilot")
-            }
             LogView(controller: controller)
         }
         .padding(24)
@@ -78,6 +75,12 @@ struct ActivityPage: View {
         case .forceStop, .cancel: controller.forceStop()
         case .closeWorld: shell.closeWorld()
         case .closeViewer: controller.closeViewer()
+        case .details:
+            // The world the run grows: its numbers and its journal are on its Details page.
+            if let world = controller.runningRunName {
+                library.select(world, scroll: false)
+                shell.select(.details)
+            }
         }
     }
 }

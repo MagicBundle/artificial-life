@@ -29,7 +29,7 @@ import Testing
                    arguments: [Repo.playFixtureURL("3d").path, commands.path])
         let size = CGSize(width: 1100, height: 700)
         let host = NSHostingView(rootView: WorldView(play: play))
-        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
+        let window = QuietWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
         window.contentView = host
         host.frame = NSRect(origin: .zero, size: size)
         window.alphaValue = 0

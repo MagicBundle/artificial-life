@@ -958,7 +958,7 @@ extension WorldInteractionTests {
         let rig = try await makeRig(scratch)
         defer { rig.play.shutdown() }
         let view = view(for: rig)
-        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 900, height: 700), styleMask: [.titled], backing: .buffered, defer: true)
+        let window = QuietWindow(contentRect: CGRect(x: 0, y: 0, width: 900, height: 700), styleMask: [.titled], backing: .buffered, defer: true)
         let content = NSView(frame: window.contentRect(forFrameRect: window.frame))
         let list = NSTableView(frame: CGRect(x: 0, y: 0, width: 100, height: 100))  // the Cast or Chronicle list
         content.addSubview(view)

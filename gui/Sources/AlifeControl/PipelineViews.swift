@@ -24,19 +24,23 @@ extension PipelinePlan.Tone {
     }
 }
 
-/// The buttons of a banner. The Stop button also answers Command-period (§3.8 row 17).
+/// The buttons of a banner. On the set-up page's card the Stop button also answers Command-period (§3.8 row 17): the page that shows the run in full.
+/// The strip on the other pages has no key (a key that ends a run from a page that does not say which run it is would be a trap), and on Watch,
+/// where the Run panel holds the one Stop, it has no Stop at all (`hidesStop`).
 private struct BannerButtons: View {
     let buttons: [PipelinePlan.Button]
+    var stopKey = true
+    var hidesStop = false
     let press: (PipelinePlan.Button) -> Void
 
     var body: some View {
         HStack(spacing: 8) {
-            ForEach(buttons, id: \.self) { button in
+            ForEach(buttons.filter { !(hidesStop && $0 == .stop) }, id: \.self) { button in
                 let prominent = button == .makePlanet || button == .makePlanetFromHere || button == .watch
                     || (button == .makeAgainNewName || button == .tryAgainNewName)
                 if prominent {
                     Button(button.label) { press(button) }.buttonStyle(.borderedProminent)
-                } else if button == .stop {
+                } else if button == .stop, stopKey {
                     Button(button.label) { press(button) }.keyboardShortcut(".", modifiers: .command)
                 } else {
                     Button(button.label) { press(button) }
@@ -182,6 +186,8 @@ struct PipelineCard: View {
 /// The strip across the top of the other pages: the same banner, one line and a bar, so that the wait is never out of sight.
 struct PipelineStrip: View {
     @ObservedObject var coordinator: PipelineCoordinator
+    /// The Run panel of Watch holds the Stop of the run that Watch shows: the strip does not repeat it there.
+    var hidesStop = false
     var openSetup: () -> Void
 
     var body: some View {
@@ -197,7 +203,7 @@ struct PipelineStrip: View {
                     BannerBar(banner: banner, elapsed: coordinator.elapsed, remaining: coordinator.timerRemaining).frame(minWidth: 140, maxWidth: 320)
                 }
                 Spacer(minLength: 8)
-                BannerButtons(buttons: banner.buttons) { coordinator.press($0) }.controlSize(.small)
+                BannerButtons(buttons: banner.buttons, stopKey: false, hidesStop: hidesStop) { coordinator.press($0) }.controlSize(.small)
                 Button("Show progress", action: openSetup).buttonStyle(.link).controlSize(.small)
                     .help("Show this on the New world page, with the steps and the commands")
             }

@@ -373,11 +373,11 @@ struct SphereOverlayView: View {
 struct SphereHintView: View {
     @ObservedObject var model: WorldModel
 
-    static let text = "Drag turns the planet. Two-finger scroll pans; pinch or a mouse wheel zooms (View > Scroll zooms swaps them); zoom out for the whole planet, in for the horizon. H home, N north up, I minimap, C colour, T O L S: top, oblique, low and side views; Option-drag tilts and turns. Click a cell, an organism or a storm to see it."
+    static let text = ControlTables.playedHint(overview: false, planet: true)
 
     var body: some View {
         if model.hintVisible {
-            Text(Self.text)
+            Text(model.hint(planet: true))
                 .font(.callout)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 14)

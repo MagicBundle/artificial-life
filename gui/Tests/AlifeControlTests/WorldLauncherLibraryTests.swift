@@ -14,7 +14,7 @@ import Testing
         try LibraryTestFolders.played(runs, "planet_a", source: "runs/seed:30000")
         try LibraryTestFolders.unfinished(runs, "planet_b", parent: "runs/seed:10000")
         try LibraryTestFolders.unfinished(runs, "planet_c", parent: nil)
-        return LibraryState.resolve(LibraryScanner().scan(runsDirectory: runs)).catalog
+        return LibraryState.resolve(LibraryScanner(inline: true).scan(runsDirectory: runs)).catalog
     }
 
     private func launcher(_ launches: LaunchLog = LaunchLog()) -> (WorldLauncherModel, LaunchLog) {
@@ -32,7 +32,7 @@ import Testing
         model.apply(catalog: try catalog(scratch.url), saving: ["planet_a"])
         #expect(Set(model.catalog.sources.map(\.name)) == ["seed", "other_seed", "planet_a"])
         #expect(model.saving == ["planet_a"] && !model.planet.source.isEmpty && !model.planet.name.isEmpty)
-        #expect(model.obstacle(to: model.catalog.worlds[0]) == "saving…")
+        #expect(model.obstacle(to: try #require(model.catalog.worlds.first)) == "saving…")
     }
 
     @Test func theFormOpenedFromACardStartsAtThatWorldsNewestSavePointWithAFreeName() throws {
@@ -97,7 +97,7 @@ import Testing
         _ = try catalog(runs)
         try FileManager.default.createSymbolicLink(atPath: runs.appendingPathComponent("archived_a").path, withDestinationPath: "/Volumes/Gone/runs/archived_a")
         let (model, _) = launcher()
-        model.apply(catalog: LibraryState.resolve(LibraryScanner().scan(runsDirectory: runs)).catalog, saving: [])
+        model.apply(catalog: LibraryState.resolve(LibraryScanner(inline: true).scan(runsDirectory: runs)).catalog, saving: [])
         model.selectSource("seed")
         model.planet.name = "archived_a"
         #expect(model.planetMessages == ["A world named archived_a is already here."], "a link to an archive drive holds its name")

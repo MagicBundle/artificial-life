@@ -32,7 +32,7 @@ final class HostedPlanet {
         let script = try scratch.script("alife-live", "cat \"$1\"\nwhile IFS= read -r line; do :; done")
         play.start(.resume(PlayResume(run: "r")), executable: script, directory: scratch.url, arguments: [stream.path])
         host = NSHostingView(rootView: WorldView(play: play))
-        window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
+        window = QuietWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
         window.contentView = host
         host.frame = NSRect(origin: .zero, size: size)
         window.alphaValue = 0

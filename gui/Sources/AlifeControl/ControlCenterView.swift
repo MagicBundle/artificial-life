@@ -121,7 +121,7 @@ struct ControlCenterView: View {
         HStack(spacing: 8) {
             if !collapsed {
                 Text(WorldTitle.heading(world: play.world, header: play.store.play)).font(.headline).lineLimit(1)
-                if let subtitle = WorldTitle.subtitle(header: play.store.play) {
+                if let subtitle = model.plainNames ? WorldTitle.plainSubtitle(world: play.world, header: play.store.play) : WorldTitle.subtitle(header: play.store.play) {
                     Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer()
@@ -177,8 +177,9 @@ struct ClockStripView: View {
             .disabled(!live)
             HStack(spacing: 8) {
                 if strip.paused {
-                    Button("Resume") { play.resume() }.disabled(!live)
-                        .help("Resume at the rate the world holds (space)")
+                    // (*Run* in the `alife` window, where Space and the World menu say Pause or Run; the two old apps keep *Resume*)
+                    Button(ClockWords.run(plain: model.plainNames)) { play.resume() }.disabled(!live)
+                        .help("Run at the rate the world holds (space)")
                 }
                 Button("+1") { play.step(1) }.disabled(!live)
                     .help("Run one step and pause (.)")
