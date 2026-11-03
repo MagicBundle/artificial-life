@@ -84,20 +84,38 @@ enum RepoFolder {
         candidates.first { isDirectory($0) && hasEngine($0) }
     }
 
+    /// A folder that looks like a checkout of alife, with or without an engine: a `pyproject.toml` that names the project `alife`, and
+    /// `src/alife`. (Welcome installs only in one: an unrelated Python project with a `src/alife` is not taken for it.)
+    static func isCheckout(_ path: String) -> Bool {
+        let root = (path as NSString).expandingTildeInPath as NSString
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: root.appendingPathComponent("src/alife"), isDirectory: &isDir), isDir.boolValue,
+              let text = try? String(contentsOfFile: root.appendingPathComponent("pyproject.toml"), encoding: .utf8) else { return false }
+        return text.range(of: #"(?m)^name\s*=\s*"alife"\s*$"#, options: .regularExpression) != nil
+    }
+
+    /// The first of `candidates` that is a checkout without an engine yet: Welcome offers to set it up.
+    static func firstCheckout(_ candidates: [String]) -> String? {
+        candidates.first { isCheckout($0) }
+    }
+
     /// The path to start with. A stored path is always kept, whether or not it exists and whether or not it holds the engine: a
     /// folder on a drive that is not connected, say, must not be replaced by another checkout behind the user's back, in memory or
     /// on disk (the status line says it cannot be found, and offers the detected folder as a button, `RunController.detectedRepo`).
-    /// Detection fills an empty choice only: with nothing stored, the first of `candidates` that holds the engine, else "".
+    /// Detection fills an empty choice only: with nothing stored, the first of `candidates` that holds the engine, else the first that is a
+    /// checkout without one (Welcome sets it up), else "".
     static func initialPath(stored: String?, candidates: [String]) -> String {
-        stored ?? firstUsable(candidates) ?? ""
+        stored ?? firstUsable(candidates) ?? firstCheckout(candidates) ?? ""
     }
 
-    static func missingMessage(_ path: String) -> String {
+    /// `alifeWording`: the `alife` window's word for the folder ("alife folder"); the old apps keep "repository folder".
+    static func missingMessage(_ path: String, alifeWording: Bool = false) -> String {
+        let word = alifeWording ? "alife" : "repository"
         if path.trimmingCharacters(in: .whitespaces).isEmpty {
-            return "No repository folder is chosen yet. Choose the folder that holds .venv/bin/alife "
+            return "No \(word) folder is chosen yet. Choose the folder that holds .venv/bin/alife "
                 + "(\(candidates.joined(separator: " and ")) were looked at)."
         }
-        return "Folder not found: \(path). Choose the repository folder."
+        return "Folder not found: \(path). Choose the \(word) folder."
     }
 }
 
@@ -126,9 +144,20 @@ final class RunController: ObservableObject {
     @Published var repoPath: String {
         didSet {
             saveRepoPath(repoPath)
+            // (what went wrong setting up the engine in the old folder is not news about this one)
+            if repoPath != oldValue, setupTrouble != nil { setupTrouble = nil }
             refreshRepo()
         }
     }
+    /// How the last `uv sync` ended when it ended badly: a sentence and the last lines it printed (Welcome shows them). Nil while one runs,
+    /// after one that succeeded, and when the folder changed.
+    @Published private(set) var setupTrouble: WelcomeGuide.Trouble?
+    /// The `alife` window says "alife folder" where the old apps say "repository folder" (set by the window).
+    var alifeWording = false
+    /// The folder a `uv sync` was started in, while it runs: a set-up belongs to that folder, not to whichever is chosen when it ends.
+    @Published private(set) var setupFolder: String?
+    /// Finds `uv` (Welcome says what to do when it is missing); the tests replace it.
+    var uvLocator: () -> URL? = { RunController.locateUV() }
     @Published private(set) var repoReady = false
     /// False when `repoPath` is not an existing folder (the status line then says so instead of blaming the venv).
     @Published private(set) var repoFolderExists = true
@@ -299,7 +328,7 @@ final class RunController: ObservableObject {
     // MARK: Repository
 
     /// The status line when the repository folder is missing (nil otherwise).
-    var repoProblem: String? { repoFolderExists ? nil : RepoFolder.missingMessage(repoPath) }
+    var repoProblem: String? { repoFolderExists ? nil : RepoFolder.missingMessage(repoPath, alifeWording: alifeWording) }
 
     /// False, with the reason in the log, when the repository folder is missing: nothing is launched from it.
     private func requireRepoFolder() -> Bool {
@@ -330,7 +359,7 @@ final class RunController: ObservableObject {
         panel.allowsMultipleSelection = false
         panel.directoryURL = repoFolderExists ? repoURL : FileManager.default.homeDirectoryForCurrentUser
         panel.prompt = "Choose"
-        panel.message = "Select the artificial-life repository folder"
+        panel.message = alifeWording ? "Select the alife folder" : "Select the artificial-life repository folder"
         if panel.runModal() == .OK, let url = panel.url {
             repoPath = url.path
         }
@@ -533,9 +562,17 @@ final class RunController: ObservableObject {
                  arguments: ["inspect", "runs/\(settings.targetRun)", "--check"], keepAwake: false)
     }
 
+    /// One SIGINT to a `uv sync` that runs: it stops cleanly and nothing is removed (Welcome's Cancel).
+    func cancelSetup() {
+        guard job == .setup, !stopRequested, let p = process, p.isRunning else { return }
+        stopRequested = true
+        appendLines(["Set-up cancelled (one SIGINT); waiting for uv to stop..."], isError: false)
+        p.interrupt()
+    }
+
     func setupEnvironment() {
         guard job == nil, requireRepoFolder() else { return }
-        guard let uv = findUV() else {
+        guard let uv = uvLocator() else {
             appendLines(["Could not find 'uv' in /opt/homebrew/bin, /usr/local/bin, ~/.local/bin or PATH. "
                          + "Install it from https://docs.astral.sh/uv/ and try again."], isError: true)
             return
@@ -574,6 +611,10 @@ final class RunController: ObservableObject {
 
     private func beginJob(_ kind: Job, executable: URL, arguments: [String], keepAwake: Bool) {
         lastExit = nil
+        if kind == .setup {
+            setupTrouble = nil
+            setupFolder = repoPath
+        }
         stopRequested = false
         forceRequested = false
         timerEnded = false
@@ -592,7 +633,16 @@ final class RunController: ObservableObject {
         let launched = launch(executable, arguments, prefix: "") { [weak self] status, reason in
             self?.finish(kind, status: status, reason: reason)
         }
-        guard let p = launched else { return }
+        guard let p = launched else {
+            // (uv could not be started: the card says so, not only the log)
+            if kind == .setup {
+                setupFolder = nil
+                setupTrouble = WelcomeGuide.setupFailure(
+                    summary: "uv could not be started, so nothing was installed. The last lines of the log are below.",
+                    lines: logLines.filter { $0.id >= jobLogStart }.map(\.text))
+            }
+            return
+        }
         process = p
         job = kind
         startedAt = Date()
@@ -613,6 +663,17 @@ final class RunController: ObservableObject {
         remaining = nil
         let info = Self.describe(status: status, reason: reason, kind: kind)
         lastExit = info
+        if kind == .setup {
+            // (a failure belongs to the folder the set-up ran in: with another chosen meanwhile it is not that folder's news)
+            let sameFolder = setupFolder == repoPath
+            setupFolder = nil
+            if sameFolder, !info.success {
+                setupTrouble = WelcomeGuide.setupFailure(
+                    status: status, signalled: reason == .uncaughtSignal, lines: logLines.filter { $0.id >= jobLogStart }.map(\.text))
+            } else if sameFolder, status == 130 {
+                setupTrouble = WelcomeGuide.setupFailure(status: status, signalled: false, lines: [])
+            }
+        }
         appendLines([info.text], isError: !info.success)
         if kind == .run {
             runExitCount += 1
@@ -839,9 +900,9 @@ final class RunController: ObservableObject {
         if let rest = splitter.flush() { appendLines([prefix + rest], isError: isError) }
     }
 
-    private func findUV() -> URL? {
+    nonisolated static func locateUV() -> URL? {
         let fm = FileManager.default
-        var dirs = ["/opt/homebrew/bin", "/usr/local/bin", NSHomeDirectory() + "/.local/bin"]
+        var dirs = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin", NSHomeDirectory() + "/.local/bin", NSHomeDirectory() + "/.cargo/bin"]
         dirs += (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
         for dir in dirs {
             let path = (dir as NSString).appendingPathComponent("uv")

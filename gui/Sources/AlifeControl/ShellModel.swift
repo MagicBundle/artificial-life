@@ -62,7 +62,12 @@ final class ShellModel: ObservableObject {
     var buildEnded: ((String, String) -> Void)?
 
     let session: WorldSession
+    /// The window chose its first page for Welcome (once per launch).
+    var welcomeShownAtLaunch = false
+    /// Welcome: `uv`, the engine's answer and whether the card was shown. The Worlds page reads it; its changes are this object's.
+    let welcome: WelcomeModel
     private let defaults: UserDefaults
+    private var welcomeObserver: AnyCancellable?
     private var startingWorld: String?
     private var phaseObserver: AnyCancellable?
     private var awayObserver: AnyCancellable?
@@ -76,9 +81,10 @@ final class ShellModel: ObservableObject {
     private var startedByArgument = false
     private var launchHandled = false
 
-    init(session: WorldSession, defaults: UserDefaults = .standard) {
+    init(session: WorldSession, defaults: UserDefaults = .standard, welcome: WelcomeModel = WelcomeModel()) {
         self.session = session
         self.defaults = defaults
+        self.welcome = welcome
         previousPhase = session.play.phase
         worldIsOpen = session.play.isActive
         page = ShellPage.restored(from: defaults.string(forKey: AppShell.pageKey))
@@ -92,6 +98,7 @@ final class ShellModel: ObservableObject {
         retiredObserver = session.play.$lastRetiredEnd.sink { [weak self] end in
             MainActor.assumeIsolated { self?.retiredEnded(end) }
         }
+        welcomeObserver = welcome.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         awayHold = session.model.awayHold
         awayObserver = session.model.$awayHold.removeDuplicates().sink { [weak self] hold in
             MainActor.assumeIsolated { self?.awayHold = hold }
