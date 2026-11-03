@@ -30,7 +30,7 @@ package enum DockLayout {
     /// clipped below that (§34.10, `theBottomDocksClockColumnFitsItsLeastHeight`).
     package static let minBottomExtent: CGFloat = 192
     /// What is left of a collapsed dock: a strip with the button that opens it.
-    package static let collapsedExtent: CGFloat = 28
+    package static let collapsedExtent: CGFloat = 36
     package static let dividerThickness: CGFloat = 6
 
     /// `extent` clamped to what `side` allows in a window of `size`.

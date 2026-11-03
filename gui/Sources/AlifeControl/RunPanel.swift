@@ -60,15 +60,15 @@ struct RunPanel: View {
                 Button("Details", action: showDetails)
                     .controlSize(.small)
                     .help("What this world is, how it is doing, and what you can do with it")
-            } else {
-                Spacer()
             }
             Button { collapsed.toggle() } label: { Image(systemName: Self.collapseSymbol(side: side, collapsed: collapsed)) }
                 .buttonStyle(.borderless)
                 .help(collapsed ? "Show the Run panel" : "Hide the Run panel")
                 .accessibilityLabel(collapsed ? "Show the Run panel" : "Hide the Run panel")
         }
-        .padding(.horizontal, 8)
+        // The collapsed strip has no room for padding: the button alone, centred, or it is clipped.
+        .padding(.horizontal, collapsed && side != .bottom ? 0 : 8)
+        .frame(maxWidth: .infinity, alignment: collapsed && side != .bottom ? .center : .trailing)
         .frame(height: 28)
     }
 
