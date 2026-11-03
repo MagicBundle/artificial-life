@@ -126,8 +126,6 @@ struct ControlCenterView: View {
                 }
                 Spacer()
                 ViewMenu(state: model.viewMenu, play: play, model: model)
-            } else {
-                Spacer()
             }
             Button {
                 collapsed.toggle()
@@ -137,7 +135,9 @@ struct ControlCenterView: View {
             .buttonStyle(.borderless)
             .help(collapsed ? "Show the control center" : "Hide the control center")
         }
-        .padding(.horizontal, 8)
+        // The collapsed strip has no room for padding: the button alone, centred, or it is clipped.
+        .padding(.horizontal, collapsed && side != .bottom ? 0 : 8)
+        .frame(maxWidth: .infinity, alignment: collapsed && side != .bottom ? .center : .trailing)
         .frame(height: 28)
     }
 
