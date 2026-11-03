@@ -75,6 +75,20 @@ struct SetupModelTests {
         #expect(m.reasons.isEmpty, "a research world has no weather to calibrate")
     }
 
+    @Test func aPlanetCannotHaveLighterBrainsWhichTheEngineWouldRefuse() async throws {
+        let rig = try rig()
+        defer { rig.finish() }
+        await rig.scan()
+        let m = rig.setup
+        m.openCreate(.recipe(Recipes.smallPlanet.id))
+        #expect(m.lighterBrainsObstacle?.contains("planet") == true)
+        rig.controller.settings.fast = true   // remembered from a flat world
+        m.dropLighterBrainsIfRefused()
+        #expect(!rig.controller.settings.fast, "--overlay fast must not reach a planet's command")
+        m.openCreate(.recipe(Recipes.flatWorld.id))
+        #expect(m.lighterBrainsObstacle == nil, "a flat world can have lighter brains")
+    }
+
     @Test func theLengthIsAlwaysANumberAndTheLineSaysVeryShortUnderFiveThousand() async throws {
         let rig = try rig()
         defer { rig.finish() }

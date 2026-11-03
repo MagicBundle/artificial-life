@@ -268,8 +268,14 @@ struct SetupPage: View {
         DisclosureGroup("Advanced", isExpanded: $advancedOpen) {
             VStack(alignment: .leading, spacing: 14) {
                 seedRow
-                if model.intent == .create { Toggle("Lighter brains", isOn: $controller.settings.fast)
-                    .help("Smaller brains: a lighter and faster world. The engine's --overlay fast.") }
+                if model.intent == .create {
+                    Toggle("Lighter brains", isOn: $controller.settings.fast)
+                        .disabled(model.lighterBrainsObstacle != nil)
+                        .help("Smaller brains: a lighter and faster world. The engine's --overlay fast.")
+                    if let obstacle = model.lighterBrainsObstacle {
+                        Text(obstacle).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 if model.intent == .create, model.goal == .play { poweredToggle; housesPicker }
                 leverGroups
                 FeatureLeverSections(controller: controller)
@@ -278,6 +284,8 @@ struct SetupPage: View {
             }
             .padding(.top, 8)
         }
+        .onChange(of: model.lighterBrainsObstacle) { model.dropLighterBrainsIfRefused() }
+        .onAppear { model.dropLighterBrainsIfRefused() }
     }
 
     private var seedRow: some View {

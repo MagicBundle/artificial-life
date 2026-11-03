@@ -389,6 +389,17 @@ final class SetupModel: ObservableObject {
     }
 
     /// Everything that keeps the button grey, in the page's words. Empty when the button works.
+    /// Why a planet cannot have lighter brains: `--overlay fast` sets `sensing.cell_capacity` 12, and a planet's hash cells need more
+    /// (`config.validate`: 30 at `mini3s`), so the engine refuses the run. Nil where the option works.
+    var lighterBrainsObstacle: String? {
+        controller.settings.presetWorld3D.sphere.isSphere ? "Not available on a planet: a planet needs the full neighbour search." : nil
+    }
+
+    /// A remembered or earlier choice must not ride into a planet, where the engine would refuse it.
+    func dropLighterBrainsIfRefused() {
+        if lighterBrainsObstacle != nil, controller.settings.fast { controller.settings.fast = false }
+    }
+
     var reasons: [String] {
         var out: [String] = []
         func add(_ text: String?) { if let text, !out.contains(text) { out.append(text) } }
@@ -550,6 +561,7 @@ final class SetupModel: ObservableObject {
 
     func start() {
         guard reasons.isEmpty else { return }
+        dropLighterBrainsIfRefused()
         let setup = plan
         var timing = PipelineCoordinator.Timing()
         timing.expectedPlanetSeconds = planetSeconds
