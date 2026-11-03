@@ -108,21 +108,19 @@ enum RepoFolder {
         stored ?? firstUsable(candidates) ?? firstCheckout(candidates) ?? ""
     }
 
-    /// `alifeWording`: the `alife` window's word for the folder ("alife folder"); the old apps keep "repository folder".
-    static func missingMessage(_ path: String, alifeWording: Bool = false) -> String {
-        let word = alifeWording ? "alife" : "repository"
+    static func missingMessage(_ path: String) -> String {
         if path.trimmingCharacters(in: .whitespaces).isEmpty {
-            return "No \(word) folder is chosen yet. Choose the folder that holds .venv/bin/alife "
+            return "No alife folder is chosen yet. Choose the folder that holds .venv/bin/alife "
                 + "(\(candidates.joined(separator: " and ")) were looked at)."
         }
-        return "Folder not found: \(path). Choose the \(word) folder."
+        return "Folder not found: \(path). Choose the alife folder."
     }
 }
 
 extension RepoPathStore {
-    /// The store of this process: shared between the Lab app and Storm Worlds when it runs from one of their bundles, its own
-    /// preferences otherwise (`swift run`, tests). The tests pass their own closures to `RunController` and never reach it.
-    static let app = RepoPathStore.forApp(info: Bundle.main.object(forInfoDictionaryKey: LaunchMode.infoKey))
+    /// The store of this process: the app's own preferences (with the old apps' as a read-only source) when it runs from a bundle made
+    /// by `make-app.sh`, its own preferences alone otherwise (`swift run`, tests). The tests pass their own closures to `RunController` and never reach it.
+    static let app = RepoPathStore.forApp(info: Bundle.main.object(forInfoDictionaryKey: AppPlan.infoKey))
 }
 
 /// Owns the engine subprocesses and all UI-visible run state.
@@ -152,8 +150,6 @@ final class RunController: ObservableObject {
     /// How the last `uv sync` ended when it ended badly: a sentence and the last lines it printed (Welcome shows them). Nil while one runs,
     /// after one that succeeded, and when the folder changed.
     @Published private(set) var setupTrouble: WelcomeGuide.Trouble?
-    /// The `alife` window says "alife folder" where the old apps say "repository folder" (set by the window).
-    var alifeWording = false
     /// The folder a `uv sync` was started in, while it runs: a set-up belongs to that folder, not to whichever is chosen when it ends.
     @Published private(set) var setupFolder: String?
     /// Finds `uv` (Welcome says what to do when it is missing); the tests replace it.
@@ -165,14 +161,12 @@ final class RunController: ObservableObject {
     /// Never used by itself; nil when the folder exists or none was found.
     @Published private(set) var detectedRepo: String?
     @Published private(set) var runs: [String] = []
-    /// Whether the two-second ticker lists `runs/` (and probes every lock) again. The Lab's pickers read that list; the `alife` window's
-    /// library scans on its own, off the main thread, and turns this off while the Lab is not shown (docs/APP.md §5.3). The two old apps
-    /// leave it on.
+    /// Whether the two-second ticker lists `runs/` (and probes every lock) again. The window's library scans on its own, off the main
+    /// thread, and turns this off (docs/APP.md §5.3); on by default, for the controller used alone (tests).
     var pollsRunList = true
-    /// Asks whether a directory must not be continued (the `alife` window's library: a played world, a world in use). Nil in the two old
-    /// apps, which keep today's checks.
+    /// Asks whether a directory must not be continued (the library: a played world, a world in use). Nil keeps the controller's own checks.
     var resumeRefusal: ((String) -> String?)?
-    /// The language model Settings > Autopilot names, applied to the form of a new world (the `alife` window only; nil in the two old apps).
+    /// The language model Settings > Autopilot names, applied to the form of a new world (set by the window).
     var autopilotDefaults: (@MainActor (inout DirectorSettings) -> Void)?
     /// The runs whose `play.lock` is held by a process (a world being played or saving).
     @Published private(set) var playLocked: Set<String> = []
@@ -328,7 +322,7 @@ final class RunController: ObservableObject {
     // MARK: Repository
 
     /// The status line when the repository folder is missing (nil otherwise).
-    var repoProblem: String? { repoFolderExists ? nil : RepoFolder.missingMessage(repoPath, alifeWording: alifeWording) }
+    var repoProblem: String? { repoFolderExists ? nil : RepoFolder.missingMessage(repoPath) }
 
     /// False, with the reason in the log, when the repository folder is missing: nothing is launched from it.
     private func requireRepoFolder() -> Bool {
@@ -359,7 +353,7 @@ final class RunController: ObservableObject {
         panel.allowsMultipleSelection = false
         panel.directoryURL = repoFolderExists ? repoURL : FileManager.default.homeDirectoryForCurrentUser
         panel.prompt = "Choose"
-        panel.message = alifeWording ? "Select the alife folder" : "Select the artificial-life repository folder"
+        panel.message = "Select the alife folder"
         if panel.runModal() == .OK, let url = panel.url {
             repoPath = url.path
         }
@@ -707,21 +701,6 @@ final class RunController: ObservableObject {
 
     // MARK: Viewer, Finder
 
-    /// The viewer is a separate process and competes with a running simulation for the GPU.
-    func openViewer() {
-        guard repoReady, viewerProcess == nil, targetRunExists, targetRunDims != 3 else { return }
-        let args = ["view", "runs/\(settings.targetRun)"]
-        appendLines(["$ " + ([alifeURL.path] + args).map(shellQuote).joined(separator: " ")], isError: false)
-        let launched = launch(alifeURL, args, prefix: "[viewer] ") { [weak self] status, _ in
-            self?.viewerProcess = nil
-            self?.viewerRunning = false
-            self?.appendLines(["[viewer] exited with code \(status)."], isError: status != 0)
-        }
-        guard let p = launched else { return }
-        viewerProcess = p
-        viewerRunning = true
-    }
-
     func closeViewer() { viewerProcess?.terminate() }
 
     /// `--world RUN` at launch: starts RUN in the World window (the caller opens the window). False if there is no repository
@@ -732,24 +711,7 @@ final class RunController: ObservableObject {
         return true
     }
 
-    /// The pygame viewer draws a 2D plane (`alife view` refuses a 3D run, exit 2); a 3D run goes to the 3D viewer.
-    var pygameViewerAvailable: Bool { targetRunDims != 3 }
-
-    /// What "Open 3D viewer" shows for the selected run: its newest checkpoints while it is the run in progress (the
-    /// faithful view of a director run), else a re-simulation from its latest checkpoint. Nil if there is nothing to show.
-    var viewer3DSource: StreamSource? {
-        guard repoReady, targetRunExists, job != .setup else { return nil }
-        let run = settings.targetRun
-        return StreamSource(run: run, follow: job == .run && trackedRun == run)
-    }
-
-    /// Starts the stream for the 3D viewer window (the caller opens the window).
-    func openViewer3D() {
-        guard let source = viewer3DSource else { return }
-        StreamController.shared.start(source, executable: alifeURL, directory: repoURL)
-    }
-
-    // MARK: Viewers and the check of a world by name (the `alife` window's cards; the Lab's buttons use the form's target run)
+    // MARK: Viewers and the check of a world by name
 
     /// Starts the stream of the 3D viewer on `world` (the caller opens the window): its newest save points while it grows, else a
     /// re-simulation from its latest save point.

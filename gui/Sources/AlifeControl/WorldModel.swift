@@ -129,8 +129,6 @@ final class WorldModel: ObservableObject {
             }
         }
     }
-    /// The launcher sheet.
-    @Published var launcherOpen = false
     /// The last thing worth telling the user.
     @Published private(set) var note: String?
     /// Why nothing can be drawn (no Metal device, shaders that do not compile, a draw that failed); nil while it works.

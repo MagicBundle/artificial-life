@@ -72,7 +72,7 @@ import Testing
         let controller = make(candidates: [scratch.url.appendingPathComponent("none").path])
         #expect(controller.repoPath.isEmpty && !controller.repoReady && !controller.repoFolderExists)
         let message = try #require(controller.repoProblem)
-        #expect(message.hasPrefix("No repository folder is chosen yet."))
+        #expect(message.hasPrefix("No alife folder is chosen yet."))
         #expect(message.contains("~/artificial-life") && message.contains("~/alife"))
         #expect(controller.startBlockedReason == message)
         #expect(controller.commandLine.hasPrefix("cd <repository folder> &&"))
@@ -90,7 +90,7 @@ import Testing
         // 1. The folder is gone.
         let gone = scratch.url.appendingPathComponent("gone").path
         let missing = make(stored: gone, candidates: [none])
-        #expect(missing.startBlockedReason == "Folder not found: \(gone). Choose the repository folder.")
+        #expect(missing.startBlockedReason == "Folder not found: \(gone). Choose the alife folder.")
         // 2. The folder exists, the engine does not.
         let bare = try folder("bare", in: scratch, engine: false)
         let noEngine = make(stored: bare, candidates: [none])

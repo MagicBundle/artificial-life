@@ -1,83 +1,11 @@
 import AlifeCore
 import SwiftUI
 
-/// The content of the "World" window (DESIGN §33.4.4): the map and the organisms in the free rectangle, the control center
-/// docked beside it. The map view is inset to the free rectangle by its frame, in the same place in the hierarchy
-/// whichever side the dock is on, so moving the dock or dragging the divider changes a frame and never the identity of the
-/// view (and so never re-creates the Metal view and its device state).
-struct WorldView: View {
-    @ObservedObject var play: PlayController
-    @StateObject private var model: WorldModel
-    @AppStorage("world.dockSide") private var sideRaw = DockSide.right.rawValue
-    @State private var launcher: WorldLauncherModel?
-
-    init(play: PlayController) {
-        self.play = play
-        _model = StateObject(wrappedValue: {
-            let model = WorldModel(play: play)
-            model.adoptGlobeDefault()  // (Home is the globe overview until the player turns it off)
-            return model
-        }())
-    }
-
-    var body: some View {
-        WorldDockLayout(play: play, model: model)
-            .frame(minWidth: 1100, minHeight: LauncherLayout.windowMinHeight)
-            .navigationTitle(WorldTitle.window(world: play.world, header: play.store.play))
-            .background(WindowCloseObserver(restorable: false, group: "world") { play.stop() })
-            .sheet(isPresented: $model.launcherOpen) {
-                if let launcher { WorldLauncherView(model: launcher, play: play, close: { model.launcherOpen = false }) }
-            }
-            .onAppear {
-                if launcher == nil { launcher = Self.makeLauncher() }
-                if play.phase == .idle { model.launcherOpen = true }
-            }
-            .toolbar {
-                ToolbarItemGroup {
-                    Picker("Dock", selection: $sideRaw) {
-                        ForEach(DockSide.allCases) { Image(systemName: Self.symbol($0)).tag($0.rawValue) }
-                    }
-                    .pickerStyle(.segmented)
-                    .help("Dock the control center on the left, the right or the bottom")
-                    Button { model.home() } label: { Label("Home", systemImage: "house") }
-                        .help("Fly to the Home view: the whole width of the world, north up (H)")
-                        .disabled(!play.isActive)
-                    Button("Worlds…") { model.launcherOpen = true }
-                    Button("Close world") {
-                        play.stop()
-                        model.launcherOpen = true
-                    }
-                    .disabled(!play.isActive)
-                    .help("Stop the world (it saves a checkpoint first) and open the launcher")
-                }
-            }
-    }
-
-    private static func symbol(_ side: DockSide) -> String {
-        switch side {
-        case .left: return "sidebar.left"
-        case .right: return "sidebar.right"
-        case .bottom: return "rectangle.bottomhalf.inset.filled"
-        }
-    }
-
-    /// The launcher for the repository the Lab is set to.
-    @MainActor
-    private static func makeLauncher() -> WorldLauncherModel {
-        WorldLauncherModel(
-            runsDirectory: { RunController.shared.repoReady ? RunController.shared.repoURL.appendingPathComponent("runs") : nil },
-            launch: { request in
-                let run = RunController.shared
-                PlayController.shared.start(request, executable: run.alifeURL, directory: run.repoURL)
-            })
-    }
-}
-
 /// The map and the control center docked beside it (DESIGN §33.4.4): the free rectangle holds the canvas, the dock the control center
 /// and the draggable divider. The map view is inset to the free rectangle by its frame, in the same place in the hierarchy
 /// whichever side the dock is on, so moving the dock or dragging the divider changes a frame and never the identity of the
-/// view (and so never re-creates the Metal view and its device state). Shared by the World window and the `alife` window's
-/// Watch layer (`showsDock` is false while another page is shown: the canvas stays, the dock goes).
+/// view (and so never re-creates the Metal view and its device state). The `alife` window's Watch layer
+/// (`showsDock` is false while another page is shown: the canvas stays, the dock goes).
 struct WorldDockLayout: View {
     @ObservedObject var play: PlayController
     @ObservedObject var model: WorldModel

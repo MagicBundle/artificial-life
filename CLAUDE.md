@@ -108,8 +108,10 @@ niche`, `alife bench --niche`); observers, GUI and the experiment are F2 to F4.
   explicitly; its only network calls are the chat POST and the read-only `GET /api/v0/models` preflight. Run `--llm` and
   `probe` only when no GPU job or timing runs. A change to a template, the lexicon, the label table or the select prompt
   changes a digest that `verify` compares: bump the version and re-pin.
-- The GUI (`gui/`, SwiftUI, macOS 14+) shells out to `.venv/bin/alife`. Keep its lever list in sync with
-  config keys, and build it with `cd gui && swift build`. Swift is not in CI: before a push run `swift build -Xswiftc
+- The GUI (`gui/`, SwiftUI, macOS 14+) is one app, `alife` (`gui/scripts/make-app.sh` builds `alife.app`; design `docs/APP.md`; the
+  Lab and Storm Worlds are retired) and shells out to `.venv/bin/alife`. Keep its lever list in sync with
+  config keys, and build it with `cd gui && swift build`. Never launch a bundle whose id is `io.github.magicbundle.alife` without
+  `ALIFE_PREFS_SUITE` and never write that domain (it holds the owner's settings); a trial bundle takes `ALIFE_BUNDLE_ID`. Swift is not in CI: before a push run `swift build -Xswiftc
   -warnings-as-errors && swift test` there (`tests/test_gui_sync.py` ties its flags, palettes, event kinds and levels to the engine).
 
 ## Owner preferences

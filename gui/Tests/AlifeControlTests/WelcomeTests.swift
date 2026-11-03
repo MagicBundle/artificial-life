@@ -108,15 +108,11 @@ struct WelcomeTests {
         #expect(!RepoFolder.isCheckout(rig.controller.repoPath))
     }
 
-    @Test func theAlifeWindowSaysAlifeFolderAndTheOldAppsKeepRepositoryFolder() throws {
+    @Test func theFolderIsAlwaysCalledTheAlifeFolder() throws {
         let rig = try Rig(folderExists: false)
         defer { rig.cleanup() }
-        #expect(rig.controller.repoProblem == RepoFolder.missingMessage(rig.folder.path), "the old wording is the default")
-        #expect(rig.controller.repoProblem?.contains("repository folder") == true)
-        rig.controller.alifeWording = true
         #expect(rig.controller.repoProblem == "Folder not found: \(rig.folder.path). Choose the alife folder.")
-        #expect(RepoFolder.missingMessage("", alifeWording: true).hasPrefix("No alife folder is chosen yet."))
-        #expect(RepoFolder.missingMessage("").hasPrefix("No repository folder is chosen yet."))
+        #expect(RepoFolder.missingMessage("").hasPrefix("No alife folder is chosen yet."))
     }
 
     @Test func theCommandTheCardShowsIsTheOneTheButtonRuns() {

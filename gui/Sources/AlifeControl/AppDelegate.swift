@@ -3,7 +3,7 @@ import AppKit
 import SwiftUI
 
 /// Makes the app a regular foreground app (needed when run unbundled with `swift run`; harmless in the .app
-/// bundle) and stops a running simulation cleanly when the app quits. Shared by both modes (`LaunchPlan`).
+/// bundle) and stops a running simulation cleanly when the app quits.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The delegate of the running app, for the Quit command (SwiftUI wraps the adaptor's delegate, so `NSApp.delegate` is not it).
@@ -13,7 +13,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let terminationGate = TerminationGate()
     /// Shown while the quit waits. Owned here, not by a scene, so that it exists when the last window has been closed.
     let quitPanel: QuitPanel
-    var plan = LaunchMode.current().plan
     private let run: RunController
     private let play: PlayController
 
@@ -29,7 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Self.current = self
     }
     /// The question before a run is stopped by a quit (tests replace it, so that no alert is shown).
-    var confirmStopRun: (String) -> Bool = { QuitPanel.askToStopRun($0, shell: LaunchMode.current().plan.isShell) }
+    var confirmStopRun: (String) -> Bool = { QuitPanel.askToStopRun($0) }
     /// Why the quit was asked for: the reason of the quit Apple event being handled (none for a menu Quit). Tests replace it.
     var quitReason: () -> QuitReason = { AppDelegate.reason(of: NSAppleEventManager.shared().currentAppleEvent) }
     /// Ends the app through AppKit; tests replace it.
@@ -73,13 +72,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        // The `alife` window closed with "Keep it running": the run is the reason to stay (docs/APP.md D3). The flag is set when the window
+        // The window closed with "Keep it running": the run is the reason to stay (docs/APP.md D3). The flag is set when the window
         // is asked to close and read once, here.
-        let stays = plan.asksWhenClosingWithRun && keepsAliveForRun
-        return plan.quitsAfterLastWindow && !stays
+        !keepsAliveForRun
     }
 
-    // MARK: Closing the window (the `alife` window, D3)
+    // MARK: Closing the window (D3)
 
     /// What the person chose last time they were asked ("Remember my choice"), read from the app's preferences; the tests replace it.
     var closePreference: () -> ClosePreference = { ClosePreference(stored: UserDefaults.standard.string(forKey: AppShell.closeWithRunKey)) }
@@ -106,7 +104,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Called once per attempt to close, so a Cancel leaves everything as it was, window included. **The facts are read again after the
     /// question**: a run that ended while the person read it leaves nothing to keep, and a planet that began meanwhile is a different question.
     func mainWindowShouldClose() -> Bool {
-        guard plan.asksWhenClosingWithRun else { return true }
         guard !questionOpen else { return false }  // (a second attempt while the question is up is the first one's business)
         return decideClose(attempt: 0)
     }
@@ -165,9 +162,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Stops the 3D viewer's stream (the shared one; tests replace it).
     var stopStream: () -> Void = { StreamController.shared.stop() }
 
-    // MARK: Reopening (the alife window)
+    // MARK: Reopening
 
-    /// Brings the main window of the `alife` window back (set by the shell when its content appears: it is the `openWindow` action of the
+    /// Brings the main window back (set by the shell when its content appears: it is the `openWindow` action of the
     /// scene, which still works after the window has closed). Docs/APP.md spike S3: SwiftUI does not reopen a closed lone `Window` on a
     /// Dock click by itself.
     var reopenMainWindow: (() -> Void)?
@@ -175,14 +172,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// A click on the Dock icon (or `open` on the running app) with the main window not showing: it comes back, whatever kept the app
     /// alive (a Cancel at the quit question, a window that was left open). AppKit's own `hasVisibleWindows` is not used: on this macOS the
     /// quit question's alert leaves a glass-effect window that counts as visible long after it was answered (seen in the running app: the
-    /// reopen event found "visible windows" and did nothing). The old apps keep AppKit's own handling.
+    /// reopen event found "visible windows" and did nothing). Before the window has set its action, AppKit's own handling applies.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        guard plan.isShell, reopenMainWindow != nil else { return true }
+        guard reopenMainWindow != nil else { return true }
         // (shown: AppKit does the rest; not shown: the window is asked for, and AppKit is told it has nothing to do)
         return !showMainWindowIfNeeded()
     }
 
-    /// The main window of the `alife` window is on screen.
+    /// The main window is on screen.
     var mainWindowIsShown: Bool {
         windowsProvider().contains { $0.isVisible && !$0.isMiniaturized && $0.identifier?.rawValue == AppShell.mainWindowID }
     }
@@ -190,23 +187,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The windows the reopen and the close look at (tests replace it).
     var windowsProvider: () -> [NSWindow] = { NSApp.windows }
 
-    /// The main window of the `alife` window closed: it is the app's window, so closing it is closing the last one. The other windows
-    /// it leaves (Settings, the 3D Viewer) go with it, which lets AppKit end the app as it does after any last window
+    /// The main window closed: it is the app's window, so closing it is closing the last one. The other windows
+    /// it leaves (Settings, Help, the set-up window) go with it, which lets AppKit end the app as it does after any last window
     /// (`applicationShouldTerminateAfterLastWindowClosed`), through the question and the wait of the quit. `windows` is injectable.
     func mainWindowClosed(windows: (() -> [NSWindow])? = nil) {
-        guard plan.isShell else { return }
         for window in (windows ?? windowsProvider)() where window.isVisible && !(window is NSPanel) && window.identifier?.rawValue != AppShell.mainWindowID {
             window.animationBehavior = .none  // (a fade that blocks for ever while the display sleeps leaks a dispatch thread)
             window.close()
         }
-        if plan.asksWhenClosingWithRun, keepsAliveForRun { closeWhatTheWindowNeeded() }
+        if keepsAliveForRun { closeWhatTheWindowNeeded() }
     }
 
     /// Brings the main window back if it is not showing (a Dock click does it through `applicationShouldHandleReopen`; the menus do it
     /// when a command needs a window and there is none). True when the window was asked for.
     @discardableResult
     func showMainWindowIfNeeded() -> Bool {
-        guard plan.isShell, let reopenMainWindow else { return false }
+        guard let reopenMainWindow else { return false }
         guard !mainWindowIsShown else { return false }
         // A window in the Dock is brought out of it; `openWindow` does not do that for a window that exists.
         if let minimised = windowsProvider().first(where: { $0.isMiniaturized && $0.identifier?.rawValue == AppShell.mainWindowID }) {
@@ -221,11 +217,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Whether the user is to be asked "Stop 'X' and quit?": a run is going and not already stopping, and no wait is in progress.
     private var questionNeeded: Bool {
-        plan.confirmsRunOnQuit && !terminationGate.isWaiting && run.hasRunJob && !run.stopRequested
+        !terminationGate.isWaiting && run.hasRunJob && !run.stopRequested
     }
 
     /// The Quit command and the quit Apple event. While a sheet is attached to a window AppKit ignores `terminate` and never
-    /// asks the delegate (the launcher sheet of Storm Worlds, the preset comparison of the Lab): the sheets are ended and
+    /// asks the delegate (the preset comparison sheet): the sheets are ended and
     /// `terminate` follows on the next turn, so that the question and the panel can appear. The question comes first when it is
     /// to be asked, so that Cancel leaves the sheets where they were.
     func requestQuit() {
@@ -286,8 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard ask() else { return .terminateCancel }
         }
         let (play, run) = (play, run)
-        let waitsForRun = plan.quitWaitsForRun
-        let limit = QuitWording.waitSeconds(runGoing: waitsForRun && run.hasRunJob)
+        let limit = QuitWording.waitSeconds(runGoing: run.hasRunJob)
         if !terminationGate.isWaiting {
             waitLimitSeconds = limit
             lossCache = [:]
@@ -296,10 +291,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         terminationGate.onWaiting = { [weak self] elapsed in self?.showQuitPanel(after: elapsed) }
         quitPanel.onQuitNow = { [weak self] in self?.terminationGate.abandonWait() }
         return terminationGate.shouldTerminate(
-            hasProcess: { play.hasProcess || (waitsForRun && run.hasJob) },
+            hasProcess: { play.hasProcess || run.hasJob },
             stop: {
                 play.stopForQuit()
-                if waitsForRun { run.stopForQuit() }
+                run.stopForQuit()
             },
             reply: { [weak self] in
                 self?.quitPanel.close()
@@ -309,7 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         // The last resort for whatever the gate's wait left running (it timed out, or the user quit without saving).
-        run.shutdown(escalating: plan.quitWaitsForRun)
+        run.shutdown(escalating: true)
     }
 
     /// What the panel shows `elapsed` into the wait; nil while the save is still quick.
@@ -339,60 +334,5 @@ struct QuitCommands: Commands {
             }
             .keyboardShortcut("q")
         }
-    }
-}
-
-/// The entry point: one executable, three apps (`LaunchMode`): `alife` (one window with a sidebar, `AlifeApp`), and the two it will replace. The Lab is today's app (the main window, the viewer and the
-/// World window as a second window); Storm Worlds opens straight into the World window and has the Lab one menu item away
-/// (`StormWorldsApp`). The mode is read from the bundle, so `swift run` and a bundle from before the key start the Lab.
-@main
-enum AlifeEntry {
-    static func main() {
-        let mode = LaunchMode.current()
-        switch mode {
-        case .alife:
-            // The preferences of the two old apps are brought in once, before anything reads the folder setting. Only a bundle made by
-            // make-app.sh has its own preferences domain: an unbundled run (`swift run`) keeps whatever it had, as it always did.
-            if Bundle.main.object(forInfoDictionaryKey: LaunchMode.infoKey) != nil { PreferenceMigration.forApp()?.run() }
-            AlifeApp.main()
-        case .world: StormWorldsApp.main()
-        case .lab: AlifeControlApp.main()
-        }
-    }
-}
-
-struct AlifeControlApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var controller = RunController.shared
-
-    var body: some Scene {
-        WindowGroup("Alife Control") {
-            ContentView(controller: controller)
-                .frame(minWidth: 960, minHeight: 700)
-        }
-        .windowResizability(.contentMinSize)
-        .commands { QuitCommands(appName: LaunchMode.lab.plan.appName) }
-
-        Viewer3DScene()
-
-        // The game: the map and the organisms with the control center docked beside them. Opened from the Lab (Open
-        // World) and, with `--world RUN`, at launch (`ContentView` opens it: a window that is not the first scene is not
-        // opened by SwiftUI at launch).
-        Window("World", id: AppWindow.world.rawValue) {
-            WorldView(play: PlayController.shared)
-        }
-        .windowResizability(.contentMinSize)
-        .defaultSize(width: 1280, height: 800)
-    }
-}
-
-/// The 3D viewer window, a second window in both apps.
-struct Viewer3DScene: Scene {
-    var body: some Scene {
-        Window("3D Viewer", id: AppWindow.viewer3d.rawValue) {
-            Viewer3DView(stream: StreamController.shared)
-        }
-        .windowResizability(.contentMinSize)
-        .defaultSize(width: 1000, height: 760)
     }
 }

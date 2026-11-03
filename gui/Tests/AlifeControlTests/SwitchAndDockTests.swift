@@ -21,8 +21,14 @@ struct SwitchAndDockTests {
         var ran = 0
         var order: [String] = []
 
-        init(quitSeconds: Double = 0.4, quitStatus: Int = 0) throws {
+        /// With `held` the engine leaves only once `release()` has made the file it waits for (the clock does not decide when a save ends:
+        /// a test that asserts "still saving" must not depend on how fast a loaded machine polls). A 60 s limit keeps a failed test from leaving it.
+        let releaseFile: URL
+        func release() { FileManager.default.createFile(atPath: releaseFile.path, contents: nil) }
+
+        init(quitSeconds: Double = 0.4, quitStatus: Int = 0, held: Bool = false) throws {
             scratch = try Scratch()
+            releaseFile = scratch.url.appendingPathComponent("release")
             repo = scratch.url.appendingPathComponent("alife")
             let bin = repo.appendingPathComponent(".venv/bin")
             try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
@@ -35,7 +41,7 @@ struct SwitchAndDockTests {
             try handle.truncate(atOffset: 686_000_000)
             try handle.close()
             let engine = bin.appendingPathComponent("alife")
-            let body = "#!/bin/bash\ncat \"\(Repo.playFixtureURL("3d_n70").path)\"\nwhile IFS= read -r line; do if [ \"$line\" = quit ]; then sleep \(quitSeconds); echo 'disk full' >&2; exit \(quitStatus); fi; done\n"
+            let body = "#!/bin/bash\ncat \"\(Repo.playFixtureURL("3d_n70").path)\"\nwhile IFS= read -r line; do if [ \"$line\" = quit ]; then \(held ? "n=0; while [ ! -e '\(releaseFile.path)' ] && [ $n -lt 1200 ]; do sleep 0.05; n=$((n+1)); done" : "sleep \(quitSeconds)"); echo 'disk full' >&2; exit \(quitStatus); fi; done\n"
             try body.write(to: engine, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: engine.path)
             let runs = repo.appendingPathComponent("runs")
@@ -194,8 +200,8 @@ struct SwitchAndDockTests {
     }
 
     @Test func aSaveThatIsStillGoingAfterTheLongestWaitDoesNotLetTheOtherWorldStartOverIt() async throws {
-        let rig = try SwitchRig(quitSeconds: 1.5)
-        defer { rig.finish() }
+        let rig = try SwitchRig(held: true)
+        defer { rig.release(); rig.finish() }
         #expect(await rig.openA())
         rig.switcher.maxWait = .milliseconds(300)
         _ = rig.switcher.ask(.play("b")) { rig.ran += 1 }
@@ -204,6 +210,7 @@ struct SwitchAndDockTests {
         guard case .failed(let reason) = rig.switcher.phase else { return }
         #expect(reason?.contains("taking longer than expected") == true)
         #expect(rig.play.hasProcess, "A is still being written")
+        rig.release()
         #expect(await eventually { !rig.play.hasProcess })
         try await Task.sleep(for: .milliseconds(150))
         #expect(rig.ran == 0, "the action was dropped, not delayed")

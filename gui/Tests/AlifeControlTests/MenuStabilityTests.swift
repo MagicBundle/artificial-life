@@ -442,35 +442,4 @@ import Testing
         #expect(counts["ViewerColourPicker"] == 1)
         withExtendedLifetime(view) {}
     }
-
-    // MARK: The launcher
-
-    @Test func theLaunchersPlanetFormIsNotRebuiltByTheBuildsOutput() async throws {
-        let scratch = try Scratch()
-        defer { scratch.cleanup() }
-        // A world being built: lines on stderr (the planet's progress), no header.
-        let script = try scratch.script("alife-building", "for i in 1 2 3 4 5 6 7 8; do echo \"line $i\" >&2; sleep 0.05; done\nread -r _")
-        let play = PlayController()
-        let launcher = WorldLauncherModel(runsDirectory: { nil }, launch: { _ in })
-        let counts = counting(launcher)
-        defer { play.shutdown(); ViewProbe.onEvaluate = nil }
-        let view = hosted(WorldLauncherView(model: launcher, play: play, close: {}), width: 640, height: 600)
-        try await Task.sleep(for: .milliseconds(200))
-        #expect(counts["LauncherPlanetBox"] >= 1)
-        counts.reset()
-        var published = 0
-        let sub = play.objectWillChange.sink { published += 1 }
-        defer { sub.cancel() }
-
-        play.start(.resume(PlayResume(run: "r")), executable: script, directory: scratch.url, arguments: [])
-        #expect(await eventually { play.progress.count >= 8 })
-        try await Task.sleep(for: .milliseconds(200))
-        #expect(published >= 8, "the controller published with the build's output")
-        #expect(counts["LauncherPlanetBox"] == 0, "the form was evaluated again \(counts["LauncherPlanetBox"]) times")
-
-        launcher.setStorm(!launcher.planet.storm)  // its own model changing is another matter
-        try await Task.sleep(for: .milliseconds(200))
-        #expect(counts["LauncherPlanetBox"] == 1)
-        withExtendedLifetime(view) {}
-    }
 }

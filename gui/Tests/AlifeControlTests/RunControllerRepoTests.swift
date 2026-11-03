@@ -58,7 +58,7 @@ import Testing
         let gone = scratch.url.appendingPathComponent("gone-worktree").path
         for fallback in [noEngine, scratch.url.appendingPathComponent("no-default").path] {
             let controller = make(stored: gone, default: fallback)
-            let message = "Folder not found: \(gone). Choose the repository folder."
+            let message = "Folder not found: \(gone). Choose the alife folder."
             #expect(controller.repoPath == gone)
             #expect(!controller.repoReady)
             #expect(!controller.repoFolderExists)
@@ -124,7 +124,7 @@ import Testing
         try FileManager.default.removeItem(atPath: stored)
         controller.refreshRepo()
         #expect(!controller.repoReady)
-        #expect(controller.repoProblem == "Folder not found: \(stored). Choose the repository folder.")
+        #expect(controller.repoProblem == "Folder not found: \(stored). Choose the alife folder.")
     }
 
     @Test func setUpEnvironmentRemovesNothing() {

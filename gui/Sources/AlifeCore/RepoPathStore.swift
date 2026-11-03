@@ -11,50 +11,42 @@ extension UserDefaults: PreferenceDomain {
     package func store(_ value: String, forKey key: String) { set(value, forKey: key) }
 }
 
-/// Where the repository folder is remembered, shared by the Lab app and Storm Worlds so that it is set once.
+/// Where the alife folder is remembered. `alife` keeps it in its own preferences, which are the domain the Lab and Storm Worlds shared
+/// (`sharedSuite` is the app's bundle identifier), so a folder chosen in either is already there. A value that is not there yet is
+/// taken, read only, from Storm Worlds' and the Lab's own domains (`legacy`, opened by name) and copied into the app's domain on first
+/// read; what it was copied from is left alone. A bundle cannot open its own identifier as a suite, so the app's domain is `standard`.
 ///
-/// Both bundles keep it under `RepoPathStore.key` of one shared defaults suite. A value that is not there yet is taken
-/// from the app's own preferences and from the Lab's (`labDomain`, where the Lab has always kept it) and copied into the
-/// suite on first read; what it was copied from is left alone. A save writes the suite and mirrors the value into the
-/// saving app's own preferences. In the Lab those are the domain an older Lab build reads alone, so that build keeps
-/// agreeing; Storm Worlds' own domain is not the Lab's, so a folder chosen in Storm Worlds is not seen by an older Lab
-/// build (the current one reads the suite first).
-///
-/// Only a bundle made by `make-app.sh` (it has `LaunchMode.infoKey`) uses the suite. `swift run` and the tests keep their own
-/// preferences domain, separate from the installed apps, as they always did.
+/// Only a bundle made by `make-app.sh` (it has `AppPlan.infoKey`) reads the old domains. `swift run` and the tests keep their own
+/// preferences domain, separate from the installed app, as they always did.
 package struct RepoPathStore: Sendable {
     package static let key = "repoPath"
-    /// The shared suite (a plain preferences domain: `~/Library/Preferences/<suite>.plist`; no app group needed).
-    package static let sharedSuite = "io.github.magicbundle.alife"
-    /// The Lab's own bundle ID, the preferences domain the stored folder is migrated from.
+    /// The app's own preferences domain, the one the old apps shared: `~/Library/Preferences/<suite>.plist`. Never opened as a suite
+    /// by the app itself (that is `standard`).
+    package static let sharedSuite = AppPlan.bundleID
+    /// The Lab's own bundle ID, a domain the stored folder is migrated from.
     package static let labDomain = "io.github.magicbundle.alifecontrol"
-    /// Names a suite to use instead of `sharedSuite`, for trying a bundle without touching the owner's preferences: it is read
-    /// and written in place of both the suite and the app's own preferences (which are only read, as a source for the first
-    /// value, and never written), and the Lab's domain is not used.
+    /// The preview's bundle ID (`alife Preview.app`), the newest source of the folder.
+    package static let previewDomain = "io.github.magicbundle.alife.preview"
+    /// Storm Worlds' bundle ID, the other domain it is migrated from.
+    package static let stormDomain = "io.github.magicbundle.stormworlds"
+    /// Names a suite to use instead of the app's preferences, for trying a bundle without touching the owner's preferences: it is read
+    /// and written in place of them (which are only read, as a source for the first value, and never written), and the old apps'
+    /// domains are not used.
     package static let suiteOverrideEnvironment = "ALIFE_PREFS_SUITE"
 
     private let shared: any PreferenceDomain
     private let own: any PreferenceDomain
     private let legacy: [any PreferenceDomain]
-    private let readsOnly: Bool
 
-    /// `legacy` are the other places a value may already be, in order. With `sharedIsReadOnly` (the alife preview) the shared suite is only
-    /// a source: the app's own choice comes first, a folder it chooses is stored in its own preferences alone, and nothing is ever written to
-    /// the suite, so a preview tried beside the old apps changes none of them.
-    package init(shared: any PreferenceDomain, own: any PreferenceDomain, legacy: [any PreferenceDomain] = [],
-                 sharedIsReadOnly: Bool = false) {
+    /// `legacy` are the other places a value may already be, in order, read only.
+    package init(shared: any PreferenceDomain, own: any PreferenceDomain, legacy: [any PreferenceDomain] = []) {
         self.shared = shared
         self.own = own
         self.legacy = legacy
-        readsOnly = sharedIsReadOnly
     }
 
-    /// The stored folder, migrating it into the suite when the suite has none. Nil when nothing was ever stored.
+    /// The stored folder, migrating it into the shared domain when that has none. Nil when nothing was ever stored.
     package func load() -> String? {
-        if readsOnly {
-            for defaults in [own, shared] + legacy { if let value = Self.value(in: defaults) { return value } }
-            return nil
-        }
         if let value = Self.value(in: shared) { return value }
         for defaults in [own] + legacy {
             if let value = Self.value(in: defaults) {
@@ -66,7 +58,7 @@ package struct RepoPathStore: Sendable {
     }
 
     package func save(_ path: String) {
-        if !readsOnly { shared.store(path, forKey: Self.key) }
+        shared.store(path, forKey: Self.key)
         own.store(path, forKey: Self.key)
     }
 
@@ -75,28 +67,32 @@ package struct RepoPathStore: Sendable {
         return value
     }
 
-    /// The store for a process. `info` is its bundle's `AlifeLaunchMode`: without it (unbundled, or a bundle from before the
-    /// key) the app's own preferences are used alone, with no sharing. `suite` opens a preferences domain by name.
+    /// The domains an `ALIFE_PREFS_SUITE` may not name: the app's own (a bundle cannot open its own id as a suite: the override would be
+    /// ignored and the real domain written) and the preview's and the old apps' (the app would write them).
+    package static func isForbidden(suite name: String) -> Bool {
+        [AppPlan.bundleID, previewDomain, stormDomain, labDomain].contains(name)
+    }
+
+    /// Why this environment may not start the app, or nil: an `ALIFE_PREFS_SUITE` that names the app's own domain or an old one.
+    package static func overrideProblem(environment: [String: String]) -> String? {
+        guard let name = environment[suiteOverrideEnvironment], isForbidden(suite: name) else { return nil }
+        return "\(suiteOverrideEnvironment)=\(name) names a domain the app or an older app owns; the override must be a private name. Not starting."
+    }
+
+    /// The store for a process. `info` is its bundle's `AppPlan.infoKey`: without it (unbundled, or a bundle from before the key) the
+    /// app's own preferences are used alone. `suite` opens a preferences domain by name.
     package static func forApp(
         info: Any?, environment: [String: String] = ProcessInfo.processInfo.environment,
         standard: any PreferenceDomain = UserDefaults.standard,
         suite: (String) -> (any PreferenceDomain)? = { UserDefaults(suiteName: $0) }
     ) -> RepoPathStore {
-        if let name = environment[suiteOverrideEnvironment], !name.isEmpty, let override = suite(name) {
+        if let name = environment[suiteOverrideEnvironment], !name.isEmpty, !isForbidden(suite: name), let override = suite(name) {
             // `own` is the override too, so that a save never reaches `standard` (an installed app's `standard` is the owner's
             // domain); `standard` stays a read-only source for the first value.
             return RepoPathStore(shared: override, own: override, legacy: [standard])
         }
-        guard info != nil, let shared = suite(sharedSuite) else {
-            return RepoPathStore(shared: standard, own: standard)
-        }
-        // The alife preview (`AlifeLaunchMode` alife) reads the shared suite and the Lab's domain and writes only its own preferences.
-        if let text = info as? String, text.trimmingCharacters(in: .whitespaces).lowercased() == "alife" {
-            let lab = suite(labDomain)
-            return RepoPathStore(shared: shared, own: standard, legacy: lab.map { [$0] } ?? [], sharedIsReadOnly: true)
-        }
-        // The Lab's domain cannot be opened as a suite from the Lab itself (that is `standard`, already in the list).
-        let lab = suite(labDomain)
-        return RepoPathStore(shared: shared, own: standard, legacy: lab.map { [$0] } ?? [])
+        guard info != nil else { return RepoPathStore(shared: standard, own: standard) }
+        // The app's domain is `standard` (the shared one): only the preview's and the two old apps' domains are opened, by name, and only read.
+        return RepoPathStore(shared: standard, own: standard, legacy: [previewDomain, stormDomain, labDomain].compactMap { suite($0) })
     }
 }

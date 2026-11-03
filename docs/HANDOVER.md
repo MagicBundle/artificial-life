@@ -32,7 +32,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | `docs/STORMS.md` | the storm world (an alien-planet weather game on the 3D world): the weather model, the coupling, the plan W0 to W5; W0 (the offline model, `weather.py`, `docs/STORMS_W0.md`), W1 (the engine weather layer, normative spec `docs/DESIGN.md` §30) and W2a (rain seeding, shade, the controls, the observers' version 3 and the instruments, `docs/DESIGN.md` §32, row I50) are built and off by default; W2b (calibration and the 14 runs) is not run |
 | `docs/DESIGN.md` §37 | the mini world: preset `mini3d` (a quarter of `64k3d`'s area, about 10,500 alive), overlay `storm160`, the launcher's overlay choice by source size, the two host-side edits (stream header `cells`/`dx` from the layer, storm vorticity in units of the reference f0 0.025); Review-log row I62 |
 | `docs/bench/` | `alife bench --stages` reports for `64k`, `64k3d` (`C` = 24, 32, 48) and `tiny3d` (`docs/DESIGN.md` §27.13), before (2026-10-16) and with (2026-10-20) the fused Metal neighbour kernel |
-| `gui/` | AlifeControl, a SwiftUI macOS app that drives the CLI (see `gui/README.md`) |
+| `gui/` | `alife`, the one SwiftUI macOS app that drives the CLI (`alife.app`; see `gui/README.md`, `docs/APP.md`) |
 | `runs/` | run directories (git-ignored, local to the Mac) |
 | `.github/workflows/ci.yml` | Linux CPU CI: ruff, ruff format check, fast suite; nightly slow suite |
 
@@ -214,8 +214,8 @@ uv run alife resume runs/NAME --set game.observe=true   # attach the game observ
 uv run python -m alife.analysis.labels RUN --from STEP --steps N --out FILE.json   # do the game labels predict behaviour? docs/DESIGN.md §28.8
 uv run python -m alife.analysis.social RUN --from STEP --steps N --out FILE.json   # social trackers: thresholds, churn, snapshot cost; docs/DESIGN.md §29.12
 uv run python -m alife.analysis.w2 [A@0=]RUN... --out FILE.json   # the W2 storm-experiment statistics (P1a to P6) from W2b-style runs; docs/DESIGN.md §32.9
-cd gui && swift run                           # the macOS control app (Lab) ; its "Open World" opens the World window (G3a)
-gui/scripts/make-app.sh --app both --install  # the Lab and Storm Worlds (the game, no terminal) in /Applications (row I59; quit them first)
+cd gui && swift run                           # the macOS app (unbundled; its own preferences)
+gui/scripts/make-app.sh --install             # alife.app in /Applications (rows I59, I88; quit it first; the old apps are left alone)
 # stdout of `alife play` is the binary stream (the window reads it): redirect it when you run one by hand. The window's launcher makes planets.
 uv run alife play --init-from runs/64k3d_s0:500000 --overlay storm --set director.enabled=true --weather-spinup 20000 --out runs/planet_a --no-control --until 500100 > /dev/null   # make a planet (DESIGN §33.3.4)
 uv run alife play runs/planet_a --rate 1 --no-control --until 501000 > /dev/null       # play a world directory (to step 501000)
@@ -596,7 +596,7 @@ and resumed once. There is one run per condition apart from the seed pair.
   The labels of the stream are `INTENT_VERSION` 3's and carry
   N1's validity gate (no V3 verdict row exists, so no label is shown as valid; a lever away from its default also withdraws them).
   `alife play` runs one world under a fixed-timestep scheduler and writes ALSTRM records (`FRMA IDNT INTN TERR EVNT STRM MAP1 ENVS CLCK
-  FOCS`) to stdout; the **World** window of the Swift app (Lab menu, "Open World", or `--world RUN` at launch) shows them: the planet
+  FOCS`) to stdout; the **World** window of the Swift app (**superseded by PR-H: the Lab menu and "Open World" are gone; use Worlds > Play, or `--world RUN` at launch**) shows them: the planet
   map and organisms in a raw-Metal view (minimum image, alive-only frames, three semantic levels), a docked control center (clock
   strip, Cast, Chronicle, the inspector pinned under them), picking and follow with the hand-off at death, toasts and keys. Presentation
   never changes a trajectory (digest equality with a plain run is tested on the CPU and, on the Mac day, on Metal in four bench arms).
@@ -619,7 +619,7 @@ and resumed once. There is one run per condition apart from the seed pair.
     Floater, Sinker; Grazer in a storm world) and are tagged provisional unless the header's gate (`LABEL_VERDICTS`, as N1) lists them and `ENVS.levers`
     is empty; today none is listed, so all are provisional. The chronicle never states one.
 - **The click-through, the owner's (not done; the other Mac-day results are in `docs/RESULTS_G3A.md` and DESIGN §33.6).**
-  Start `cd gui && swift run`, Lab menu "Open World" (or `--world RUN`). The launcher lists `runs/`: make a new planet from the launcher
+  Start `cd gui && swift run` (**superseded by PR-H: no Lab menu or launcher; Worlds page > Play, or `--world RUN`**). The launcher listed `runs/`: make a new planet from the launcher
   (a fork of `64k3d_s0` with the 20,000-step spin-up, about 21 s; the Mac day's `p0` is in scratch, outside `runs/`). Look for:
   1. **Launcher:** a world listed with its step, source and houses; Resume starts at 1x; cancel a build (it becomes "unfinished"); a
      world that is saving is "saving..." and Resume is refused.
@@ -746,16 +746,16 @@ unit (§37.4).
   reaches the main actor through one ordered AsyncStream per stream. The exit status is reported only after
   the process has exited and both pipes have reached EOF. The 1 s ticker is a Task loop that skips missed
   ticks after sleep. No `DispatchQueue.main` hops remain.
-- **App bundles** (row I59, DESIGN §33.4.10): `gui/scripts/make-app.sh [--app lab|storm|both] [--install]` builds, signs
-  (hardened runtime; Developer ID, else Apple Development, else ad-hoc; `--sign -` is ad-hoc and never reaches the keychain) and
-  installs `AlifeControl.app` (the Lab, the default) and/or `Storm Worlds.app` (opens straight into the World window; the Lab
-  is Window > Lab, Command-2; quits with its last window), each with a generated icon. The two share the repository folder
-  (`RepoPathStore`, the preferences domain `io.github.magicbundle.alife`, migrated from the Lab's own on first start) and
-  Storm Worlds asks for it itself when it is missing. `gui/scripts/check-apps.sh` is the smoke test of the bundles (macOS,
-  ad-hoc, a release build; also `ALIFE_APP_SMOKE=1 pytest tests/test_app_bundles.py`). For this Mac only: **no
+- **App bundle** (rows I59, I88, DESIGN §33.4.10): `gui/scripts/make-app.sh [--install]` builds, signs (hardened runtime; Developer ID, else
+  Apple Development, else ad-hoc; `--sign -` is ad-hoc and never reaches the keychain) and installs `alife.app` (id `io.github.magicbundle.alife`,
+  version 0.2.0, a generated icon), the only app since PR-H of the one-app program. Its preferences domain is the one the Lab and Storm Worlds shared,
+  so their `repoPath` is already there; their own domains are read once (`PreferenceMigration`), never written. `--install` leaves
+  `AlifeControl.app`, `Storm Worlds.app` and `alife Preview.app` alone and prints how to Trash them. `gui/scripts/check-apps.sh` is the smoke test
+  of the bundle (macOS, ad-hoc, a release build; also `ALIFE_APP_SMOKE=1 pytest tests/test_app_bundles.py`). For this Mac only: **no
   notarization and no in-app updater yet** (the owner's "later"; he has a Developer ID); the App Store would need the engine
-  embedded and sandboxed, which is a separate project. Not shared between the two apps: the dock side and sizes, window frames.
-- **Click-through checklist** (tiny preset), to repeat after any GUI change:
+  embedded and sandboxed, which is a separate project.
+- **Superseded by PR-H.** The click-through lists below, up to the one for PR-G, were written for the Lab, Storm Worlds and `alife Preview.app`, which no longer exist: where they say Lab, Storm Worlds, launcher or Preview, read the `alife` window (see the PR-H list after them, and `docs/APP.md` §7.7 for where each part went). Kept as the record of what was checked then.
+- **Click-through checklist** (tiny preset), to repeat after any GUI change (superseded in part by PR-H, see above):
   1. startup;
   2. a new run with the fast overlay and a `--set` lever, then Stop once: exit 130 and a checkpoint;
   3. resume for 2000 steps: exit 0;
@@ -1043,6 +1043,24 @@ unit (§37.4).
      window shows the failure (exit code 4) and the next press works; a new run has its step-0 checkpoint from the
      start, so Follow shows it at once; GPU time while the picture is still (Activity Monitor): none, also while the
      run it follows is busy.
+- **Click-through list for PR-H of the one-app program** (the owner's hands; `docs/APP.md` §6, §7.7; DESIGN §33.4.10, §33.4.17, row I88). `alife.app` is the
+  only app now. Do 1 and 2 first; nothing in them touches an installed app.
+  1. **Build it.** `gui/scripts/make-app.sh --sign - --out /tmp/alife-try` makes `/tmp/alife-try/alife.app` (id `io.github.magicbundle.alife`, version 0.2.0).
+     `make-app.sh --app both` and `--preview` now refuse with a message. **Do not launch that bundle just to look**: its id is your real preferences domain
+     (the one that holds the folder the old apps share), and the app writes its page, dock and display settings there. To try a bundle without a trace,
+     build it with another id: `ALIFE_BUNDLE_ID=io.github.magicbundle.alife.try gui/scripts/make-app.sh --sign - --out /tmp/alife-try`.
+  2. **Install** (`gui/scripts/make-app.sh --install`, with the old apps quit): `/Applications/alife.app` appears. If `AlifeControl.app`, `Storm Worlds.app` or
+     `alife Preview.app` are there, the script lists them and says how to Trash them; **it did not touch them** (check their dates). Trash them when you are
+     satisfied, from Finder.
+  3. **First launch.** macOS asks again for access to `~/artificial-life` (a new id and signature), and for Removable Volumes if `runs/` is archived to a drive and
+     the local network if the autopilot's model is on the LAN. The folder you chose in the Lab or Storm Worlds is already there. **If `alife Preview.app` has a folder of its own that exists, the app adopts it once, ahead of the shared one** (it is your latest choice; the preview never wrote the shared domain). Carried once, where the app has no value, from the preview, else Storm Worlds, else the Lab: the 14 dock and display settings, what closing with a run does, pick-up, the autopilot's address and model, the set-up page's two toggles and its remembered edits. **Not carried:** the page the window opened on, window frames. Change the dock side in `alife`, then open Storm Worlds: its dock is
+     unchanged (the copy is one way, once).
+  4. **The old paths are gone.** There is no Lab page, no launcher sheet, no Window > Lab or World. Everything of the Lab form is under *New world* >
+     *Advanced*; "Open 3D viewer" is the Watch of a research world; "Open viewer" is World > Open Classic 2D Viewer; Inspect is Check World.
+     Quit with a run going: the question says "continue it later with Keep growing".
+  5. `open -a alife --args --world NAME` (a fresh launch) starts NAME; `--launch-mode lab` in the same line changes nothing.
+  What was **not** exercised by a person: a first launch with the real id and your real preferences (the migration of both old domains was tested with in-memory
+  domains and never against your files), the TCC prompts, the icon, a Dock click, Finder trashing the old apps.
 
 ## Director panel (step 4, `docs/DIRECTOR.md` §14)
 

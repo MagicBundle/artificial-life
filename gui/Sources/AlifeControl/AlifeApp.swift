@@ -2,8 +2,24 @@ import AlifeCore
 import AppKit
 import SwiftUI
 
-/// `alife`: one window, a sidebar of pages (docs/APP.md §2.4, PR-B). Built beside the two old apps and installed as `alife Preview.app`;
-/// the old modes (`AlifeControlApp`, `StormWorldsApp`) are untouched.
+/// The entry point: the preview's and the old apps' preferences are brought in once, before anything reads the folder setting, and the app starts.
+/// `--launch-mode X` of the old apps is accepted and ignored (`AppPlan.ignoredArgument`): nothing reads it.
+@main
+enum AlifeEntry {
+    static func main() {
+        // An `ALIFE_PREFS_SUITE` that names the app's own domain or an older app's would be ignored or would write that domain: refuse.
+        if let problem = RepoPathStore.overrideProblem(environment: ProcessInfo.processInfo.environment) {
+            FileHandle.standardError.write(Data(("alife: " + problem + "\n").utf8))
+            exit(2)
+        }
+        // Only a bundle made by make-app.sh has its own preferences domain (the one the old apps shared): an unbundled run
+        // (`swift run`) keeps whatever it had, as it always did.
+        if Bundle.main.object(forInfoDictionaryKey: AppPlan.infoKey) != nil { PreferenceMigration.forApp()?.run() }
+        AlifeApp.main()
+    }
+}
+
+/// `alife`: one window, a sidebar of pages (docs/APP.md §2.4). It replaced the research Lab and Storm Worlds (PR-H).
 struct AlifeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var controller = RunController.shared
@@ -19,7 +35,7 @@ struct AlifeApp: App {
     @StateObject private var detailsReader: WorldReader
     @StateObject private var autopilot: AutopilotSettings
     @StateObject private var help = HelpModel.shared
-    private let appName = (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? LaunchMode.alife.plan.appName
+    private let appName = (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? AppPlan.name
 
     init() {
         // (the set-up model reads the library, so both are made here and handed to the scenes)

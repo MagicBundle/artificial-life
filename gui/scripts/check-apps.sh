@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Smoke test of the app bundles: builds AlifeControl.app, Storm Worlds.app and "alife Preview.app" with make-app.sh, signed ad-hoc only (no
-# keychain, no prompt), and checks each Info.plist key, the executable, the icon and `codesign --verify`.
+# Smoke test of the app bundle: builds alife.app with make-app.sh, signed ad-hoc only (no keychain, no prompt), and checks the Info.plist
+# keys, the executable, the icon and `codesign --verify`; also that the retired options of the script are refused.
 #
 #   gui/scripts/check-apps.sh [--out DIR]
 #
@@ -27,10 +27,8 @@ fail() { echo "FAIL: $*" >&2; FAILED=1; }
 pass() { echo "ok:   $*"; }
 
 VERSION_EXPECTED="9.8.7"
-echo "==> make-app.sh --app both --sign - --out $OUT"
-VERSION="$VERSION_EXPECTED" "$SCRIPT_DIR/make-app.sh" --app both --sign - --out "$OUT"
-echo "==> make-app.sh --app alife --preview --sign - --out $OUT"
-VERSION="$VERSION_EXPECTED" "$SCRIPT_DIR/make-app.sh" --app alife --preview --sign - --out "$OUT"
+echo "==> make-app.sh --sign - --out $OUT"
+VERSION="$VERSION_EXPECTED" "$SCRIPT_DIR/make-app.sh" --sign - --out "$OUT"
 
 plist() {  # $1 = bundle, $2 = key; prints the value, or nothing when the key is missing
   /usr/libexec/PlistBuddy -c "Print :$2" "$1/Contents/Info.plist" 2>/dev/null || true
@@ -67,22 +65,17 @@ check_bundle() {  # $1 = bundle, $2 = id, $3 = name, $4 = executable, $5 = mode,
   if [[ "$details" == *"Signature=adhoc"* ]]; then pass "$(basename "$b") is signed ad-hoc"; else fail "$(basename "$b") is not ad-hoc signed"; fi
 }
 
-LAB="$OUT/AlifeControl.app"
-STORM="$OUT/Storm Worlds.app"
-check_bundle "$LAB" io.github.magicbundle.alifecontrol AlifeControl AlifeControl lab public.app-category.developer-tools
-check_bundle "$STORM" io.github.magicbundle.stormworlds "Storm Worlds" StormWorlds world public.app-category.simulation-games
-ALIFE="$OUT/alife Preview.app"
-check_bundle "$ALIFE" io.github.magicbundle.alife.preview "alife Preview" alife alife public.app-category.simulation-games
+ALIFE="$OUT/alife.app"
+check_bundle "$ALIFE" io.github.magicbundle.alife alife alife alife public.app-category.simulation-games
 
-[[ "$(plist "$LAB" CFBundleVersion)" == "$(plist "$STORM" CFBundleVersion)" ]] && pass "both have the same build number" || fail "the build numbers differ"
-[[ "$(plist "$LAB" CFBundleIdentifier)" != "$(plist "$STORM" CFBundleIdentifier)" ]] && pass "the bundle IDs differ" || fail "the bundle IDs are the same"
-cmp -s "$LAB/Contents/Resources/AppIcon.icns" "$STORM/Contents/Resources/AppIcon.icns" && fail "the icons are the same" || pass "the icons differ"
-# The preview has its own id, so that it installs beside the old apps and touches neither (its preferences are its own).
-[[ "$(plist "$ALIFE" CFBundleIdentifier)" != "$(plist "$LAB" CFBundleIdentifier)" && "$(plist "$ALIFE" CFBundleIdentifier)" != "$(plist "$STORM" CFBundleIdentifier)" ]] \
-  && pass "the preview's bundle ID differs from both old apps" || fail "the preview shares a bundle ID with an old app"
-[[ "$(plist "$ALIFE" CFBundleVersion)" == "$(plist "$LAB" CFBundleVersion)" ]] && pass "the preview has the same build number" || fail "the preview's build number differs"
-cmp -s "$ALIFE/Contents/Resources/AppIcon.icns" "$LAB/Contents/Resources/AppIcon.icns" || cmp -s "$ALIFE/Contents/Resources/AppIcon.icns" "$STORM/Contents/Resources/AppIcon.icns" \
-  && fail "the preview's icon is one of the old apps'" || pass "the preview's icon is its own"
+# One app: nothing else was built, and the retired options are refused (before any build).
+BUILT="$(ls "$OUT" | grep -c '\.app$' || true)"
+[[ "$BUILT" == "1" ]] && pass "alife.app is the only bundle built" || fail "$BUILT bundles were built"
+for retired in "--app lab" "--app both" "--preview"; do
+  # shellcheck disable=SC2086
+  if "$SCRIPT_DIR/make-app.sh" $retired --sign - --out "$OUT/refused" >/dev/null 2>&1; then fail "make-app.sh $retired was accepted"; else pass "make-app.sh $retired is refused"; fi
+done
+[[ ! -e "$OUT/refused" ]] && pass "a refused option builds nothing" || fail "a refused option left $OUT/refused"
 
 if [[ $FAILED -ne 0 ]]; then echo "FAILED (bundles are in $OUT)" >&2; exit 1; fi
 echo "all checks passed (bundles are in $OUT)"

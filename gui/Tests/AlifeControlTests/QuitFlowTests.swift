@@ -447,19 +447,20 @@ import Testing
 
     // MARK: Command-R
 
-    @Test func commandRStartsARunOnlyWhereTheStartButtonIsEnabled() async throws {
-        let scratch = try Scratch()
-        defer { scratch.cleanup() }
-        let repo = try fakeRepo(scratch, engine: "exec sleep 30")
-        let run = controller(repo)
-        run.settings.name = "cmd-r"
+    @Test func commandRCreatesAWorldOnlyWhereTheCreateButtonIsEnabled() async throws {
+        let rig = try PipelineRig(mode: "long:ok")
+        defer { rig.finish() }
+        await rig.scan()
+        let setup = rig.setup
+        setup.openCreate(.recipe(Recipes.smallPlanet.id))
+        setup.goal = .research
         let window = QuietWindow(contentRect: NSRect(x: -20000, y: -20000, width: 1000, height: 800), styleMask: [.borderless], backing: .buffered, defer: true)
         window.isReleasedWhenClosed = false
-        let host = NSHostingView(rootView: ContentView(controller: run).frame(width: 1000, height: 800))
+        let host = NSHostingView(rootView: SetupWindowView(setup: setup, controller: rig.controller, library: rig.library).frame(width: 1000, height: 800))
         window.contentView = host
         window.orderFront(nil)
         host.layoutSubtreeIfNeeded()
-        defer { window.close(); run.forceStop() }
+        defer { window.close() }
         func commandR() throws -> Bool {
             let event = try #require(NSEvent.keyEvent(
                 with: .keyDown, location: .zero, modifierFlags: .command, timestamp: ProcessInfo.processInfo.systemUptime,
@@ -467,26 +468,25 @@ import Testing
                 isARepeat: false, keyCode: 15))
             return window.performKeyEquivalent(with: event)
         }
-        // An invalid form: Start is grey and the shortcut does nothing.
-        run.settings.name = ""
+        // An invalid form: Create is grey and the shortcut does nothing.
+        setup.name = ""
         host.layoutSubtreeIfNeeded()
         try await Task.sleep(for: .milliseconds(200))
-        #expect(!run.canStart)
+        #expect(!setup.reasons.isEmpty)
         _ = try commandR()
-        #expect(run.job == nil, "Command-R does what a grey Start does: nothing")
-        // A valid form: it starts.
-        run.settings.name = "cmd-r"
+        #expect(rig.controller.job == nil && rig.researchStarts.isEmpty, "Command-R does what a grey Create does: nothing")
+        // A valid form: it creates.
+        setup.name = "cmd-r"
         host.layoutSubtreeIfNeeded()
         try await Task.sleep(for: .milliseconds(200))
-        #expect(run.canStart)
+        #expect(setup.reasons.isEmpty)
         _ = try commandR()
-        #expect(run.job == .run, "Command-R starts the run: \(run.logText)")
-        // A run going: Start is gone, so is the shortcut (a second run is not started).
-        let before = run.logLines.count
+        #expect(await rig.waitForGrowing("cmd-r"), "Command-R creates the world: \(rig.controller.logText)")
+        // A run going: the form is refused, so is the shortcut (a second world is not started).
         host.layoutSubtreeIfNeeded()
         try await Task.sleep(for: .milliseconds(200))
         _ = try commandR()
-        #expect(run.job == .run && run.logLines.count == before)
+        #expect(rig.researchStarts == ["cmd-r"])
     }
 
     // MARK: Helpers

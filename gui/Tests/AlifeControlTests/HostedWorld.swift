@@ -186,3 +186,24 @@ final class HostedWorld {
                        shouldInterpolate: false, intent: .defaultIntent)!
     }
 }
+
+/// A world as the tests host it: the map and the control center docked beside it (`WorldDockLayout`) over a model of its own, without the
+/// window around it. It was the content of the old World window (`WorldView`, removed with that window in PR-H); the `alife` window
+/// puts the same layout under its Watch page.
+struct WorldView: View {
+    @ObservedObject var play: PlayController
+    @StateObject private var model: WorldModel
+
+    init(play: PlayController) {
+        self.play = play
+        _model = StateObject(wrappedValue: {
+            let model = WorldModel(play: play)
+            model.adoptGlobeDefault()  // (Home is the globe overview until the player turns it off)
+            return model
+        }())
+    }
+
+    var body: some View {
+        WorldDockLayout(play: play, model: model).frame(minWidth: 1100, minHeight: 700)
+    }
+}

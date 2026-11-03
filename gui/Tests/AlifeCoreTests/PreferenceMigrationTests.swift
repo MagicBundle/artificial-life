@@ -5,15 +5,16 @@ import Testing
 
 /// `PreferenceMigration` (docs/APP.md §6): precedence, "only where unset", idempotence, never deleting, never writing to a source.
 @Suite struct PreferenceMigrationTests {
-    private func domains() -> (own: MemoryDomain, shared: MemoryDomain, storm: MemoryDomain, lab: MemoryDomain) {
-        (MemoryDomain(), MemoryDomain(), MemoryDomain(), MemoryDomain())
+    /// `own` is the app's domain, which is also the shared one the old apps wrote their `repoPath` into.
+    private func domains() -> (own: MemoryDomain, storm: MemoryDomain, lab: MemoryDomain) {
+        (MemoryDomain(), MemoryDomain(), MemoryDomain())
     }
 
-    private func migration(_ d: (own: MemoryDomain, shared: MemoryDomain, storm: MemoryDomain, lab: MemoryDomain)) -> PreferenceMigration {
-        PreferenceMigration(own: d.own, shared: d.shared, storm: d.storm, lab: d.lab)
+    private func migration(_ d: (own: MemoryDomain, storm: MemoryDomain, lab: MemoryDomain)) -> PreferenceMigration {
+        PreferenceMigration(own: d.own, storm: d.storm, lab: d.lab)
     }
 
-    @Test func theFolderComesFromTheSharedDomainThenStormThenTheLab() {
+    @Test func theFolderComesFromTheAppsOwnDomainThenStormThenTheLab() {
         let d = domains()
         d.lab.set("/lab", forKey: "repoPath")
         migration(d).run()
@@ -28,14 +29,14 @@ import Testing
         let f = domains()
         f.lab.set("/lab", forKey: "repoPath")
         f.storm.set("/storm", forKey: "repoPath")
-        f.shared.set("/shared", forKey: "repoPath")
+        f.own.set("/shared", forKey: "repoPath")  // the shared domain is the app's own
         migration(f).run()
         #expect(f.own.string(forKey: "repoPath") == "/shared")
     }
 
     @Test func anEmptyFolderIsNotAFolder() {
         let d = domains()
-        d.shared.set("", forKey: "repoPath")
+        d.own.set("", forKey: "repoPath")
         d.storm.set("/storm", forKey: "repoPath")
         migration(d).run()
         #expect(d.own.string(forKey: "repoPath") == "/storm")
@@ -88,14 +89,14 @@ import Testing
 
     @Test func nothingIsDeletedFromOrWrittenToASource() {
         let d = domains()
-        d.shared.set("/shared", forKey: "repoPath")
+        d.storm.set("/storm", forKey: "repoPath")
         d.storm.set("left", forKey: "world.dockSide")
         d.lab.set(true, forKey: "world.spin")
-        let before = (d.shared.all.keys.sorted(), d.storm.all.keys.sorted(), d.lab.all.keys.sorted())
+        let before = (d.storm.all.mapValues { "\($0)" }, d.lab.all.mapValues { "\($0)" })
         migration(d).run()
         migration(d).run()
-        #expect(d.shared.all.keys.sorted() == before.0 && d.storm.all.keys.sorted() == before.1 && d.lab.all.keys.sorted() == before.2)
-        #expect(d.shared.string(forKey: "repoPath") == "/shared" && d.storm.string(forKey: "world.dockSide") == "left")
+        #expect(d.storm.all.mapValues { "\($0)" } == before.0 && d.lab.all.mapValues { "\($0)" } == before.1, "values and keys of the sources are as they were")
+        #expect(d.storm.string(forKey: "world.dockSide") == "left" && d.own.string(forKey: "repoPath") == "/storm")
     }
 
     @Test func aNewUserGetsOnlyTheMark() {
@@ -106,7 +107,7 @@ import Testing
 
     @Test func missingDomainsAreFine() {
         let own = MemoryDomain()
-        #expect(PreferenceMigration(own: own, shared: nil, storm: nil, lab: nil).run())
+        #expect(PreferenceMigration(own: own, storm: nil, lab: nil).run())
         #expect(own.all.keys.sorted() == ["migrated.v1"])
     }
 
@@ -120,10 +121,78 @@ import Testing
         #expect(asked.isEmpty && own.all.isEmpty, "no domain is opened, and the app's own is untouched")
     }
 
-    @Test func withoutAnOverrideTheThreeNamedDomainsAreOpened() {
+    @Test func withoutAnOverrideTheTwoOldAppsDomainsAreOpenedByNameAndNeverTheAppsOwn() {
         var asked: [String] = []
         let m = PreferenceMigration.forApp(environment: [:], standard: MemoryDomain(), suite: { asked.append($0); return nil })
         #expect(m != nil)
-        #expect(asked == ["io.github.magicbundle.alife", "io.github.magicbundle.stormworlds", "io.github.magicbundle.alifecontrol"])
+        #expect(asked == ["io.github.magicbundle.alife.preview", "io.github.magicbundle.stormworlds", "io.github.magicbundle.alifecontrol"])
+        #expect(!asked.contains(AppPlan.bundleID), "a bundle cannot open its own identifier as a suite")
+    }
+
+    @Test func thePreviewsFolderBeatsTheSharedOneWhenItExistsAndOnlyOnce() {
+        let own = MemoryDomain(), preview = MemoryDomain(), storm = MemoryDomain()
+        own.set("/shared", forKey: "repoPath")
+        preview.set("/previews", forKey: "repoPath")
+        storm.set("/storm", forKey: "repoPath")
+        func run(exists: Bool) -> Bool {
+            PreferenceMigration(own: own, preview: preview, storm: storm, lab: nil, folderExists: { _ in exists }).run()
+        }
+        #expect(run(exists: true))
+        #expect(own.string(forKey: "repoPath") == "/previews")
+        own.set("/chosen/later", forKey: "repoPath")
+        #expect(!run(exists: true) && own.string(forKey: "repoPath") == "/chosen/later", "once")
+        #expect(preview.string(forKey: "repoPath") == "/previews" && storm.string(forKey: "repoPath") == "/storm")
+    }
+
+    @Test func aPreviewFolderThatIsGoneIsNotAdoptedAndTheSharedOneStays() {
+        let own = MemoryDomain(), preview = MemoryDomain()
+        own.set("/shared", forKey: "repoPath")
+        preview.set("/gone", forKey: "repoPath")
+        PreferenceMigration(own: own, preview: preview, storm: nil, lab: nil, folderExists: { $0 == "/shared" }).run()
+        #expect(own.string(forKey: "repoPath") == "/shared")
+        // with nothing of its own, a gone preview folder is not taken either: the old apps' comes
+        let fresh = MemoryDomain(), storm = MemoryDomain()
+        storm.set("/storm", forKey: "repoPath")
+        PreferenceMigration(own: fresh, preview: preview, storm: storm, lab: nil, folderExists: { _ in false }).run()
+        #expect(fresh.string(forKey: "repoPath") == "/storm")
+    }
+
+    @Test func thePreviewsOtherSettingsComeAheadOfTheOldAppsAndPageIsNotCarried() {
+        let own = MemoryDomain(), preview = MemoryDomain(), storm = MemoryDomain()
+        preview.set("left", forKey: "world.dockSide")
+        storm.set("right", forKey: "world.dockSide")
+        storm.set(0.5, forKey: "world.exposure")
+        preview.set("keepRunning", forKey: "shell.closeWithRun")
+        preview.set(true, forKey: "setup.advanced")
+        preview.set("http://localhost:1234", forKey: "shell.autopilotURL")
+        preview.set("setup", forKey: "shell.page")
+        own.set(false, forKey: "setup.showCommand")  // already set: kept
+        preview.set(true, forKey: "setup.showCommand")
+        PreferenceMigration(own: own, preview: preview, storm: storm, lab: nil, folderExists: { _ in true }).run()
+        #expect(own.string(forKey: "world.dockSide") == "left" && own.object(forKey: "world.exposure") as? Double == 0.5)
+        #expect(own.string(forKey: "shell.closeWithRun") == "keepRunning" && own.object(forKey: "setup.advanced") as? Bool == true)
+        #expect(own.string(forKey: "shell.autopilotURL") == "http://localhost:1234")
+        #expect(own.object(forKey: "setup.showCommand") as? Bool == false)
+        #expect(own.object(forKey: "shell.page") == nil, "the page is not carried")
+        #expect(preview.all.count == 6, "read only")
+    }
+
+    @Test func aWholeLaunchOfTheFinalAppImportsFromBothOldAppsOnceAndLeavesThemAlone() {
+        // The app's domain already holds the folder the old apps shared; Storm Worlds' and the Lab's display settings come in.
+        let own = MemoryDomain(), storm = MemoryDomain(), lab = MemoryDomain()
+        own.set("/shared/folder", forKey: "repoPath")
+        storm.set("left", forKey: "world.dockSide")
+        lab.set("bottom", forKey: "world.dockSide")
+        lab.set(0.5, forKey: "world.exposure")
+        func launch() -> Bool {
+            PreferenceMigration.forApp(environment: [:], standard: own, suite: { $0 == RepoPathStore.stormDomain ? storm : ($0 == RepoPathStore.labDomain ? lab : nil) })?.run() ?? false
+        }
+        #expect(launch())
+        #expect(own.string(forKey: "repoPath") == "/shared/folder")
+        #expect(own.string(forKey: "world.dockSide") == "left" && own.object(forKey: "world.exposure") as? Double == 0.5)
+        let after = own.all.mapValues { "\($0)" }
+        storm.set("right", forKey: "world.dockSide")  // changed since: the second launch must not look
+        #expect(!launch() && own.all.mapValues { "\($0)" } == after, "idempotent")
+        #expect(storm.all.count == 1 && lab.all.count == 2, "read only")
     }
 }

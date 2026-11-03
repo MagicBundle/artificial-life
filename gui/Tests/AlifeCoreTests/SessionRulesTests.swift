@@ -138,12 +138,4 @@ import Testing
         let never = SessionRules.closedWorldNote("w", .neverOpened)
         #expect(never.contains("still starting") && never.contains("stopped before it opened") && !never.contains("saved"))
     }
-
-    // MARK: Only the alife window
-
-    @Test func onlyTheAlifeWindowAsksAndTheOldAppsQuitWithTheirLastWindow() {
-        #expect(LaunchMode.alife.plan.asksWhenClosingWithRun)
-        #expect(!LaunchMode.lab.plan.asksWhenClosingWithRun && !LaunchMode.world.plan.asksWhenClosingWithRun)
-        for mode in LaunchMode.allCases { #expect(mode.plan.quitsAfterLastWindow, "the pinned default stays; the alife app overrides it when it asks") }
-    }
 }
