@@ -84,6 +84,7 @@ from alife import (
     calltab,
     comm,
     diel,
+    diel_oracle,
     ext,
     fields,
     invariants,
@@ -906,7 +907,10 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
     ) -> Actions | tuple[Actions, actions.Motion3]:
         if d3:  # static: Actions and Motion3
             act = actions.decode(y, desc, nbr, s.partner, s.alive, cfg)
-            return act, actions.decode_motion3(y, s.alive, cfg)
+            mo = actions.decode_motion3(y, s.alive, cfg)
+            if cfg.diel.oracle > 0:  # static: the diel oracle's scripted lift (step.step, §49.7)
+                mo = diel_oracle.apply(mo, diel_oracle.plan(s, cfg))
+            return act, mo
         return actions.decode(y, desc, nbr, s.partner, s.alive, cfg)
 
     def kw1(ks: mx.array) -> mx.array:
@@ -938,6 +942,8 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         else:
             c = en.pay_costs(s.energy, act, bonds.n_bonds(s.partner), bcost, s.alive, cfg, **due_kw)
         xdec = ext.mask_all(ext.decode_all(s, y, se.ctx, cfg), c.solvent, cfg)
+        if cfg.diel.oracle > 0:  # static: the oracle's plan reaches the counters (step.step)
+            xdec = {**xdec, "diel": diel_oracle.plan(s, cfg)}
         if cfg.calls.far_range > 0.0:  # static: the rows that heard a far sound (CALLS_FAR_HEARD, §47)
             xdec = {**xdec, "calls": calls.with_far(xdec.get("calls"), se.calls_in, s.alive)}
         if se.orc is not None:  # static: the rows the oracle's force acted on (CALLS_ORACLE_ON, §47)
@@ -1198,6 +1204,8 @@ class _StagedStep:
         t0 = time.perf_counter()
         W1, W2 = self.fns["flush"](s.W1, s.W2, s.pend_slot, s.pend_W1, s.pend_W2)
         s = s._replace(W1=W1, W2=W2)
+        if self.cfg.diel.oracle > 0:  # static: the oracle group's cap (step.step, §49.7)
+            s = s._replace(buoy_cap=diel_oracle.cap(s, self.cfg))
         mx.eval(W1, W2)
         self.times["flush"].append(time.perf_counter() - t0)
         key_next, ks, nbr = self._run("neighbors", s.key, s.pos, s.alive)

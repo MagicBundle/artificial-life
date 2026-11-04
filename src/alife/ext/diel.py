@@ -3,8 +3,10 @@ registry row.
 
 D1: no brain footprint (``layout_on`` is false until D2 adds the ``light`` input), no counter, no stream tag;
 one conditional state field ``diel_ctl`` (2,) float32, the (target, effective) day fraction of the Long Night
-power (§49.8), and the config section ``[diel]``. The light factor lives in ``alife.diel``; imports of it are
-made at call time because ``config`` imports ``ext``.
+power (§49.8), and the config section ``[diel]``. D1b adds the oracle pilot (``diel.oracle > 0``): the
+per-agent int8 field ``diel_orc``, 24 harvest counters and the per-stratum energy rows
+(``alife.diel_oracle``). The light factor lives in ``alife.diel``; imports of it are made at call time because
+``config`` imports ``ext``.
 """
 
 from __future__ import annotations
@@ -59,9 +61,49 @@ def rest_ctl(cfg: Any) -> mx.array:
     return mx.array([d, d], dtype=mx.float32)
 
 
+def _orc_shape(dims: Any) -> tuple[int, ...]:
+    return (dims.n,)
+
+
+def _orc_rest(cfg: Any) -> mx.array:
+    from alife.config import dims
+
+    return mx.zeros((dims(cfg).n,), dtype=mx.int8)
+
+
 def _state_fields(cfg: Any, nd: int) -> tuple[FieldSpec, ...]:
-    # conserved=False: the day fraction holds no energy, so a forced removal by `alife migrate` leaks nothing
-    return (FieldSpec("diel_ctl", False, _ctl_shape, mx.float32, rest_ctl, conserved=False),)
+    # conserved=False: the day fraction and the oracle labels hold no energy, so a forced removal by `alife
+    # migrate` leaks nothing. diel_orc (D1b) exists only while the oracle is on; a child inherits its
+    # parent's label, an immigrant gets 0 (unlabelled).
+    ctl = FieldSpec("diel_ctl", False, _ctl_shape, mx.float32, rest_ctl, conserved=False)
+    if cfg.diel.oracle > 0:  # static: the oracle pilot (DESIGN §49.7)
+        orc = FieldSpec("diel_orc", True, _orc_shape, mx.int8, _orc_rest, on_birth="inherit", conserved=False)
+        return (ctl, orc)
+    return (ctl,)
+
+
+def _counters(cfg: Any) -> tuple[str, ...]:
+    from alife import diel_oracle
+
+    return diel_oracle.COUNTERS if cfg.diel.oracle > 0 else ()
+
+
+def _count(s_new: Any, alive0: Any, flows: Any, cfg: Any) -> Any:
+    from alife import diel_oracle
+
+    return diel_oracle.count(s_new, alive0, flows, cfg)
+
+
+def _snap_dev(s: Any, cfg: Any, heavy: bool) -> Any:
+    from alife import diel_oracle
+
+    return diel_oracle.snap_dev(s, cfg, heavy)
+
+
+def _snap_row(h: Any, cfg: Any) -> Any:
+    from alife import diel_oracle
+
+    return diel_oracle.snap_row(h, cfg)
 
 
 def _validate(cfg: Any) -> None:
@@ -122,8 +164,15 @@ def _validate(cfg: Any) -> None:
             bad.append("diel.extinction acts on the light input only: refused until PR D2 lands")
         if not c.silent_init:
             bad.append("diel.silent_init acts on the light input only: refused until PR D2 lands")
-        if c.oracle > 0:
-            bad.append("diel.oracle is refused until PR D1b (the oracle pilot) lands")
+        if c.oracle > 0:  # the oracle pilot (D1b): one clock, and a lift that can rise and hold
+            if c.mode != "global":
+                bad.append("diel.oracle needs diel.mode = global (the schedule reads one clock)")
+            ph = cfg.physics
+            if not ph.buoyancy_max > ph.gravity > 0:
+                bad.append(
+                    "diel.oracle needs physics.buoyancy_max > physics.gravity > 0 (the scripted rise and the "
+                    "balancing lift)"
+                )
         sp = cfg.fields.season_period
         if sp != 0 and sp < 8 * c.period:
             bad.append(f"fields.season_period {sp} must be 0 or >= 8 x diel.period ({8 * c.period})")
@@ -148,23 +197,31 @@ def _enable(cfg: Any) -> Any:
 def _check(arrays: Any, cfg: Any) -> list[str]:
     import numpy as np
 
+    bad = []
     ctl = arrays.get("diel_ctl")
-    if ctl is None:
-        return []
-    ctl = np.asarray(ctl, dtype=np.float64)
-    if ctl.shape != (2,) or not np.all(np.isfinite(ctl)) or not np.all((ctl > 0.0) & (ctl < 1.0)):
-        return [f"diel_ctl {ctl.tolist()} must be two finite day fractions in (0, 1)"]
-    return []
+    if ctl is not None:
+        ctl = np.asarray(ctl, dtype=np.float64)
+        if ctl.shape != (2,) or not np.all(np.isfinite(ctl)) or not np.all((ctl > 0.0) & (ctl < 1.0)):
+            bad.append(f"diel_ctl {ctl.tolist()} must be two finite day fractions in (0, 1)")
+    orc = arrays.get("diel_orc")
+    if orc is not None and np.abs(np.asarray(orc, dtype=np.int64)).max(initial=0) > 3:
+        bad.append("diel_orc: labels outside [-3, 3]")
+    return bad
 
 
 SPEC = ExtSpec(
     name="diel",
     enabled=_enabled,
     state_fields=_state_fields,
+    counters=_counters,
+    metric_prefix="diel_",
     lever_keys=tuple(("diel", k) for k in _KEYS),
     cli_only_keys=tuple(("diel", k) for k in _KEYS),  # no GUI levers yet: DielLevers.swift lands with D6
     overlay="diel",
     enable=_enable,
     validate=_validate,
+    count=_count,
     check=_check,
+    snap_dev=_snap_dev,
+    snap_row=_snap_row,
 )

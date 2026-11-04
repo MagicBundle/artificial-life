@@ -66,8 +66,8 @@ engine) is implemented behind `niche.farm` (`--overlay niche`, or `niche3d` in a
 niche`, `alife bench --niche`); observers, GUI and the experiment are F2 to F4.
 
 A day-night light cycle on the photic food band (diel vertical migration; spec `docs/DIEL.md`, normative text `DESIGN.md` §49, rows I92
-and I93): D1, the engine core behind `diel.period` (`src/alife/diel.py`, `ext/diel.py`, `--overlay diel`), is implemented; D1b (the
-oracle) and D2 (the light input) are next.
+and I93): D1, the engine core behind `diel.period` (`src/alife/diel.py`, `ext/diel.py`, `--overlay diel`), is implemented, and so is D1b (the
+oracle pilot behind `diel.oracle`, `alife.diel_oracle`, row I94); the D4 oracle pilot and D2 (the light input) are next.
 
 ## Conventions
 
