@@ -15161,6 +15161,286 @@ not tested. The sphere's mirror is not tested (the box's is row 3); the weather,
 (`docs/brainstorming-Fable-November.md` §1 "Not to do"), the compiled step (the eager step is the object compared; the
 compiled step is tied to it by `test_determinism`), Metal (see Method).
 
+## 49. Diel vertical migration (a day-night light cycle on the photic food band; the diel series, PRs D0 to D6; **nothing built yet**)
+
+Normative text of the diel extension. The specification with the reasoning, the evidence (`file:line`), the review findings and
+the owner decisions is `docs/DIEL.md` (Revision 2, approved by the owner on 2026-11-04); this section states what the engine
+will do and what each PR must prove, and points to `docs/DIEL.md` for the why (reference form "DIEL x" = its section x).
+**Status: D0 (this section and Review-log row I92) is docs only. Nothing in it is built: no engine file, config key, default,
+layout, state field, stream field, game surface or digest changes in D0. D1 onward implement it, each PR flipping its parts of
+this section from "will" to "does" in the same change.** The section number 49 is free (the last section before it is 48).
+
+### 49.1 What it is
+
+A light factor `L(t, cell)` in [0, 1] multiplies **only the photic term** of the vertical food profile (§27.5, §46). Food
+stays an integer quantum source booked as `INJECT_REGEN`. The feature is 3D only and off by default (`diel.period = 0`).
+Two modes: `global` (one clock for the world; the only mode in the box) and `terminator` (sphere only: a subsolar longitude
+that moves; the planet has no axial tilt, so the poles have permanent twilight; axial tilt is out of scope). A matched
+control is in the same code path (`diel.control = "mean"`, 49.5). One optional brain input, a depth-independent sky light
+(`diel.sense`, 49.4), one player power (Long Night, 49.8), host-side observers (49.6). DIEL 0.
+
+### 49.2 Configuration (`[diel]`, class `DielConfig`, one registry row `diel` in `ext.EXTENSIONS` and `ext.REGISTRY`)
+
+All keys default to "off"; the `lever_keys` feed `POST_V01_KEYS` and `SERIAL_OMIT_KEYS` through the registry (§43.7), so
+existing config hashes and files are unchanged and `config.json` omits the section at defaults.
+
+| key | default | meaning |
+|---|---|---|
+| `diel.period` | 0 | steps per day `P`; 0 = off (the feature switch, `ExtSpec.enabled`) |
+| `diel.mode` | "global" | "global" or "terminator" (sphere only) |
+| `diel.day_frac` | 0.5 | fraction of the cycle the sun is up (equator); range `[acos(1 - tw/2)/pi, 0.95)` |
+| `diel.twilight` | 0.25 | `tw`, width of the dawn/dusk ramp in units of `h`, `(0, 1]` |
+| `diel.night_level` | 0.0 | `n`, photic multiplier at night, `[0, 1)` |
+| `diel.control` | "none" | "none" or "mean" (49.5) |
+| `diel.sense` | false | adds the light brain input (49.4); the only key with a layout footprint |
+| `diel.extinction` | 0.0 | 0 = sky light (the pre-registered choice); > 0 = e-folding depth of an attenuated light (exploratory arm S) |
+| `diel.sense_control` | "none" | "none" or "mute" (the sensed light replaced by `L_bar`; the mute fork of E5; allowed on a resume) |
+| `diel.oracle` | 0 | pilot only: percent of the living agents at the pilot's start (by `uid` hash) that get the oracle flag, fixed then and inherited (49.7); CLI only; needs `control = "none"` |
+| `diel.silent_init` | true | the input's W1 row starts at zero for founders and immigrants (as `niche.silent_init`) |
+
+**Validation** (`ext.validate_all`; pattern of `ext/niche.py`):
+
+* While `period == 0` every other key equals its default (a config never changes its hash without effect).
+* `period` in [400, 2^20]; `period % run.metrics_every == 0` and `period / metrics_every >= 12`; `world.dims == 3`;
+  `fields.photic_amp > 0`; `mode == "terminator"` needs `world.geometry == "sphere"`; `day_frac` in its range; `0 < twilight
+  <= 1`; `0 <= night_level < 1`; `control == "mean"`, `sense`, `sense_control`, `oracle` need `period > 0`; `sense_control ==
+  "mute"` needs `sense`; `oracle` in [0, 100] and needs `control == "none"`; `extinction >= 0`.
+* `season_period == 0` or `season_period >= 8 * period`.
+* **`sense = true` is refused by `validate` until D2 lands** (D1 adds the key, not the layout block).
+* `alife run --director live` refuses a diel world until a diel exemption of the rule tier's fall criterion exists (§26.5;
+  the exemption is deferred); `off`, `replay` and the player mode are allowed. The first claim runs with seasons, weather and
+  director off.
+
+**Identity (hard requirement).** With `diel.period = 0`: no traced expression changes (all diel code is behind the static
+`cfg.diel.period > 0`), `layout_on` is false so `D_IN`, `genome_layout_version` and the `layout_features` meta are unchanged,
+the conditional state field `diel_ctl` does not exist, no counter is added, `config.json`, checkpoint metadata and every preset
+hash are byte-identical. Gate: `tests/identity_matrix.py --base <commit>` with 0 differences (§43.9), plus a new matrix case
+"tiny3d and tiny3s, diel on, 50 steps" that is pinned per platform (not compared to the base), plus `tests/test_ext_guards.py`
+rows for the frozen defaults of the new keys. No RNG stream is added (`RNG_LAYOUT_VERSION` unchanged); the cycle is a pure
+function of `(cfg, t, cell)`.
+
+### 49.3 The light factor and the ledger
+
+Let `P = diel.period`, `t` the step, `th = 2 pi (t mod P)/P` (integer modulo first, as the seasons). The sine of the sun's
+elevation `h`:
+
+* `global`: `h = cos(th)`, a scalar (noon at `t = 0 mod P`);
+* `terminator`: the subsolar point is on the equator at longitude `-th`; `s(t) = (cos th, -sin th, 0)` in planet axes (z the
+  polar axis); for a cell with unit vector `u_c`, `h = u_c . s(t) = cos(lat) cos(lon + th)`, as three elementwise products
+  and a sum (no matmul, F20).
+
+With `h0 = cos(pi * day_frac_eff)`, `x = clip((h - h0)/tw + 0.5, 0, 1)`, `S = x^2 (3 - 2x)`, `L = n + (1 - n) S`. For an
+equatorial cell the sun is up the fraction `day_frac` of the cycle; at the poles `h = 0` always, so `L` is constant there
+(analyses restrict to |lat| < 60 degrees). `day_frac_eff` is the run-time value of 49.8 (it equals `day_frac` unless Long Night
+has acted); it enters `h0` and a `clip`, with no branch.
+
+**Where it acts.** The photic term of the profile is replaced, not the profile:
+`V(k, c, t) = min(1, B[k] + L(t, c) * Pk[k])`, with `B[k] = exp(-z_k/benthic_lambda)` and `Pk[k] = photic_amp *
+exp(-(z_{FZ-1} - z_k)/photic_lambda)` the host-built float32 constants of today's profile split in two (same arithmetic, so
+`L = 1` reproduces the static profile bit for bit). Shapes: box (FZ,1,1); sphere (FZ,1) in `global` and (FZ, Npix) in
+`terminator`. The clip at 1 and `V[0] = 1` are kept. The regeneration is `regen_max * fert * V` before the floor, so the
+diel factor and the seasonal weights (which act on the patches inside `fert`) are separable; rain is added after the floor
+and is not scaled; `env.regen_mult` scales the product, diel included, so the director's Food power needs no change.
+
+**Callers.** One new optional keyword `diel: DielIn | None = None` (the effective day fraction as an array) on `fertility`,
+`regen_rate`, `update_resource`, `update_resource_farm` and `niche.update`. `None` means "the config's `day_frac`", so every
+existing call and analysis probe is unchanged; only `step.py` and the `bench.py` mirror pass the live `diel_ctl`. The initial
+resource (`step=None`) and the carrying capacity estimate use the day-mean table `V_bar` of 49.5 when the cycle is on.
+
+**Why no ledger term.** Food is created only in `INJECT_REGEN = sum(inc)`. `L` changes the size of `regen_rate`, not the
+accounting path: whatever `inc` is, it is booked, and the identity `TOTAL = TOTAL0 + cum(INJECT_REGEN + INJECT_IMMIGRATION) -
+cum(sinks)` holds exactly. The photic source is declared by the config; there is no stored light energy and no 17th slot. The
+16-term ledger is unchanged. **Required test:** the ledger closes on every step of two full days in `tiny3d` and `tiny3s`
+with the cycle on; and `sum(INJECT_REGEN)` over a day with no agents and a non-binding cap equals a host float64 reference of
+`sum floor(regen_max * fert * V)` exactly. Pure MLX, fixed shapes, no host sync, no scatter or setitem; branches only on
+`period > 0`, `mode`, `control`. The in-graph cost is one (FZ, Npix) or (Npix,) elementwise expression per step. `sin`, `cos`
+and `exp` are not bit-identical between CPU and Metal: the diel golden is pinned per platform (the seasons' rule). DIEL 2.
+
+### 49.4 The sky-light input (`diel.sense`)
+
+One silent brain input `light`, width 1, `I = L(t, c_agent)` (sky light: `extinction = 0`, so no depth factor; with `extinction
+> 0`, `I = L * exp(-depth/extinction)`, `depth = H - z`), on a log scale: `light = clip(1 + ln(I + e)/ln(1/e), 0, 1)`, `e = 1e-3`
+(a code constant). `c_agent` is the pixel of `ctx.fcell` on the sphere (`fcell % Npix`) and absent in the box. With
+`sense_control = "mute"` or `control = "mean"`, `L` is replaced by `L_bar(c_agent)`, the day mean of `L` at the agent's cell (a
+host constant), never the live `L`. The time used is the step `t` of the sensing call.
+
+Layout: a new `ExtSpec` `diel`: `enabled = period > 0`, `layout_on = period > 0 and sense`, one `Block("light", 1,
+silent=cfg.diel.silent_init)`, token `"diel1@1"`, `block_version = 1`, extension index 6 (genome layout version `base +
+4*64`), `TAIL_ORDER` after `niche` and before `arms`; 3D `D_IN` 84 -> 85, `D_OUT` unchanged; the 2D layout is unchanged.
+`silent` zero-initialises the W1 row of founders and immigrants, so a founder behaves as before until mutation wakes the row.
+`alife migrate --enable diel` adds the block to an evolved source. `sense` is a start-of-run key; a fork changes it only
+through the migration (§43.7). The inert twin (`control = "mean"`, `sense = true`) has the same layout and cost.
+
+**Hand-computed goldens of the log formula** `f(I) = clip(1 + ln(I + e)/ln(1/e), 0, 1)`, `ln(1/e) = 6.9078` (D2's test
+reproduces them to 1e-3, then compares the device with a host float64 reference on a grid): `f(0) = 0`; `f(1) = 1`;
+`f(4.5e-5) = 0.0065`; **`f(8.3e-4) = 0.0875`** (`ln(1.83e-3) = -6.3035`). The coordinator's earlier figure 0.13 is not
+adopted (it needs `I = 1.45e-3`); the owner/coordinator check of that figure is open (DIEL 9). DIEL 4.
+
+### 49.5 The matched control
+
+`diel.control = "mean"` replaces `L` by nothing: `V` is the constant host table `V_bar[k, c] = mean over 720 equally spaced
+phases of min(1, B[k] + L(phase, c) Pk[k])`, built in float64 and cast, cached like `fields_sph.profile`. The regeneration
+it feeds is, cell by cell, the day mean of the cycling arm's regeneration (before the floor and before seasonal covariance).
+It runs through the same fields code, the same sensing formula (with `L_bar`) and the same layout: an inert twin in the sense
+of §44.1. The nominal mean-food ratio D/K is reported by a regeneration-share tool (`alife.analysis.diel regen`, D3) and must
+be 1 +/- 0.002. The **realized** ratio differs where `resource_cap` clips the photic peaks; it is a covariate of the primary
+endpoint and P2 of 49.9 bounds it. DIEL 2.5.
+
+### 49.6 Observers, the migration statistic and chronicle events
+
+**Metrics row** (host side, once per row, via `ExtSpec.snap_dev`/`snap_row`): a `diel_` block with `diel_light` (spatial mean
+of `L`), `diel_day_eff`, and three 8-vectors over **local solar time bins**: `diel_bin_n` (agents; |lat| < 60 degrees on the
+sphere), `diel_bin_top` (the share of them in the photic band, `z >= H_world - 2*photic_lambda`, a code constant) and
+`diel_bin_z` (their mean height as a fraction of the shell). Bin `b` of 8 is `floor(8 * frac(H/(2 pi) + 0.5))` with `H` the
+hour angle from noon; in `global` mode `H = th` and no positions are needed; only `terminator` reads x, y. The oracle pilot adds
+`diel_orc_*` (49.7). No new observer channel (§28) and no per-agent dump are needed for the primary endpoint.
+
+**Statistic** (`alife.analysis.diel amplitude`; window of `W` whole days, default 20, per run). Primary variable: the
+photic-band share `u_b`, the count-weighted mean of `diel_bin_top` in bin `b`; secondary: the mean height `diel_bin_z`. First
+harmonic over the bin centres' hour angles `H_b = 2 pi (b + 1/2)/8 - pi`: `a = (2/8) sum_b u_b cos(H_b)`, `b' = (2/8) sum_b u_b
+sin(H_b)`, `A_raw = sqrt(a^2 + b'^2)`, phase `phi = atan2(b', a)` (0 = highest at local noon, pi = highest at midnight; see the
+note in the Review-log row, which fixes the bin-centre angle). **Bias-corrected amplitude** `A = sqrt(max(A_raw^2 - mean_i
+A_raw(P'_i)^2, 0))`, with the off-frequency periods `P' = 0.73 P, 0.87 P, 1.15 P, 1.37 P, 1.61 P` (which carry no light);
+`A_raw` and the floor are reported separately. **Detection rule:** `A_raw > max(A_min, 3 * max_i A_raw(P'_i))`. Terminator mode
+also reports a **chase** statistic (the first harmonic of the longitude of the population's density centre in the sun's
+frame). Individual-level test (exploratory) needs `eco_every` without its `game.observe`/weather gate (an optional D3 item).
+Thresholds (`A_min`, the factor 3, `W`, the hysteresis) are provisional until D3's validity study freezes them under a
+version constant `DIEL_RULES_VERSION`. DIEL 5.1, 5.2.
+
+**Chronicle events** (D5b, after D3's validity study; texts are closed templates under the lexicon, the chronicle states what a
+record says, never why): from a host `Chronicler.from_diel(row)`: `diel_begun` when the detection rule has held for 3
+consecutive window updates at `W = 6` days; `diel_lost` when it has failed for 3 (hysteresis is part of the rule). Event kinds
+22 `diel_begun` and 23 `diel_lost` are compatible additions to `EVENT_KINDS` (§33.1); ids go in the `system` family (base 500).
+Templates (phase-neutral; the hour is read from the measured `phi`): "Since step {s0}, the share of organisms in the upper
+layers has varied once a day, by {amp:.0%} of the population, highest around hour {hh} of 24 after local noon ({days} days)."
+and "The daily variation of that share has not held since step {s}." One alert class `diel` (surface `log`, importance 1, no
+pause); `constants_digest` is re-pinned; the live report gains one clause behind the lexicon and a `REPORT_VERSION` bump. The
+vertical archetypes Floater and Sinker are not used for the daily event. DIEL 5.3.
+
+**GUI and stream** (D5a, D6; presentation only, never a trajectory change). `ENVS` gains a `diel` object `{period, mode,
+day_frac_eff, twilight, night_level, control}` (a compatible addition, absent when off). The Sphere view sets its sun to the
+planet-frame `s(t)` and gives organisms a lighting floor; the Globe gains a world-frame sun and a night weight; both are
+unchanged without `ENVS.diel`. A "Day" rate button targets a day of 40 s at the achieved rate (promised on the mini worlds
+only). `gui/Sources/AlifeCore/DielLevers.swift` names exactly the feature's non-CLI keys and lands in D1, because
+`tests/test_gui_sync.py` fails until it exists. DIEL 5.4.
+
+### 49.7 Control and oracle
+
+The control arms: **D** (cycle, sense), **K** (`control = "mean"`, sense; the inert twin), **N** (cycle, no sense; exploratory,
+not clock-free since food cues are world-synchronous), **S** (D with `extinction = 35`; exploratory), and the mute fork of E5
+(`sense_control = "mute"` on a copy of a D lineage; same genomes, same food cycle, only the cue is cut).
+
+**The oracle pilot** (D1b implements it, D4 runs it; the go/no-go before any long run). It bounds the net benefit of a scripted
+schedule, because a food share bounds the gain only before the costs. The oracle is **depth-aware**: strata fixed at the
+pilot's start (after a 40,000-step cycle-on warm-up) by `metrics.z_band`: floor (band 0), mid (bands 1-2), top (band 3). 20% of
+the living agents (by `uid` hash) get the flag and the stratum, **inherited** by children through a conditional per-agent int8
+field `diel_orc` (0 none, 1-3 the stratum, `on_birth = "inherit"`; immigrants 0); the comparison group of the same stratum
+inherits the band tag (flag 0 recorded as -stratum). Each scripted agent follows the schedule its band can reach: from its
+home height `z_s` and its own cap, `up = min(z_top_band_centre - z_s, 0.8 * v_rise(cap) * P * day_frac)` and `down = min(z_s - 1,
+0.8 * v_sink * P * (1 - day_frac))`, `v_sink = gravity/drag`; it rises (`mo.buoy` = 1) in the lit half, holds with the balancing
+lift `b = gravity/(buoyancy_max * buoy_cap)`, sinks (`b = 0`) in the dark half and holds. The override is a `step.py` edit of
+the decoded `mo.buoy` before the costs (static branch on `oracle > 0`), so the buoyancy due is paid as usual and **the ledger is
+untouched**. The oracle group's cap is raised to 1. A thrust oracle and a no-cap-change variant are exploratory.
+
+**Measure.** Per stratum `G_s = ln(mean energy of oracle agents / mean energy of their comparison group)` at ages 300 to 500,
+pooled over days 10 to 40 of the pilot, 3 seeds, day-block bootstrap; pooled `G` weighted by stratum size; 12 harvest counters
+(3 strata x {photic, all} x {day, night}) report the photic harvest share by day and night. **Decision rule** (frozen and
+hashed before the pilot; Holm adjustment over the three strata): **GO** if the pooled lower 90% bound of `G` >= 0.05; **SMALL**
+(label `daily rhythm, small, niche`, stage 1 only) if the pooled bound is below that but some stratum's Holm-adjusted lower 90%
+bound >= 0.05; **STOP** if the pooled upper 90% bound < 0.02 and every stratum's upper bound < 0.02 (the box long runs are not
+spent; the claim is refuted for this economy, not for the idea); any other outcome is read as SMALL's stage 1 only, never GO.
+A GO followed by a negative C1 refutes "evolves under this sense and period in this world", not the possibility. The
+thresholds are the delegated reviewer's, not yet seen by the owner. DIEL 7.0.
+
+### 49.8 The player power: Long Night
+
+Name `night`, action `lengthen_night`, label "Night": a row in `actions.GAME_SPECS` only (so `MENU` stays byte-identical, §34.5),
+`GAME_POWERS["night"] = "lengthen_night"`; `Spec(cost 1, cooldown 4_000, {"day": (0.2, 0.4)}, duration (4_000, 12_000), quantum
+250)`; the target day fraction is at least `max(0.2, acos(1 - tw/2)/pi)` (the Spec's floor, raised to the full-peak bound when the twilight is wide); default 0.3. One conditional extension field `diel_ctl` (2,) f32 = `(target, effective)` day fraction,
+rest `(day_frac, day_frac)`, `per_agent False`, `conserved False`; it exists only while `diel` is on. The step moves the
+effective value toward the target by at most `1/(2P)` per step (`clip`, no branch), so the light never jumps; `apply` writes
+the target, the timed revert restores the previous one, `lever_keys` returns `("night",)`. The edit is in `step.py` and the
+`bench.py` mirror, not a registry row. **Ledger: none** (like Food, Bloom and Blight it writes a value the step already reads;
+test: the ledger closes at every row of a session with Night and the other four powers). It falls under the influence budget
+(`PLAYER_BUDGET = 6` per 18,000 steps), the cooldown, the refusal order and Rule P (§34.5); replay applies the logged record
+and the ramp is a function of the state. Surfaces: `chronicle._POWER_LABEL["lengthen_night"] = "Night"`, a template
+`power_night` ("Night lengthened to {day:.0%} of the day from step {step:,} for {duration:,} steps."), EVNT kinds 20/21 reused,
+a `PLAN` caution, no precedent row ("No earlier case"), `ENVS.powers` lists it. The mean-food ratio of a Night against no Night
+is below 1 by design (a transfer from day to night plus a net loss of photic food). DIEL 6.
+
+### 49.9 The claim, the claim world and the fallback ladder
+
+**Pre-registered claim C1.** In a 3D water column with a light cycle on the photic band, a **daily vertical rhythm** of the
+photic-band share appears in the evolved population and is absent under the mean-matched control with the same layout, cost and
+mean food. "**Evolved migration**" is used only if E5 (the mute fork) also holds. Lineages are the unit (fresh runs, `run.seed`
+21..26, the same seed in D and K, 300,000 steps, metrics every 100). Stage rule: 3 lineages; the paired sd is computed without
+the mean or sign; if `h = t(0.95, n-1) * sd/sqrt(n)` exceeds 0.03 add lineages up to 6 then 9; minimum effect `max(0.03, 2h)`.
+
+**Claim world (amendment A1, recorded and hashed before the pilot).** `mini3d` plus an overlay `diel` with **`world.height =
+40`** (`world.size` 160), `period 4,000`, `day_frac 0.5`, `twilight 0.25`, `night_level 0`, `mode global`, `sense true`,
+`extinction 0` (sky light), seasons, weather and director off. P5 is arithmetic: `T_cross = (H - 1 - photic_lambda)/v_rise`,
+`v_rise = buoyancy_max - gravity = 0.025` at cap 1: 71/0.025 = 2,840 > 2,000 at `H = 80` (fails), 31/0.025 = 1,240 <= 2,000 at
+`H = 40`. Food is recalibrated in the pilot.
+
+**Endpoints** (frozen and hashed as in §44.8). **E1 (primary):** `A` of the photic-band share over the last 20 days (steps
+220,000 to 300,000), the paired contrast `A_D - A_K`, with the log ratio of realized `INJECT_REGEN` (D/K) as a covariate.
+**E2:** phase concentration of the D lineages' `phi` (resultant length >= 0.8, all within +/- pi/2 of the mean). **E4:** the
+detection rule true in the last 20 days in D and false in K. **E5 (discriminates "evolved"):** at step 300,000 each D lineage
+is forked twice for 20 days (80,000 steps): `U` unchanged and `M` with `sense_control = "mute"`; `A_U` and `A_M` over days 2 to
+20 after the fork; E5 holds if the paired `A_U - A_M` has a one-sided 95% lower bound > the minimum effect **and** `A_M <= 0.5
+A_U` in a majority of lineages. E3 and the other arms are exploratory.
+
+**Preconditions** (failure = "inconclusive", not "negative"): **P1** photic share of regeneration in [0.15, 0.50]; **P2**
+nominal D/K regeneration 1 +/- 0.002 and realized `INJECT_REGEN` D/K over the last 20 days 1 +/- 0.01 (remedy: raise
+`resource_cap` in both arms to the smallest value that puts the nominal peak clipping at or below 0.5% of photic regeneration;
+the pilot is rerun once); **P3** a night is felt: dawn stock of the photic layers <= 50% of dusk stock; **P4** population in D
+within 0.8 to 1.25 of K, `ledger_error` 0 on every row, no `diag` error bit; **P5** the full crossing (above).
+
+**The fallback ladder** (each step a recorded amendment, hashed with the pre-registration before it is run). Step 0: `P = 4,000`,
+`H = 40`. If P1, P2 or P3 fail there, **one** fallback: step 1 `P = 8,000`, `H = 80` (A2; `T_cross` 2,840 <= 4,000), the pilot
+re-run in full (oracle included). If P1 to P3 fail again: **STOP**, no claim runs. No other world change is allowed.
+**Late-bloom extension:** if E1 is null over the last 20 days but the offline detector fires in the final 10% of the run (steps
+>= 270,000), the lineage's D and K runs are resumed for 100,000 steps and E1 is re-evaluated once; the result is labelled `late`
+and reported as optional stopping, never above `daily rhythm (late, optional stopping)`.
+
+**Labels** (the closed table; the first matching row wins): E1 contrast significantly negative: `reversed`; a precondition failed:
+`inconclusive`; E1 lower bound > min effect with E2, E4 and E5 all yes: `daily migration evolved`; with E2 and E4 yes, E5 no:
+`daily rhythm (not shown to be behavioural)`; E2 no or not yet: `daily rhythm, phase not concentrated`; E1 lower bound in (0,
+min effect]: `daily rhythm, small`; E1 lower bound <= 0: `no daily rhythm found` (not a refutation). DIEL 7.1 to 7.4.
+
+**The sphere repeat (pre-committed; runs whatever the box outcome, with its own oracle pilot on `mini3s`).** World `mini3s` (Rp
+48, H 24: `T_cross` = 600 <= 2,000), `P = 4,000`, `sense true`, sky light; three arms per lineage and weather setting, **K**
+(`control = "mean"`), **G** (`mode = "global"`) and **T** (`mode = "terminator"`), contrasts T-K, G-K, T-G; weather off and on
+(`stormsph22`), 3 lineages (stage 1, descriptive plus the ratio below), 300,000 steps; E1 and E5 on local-solar-time bins
+restricted to |lat| < 60 degrees, plus the chase statistic. Rain dilution is accepted, not engineered: the pre-registered ratio
+`R_w = A(weather on)/A(weather off)` per arm and lineage; if its median is below about 0.5 in T or G, a later PR adds
+`diel.rain_follow` (not built now). DIEL 7.5.
+
+### 49.10 Build plan and acceptance tests
+
+Every PR: `ruff check`, `ruff format --check`, `pytest -m "not slow"`, the identity matrix with 0 differences with the feature
+off, DESIGN section and Review-log row in the same change (IDs from the coordinator), new keys in the registry, goldens
+unmoved, CLAUDE.md and `docs/HANDOVER.md` updated. Sizes are source lines / test lines.
+
+| PR | content | size | acceptance tests |
+|---|---|---|---|
+| D0 | this section and Review-log row I92 | docs | none; no engine change |
+| D1 | `DielConfig`, validation (`sense` refused), registry row (no footprint), host builders (`fieldtab`, `fields_sph`), the `diel=` keyword through `fertility`, `regen_rate`, `update_resource(_farm)`, `niche.update`, `state.py` initial resource, `metrics.py` probes (regen, `_layer_regen`, `carrying_capacity`, seasonal), the `bench.py` mirror, the `step.py` ramp of `diel_ctl`, `V_bar`, conditional `diel_ctl`, the `--director live` refusal, the `diel` overlay, `DielLevers.swift` | 600-900 / 600-900 | identity matrix off; `L = 1` equals the static profile bit for bit; reference regeneration over a day; ledger closes for 2 days on `tiny3d` and `tiny3s`; `V_bar`; validation table; geometry (subsolar longitude, poles constant); checkpoint, resume and `alife migrate` round trip of `diel_ctl` (a file without it is completed to rest); `bench` mirror digest equals the step; Metal purity gate; GUI sync test; per-platform golden |
+| D1b | the depth-aware oracle (`step.py` override, per-agent `diel_orc` with inheritance, 12 harvest counters, per-stratum energy rows, pilot script) | 250-400 / 250-400 | ledger closes with 20% oracle; stratum fixed and inherited, immigrants 0; schedule per band against a host reference; checkpoint/resume of `diel_orc`; the override is the only change |
+| D2 | the light input: ExtSpec block, token, sensing hook, `sense` allowed, `sense_control`, `migrate --enable diel` | 150-250 / 250-400 | layout version base+4*64; a migrated population's digest unchanged (silent row); formula against a host float64 reference and the four goldens of 49.4; K and mute give `L_bar`; resume with `sense_control` changed |
+| D3 | the `diel_*` metrics block, `alife.analysis.diel` (`regen`, `profile`, `amplitude`, `prereg`, `compare`), validity study with planted worlds | 400-700 / 400-600 | planted amplitude and phase; null false-positive rate; bias of `A` under the null; off-frequency floor; prereg hash |
+| D4 | the oracle pilot first (go/no-go, 49.7), then P1 to P5 with the ladder, the stage rule, box runs, mute forks, late-bloom resumes if triggered, `docs/RESULTS_DIEL.md` | scripts 200-350 | preconditions and the ladder as assertions; amendments hashed |
+| D4s | the sphere repeat: `mini3s` oracle pilot, 3 arms x weather on/off x 3 lineages, `R_w`, `RESULTS_DIEL.md` addendum | scripts 100-200 | as D4 |
+| D5a | stream: `ENVS.diel` (compatible addition), `CLCK` unchanged | 60-120 / 80-150 | absent when off; round trip |
+| D6 | GUI: Globe night side, Sphere view sun and organism floor, clock-strip day readout, "Day" rate (needs D5a, not D1) | Swift 300-500 / 150-250 | pure tests of `s(t)` and the rate; GPU luminance day/night per view; existing views unchanged without `ENVS.diel` |
+| D5b | game layer: event kinds 22 and 23, `from_diel`, alert class, report clause, power `lengthen_night`, lexicon pass (after D3's validity study) | 300-500 / 350-550 | the power session test, replay equality, Rule P at a chapter end, ledger with all five powers, templates under the lexicon, constants digest re-pinned |
+
+Order: D1 -> D1b -> D4 oracle (go/no-go) -> D2 -> D3 -> D4 claim -> D4s (after the box, whatever its outcome); D5a -> D6 may run
+in parallel after D1; D5b after D3's validity study. The GPU budget is in `docs/DIEL.md` §8 (about 27 h core to 38 h with everything,
+summed from its table). The games PRs (D5a to D5b) need the owner's go before merging; the owner alone
+can verify the look of day and night, the Metal numbers (golden re-pin, steps/s, whether the Day speed holds), the wording of
+the chronicle lines and the power's caution, and the thresholds of 49.7.
+
 ## Review log
 
 Each critic issue was verified against the text and, where it made a numeric claim, re-run in
@@ -15291,6 +15571,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I89 | fix: GUI only, **no engine file, config key, default or digest changes**; the golden command-line tests unchanged. (1) The sidebar listed a grown seed (`planet-1-grow`) as its own top-level row for the moment between the end of the pipeline (no pending planet any more) and the scan that reads the new planet's `play.json`: the open world had no row, so the nesting of `tree` had no parent. It was not the Watch row excluding the open world (it does not). `LibraryState.resolve` now lists a placeholder row for the open world when its `<name>-grow` seed is in the library, so the seed stays nested (rule in §33.4.12); tested for Starting, Live and Paused. (2) The one place that still said *Repository* to the user ("Use Set up environment, in the Repository box.") now says "Use Set up engine, on the Worlds page."; `NameAuditTests.noStringOfTheAppSaysRepository` scans every string of `AlifeControl` and `AlifeCore` for the word (the command line's `<repository folder>` placeholder and a path that no folder has are the two exceptions). |
 | I90 | test: symmetry goldens, an instrument-qualification suite (new §48; tests only: `tests/symmetry_helpers.py`, `tests/test_symmetry_goldens.py`; **no engine file, config key, default or digest changes**, the identity matrix is bit-identical). Six transformations the engine claims are irrelevant, each applied to a state, run, compared and with a negative control: permutation of the storage rows (exact once the three row-indexed draws are keyed by uid; the draws are the finding: sensing noise S5, bond priority S9, birth order S16), torus translation (within tolerance, flips by float-to-integer quantisation at step 17 to 20), mirror in x with the brain mirrored (within tolerance, flip at 21), the Elman RNN's hidden-unit gauge group (sign flips exact, permutations within tolerance), HEALPix lattice rotations (the quarter turn about the polar axis exact, the half turns within tolerance; feasibility argued in §48), and rotation of the tag (within tolerance). Findings: the bond priority only decides which end of a mutual handshake is the recorded proposer (`KIN_BOND_*` counters), `MAX_OCCUPANCY` is not translation invariant, mutation is not covariant (tests with births off where the genome is transformed). Runs on the CPU device by a stream context. |
 | I91 | ci: the GUI's Swift tests in CI, and a stall hunt (test infrastructure and `.github/workflows/ci.yml` only; **no engine file, GUI source, config key, default or digest changes**). (1) A `swift` job on `macos-26` (first `macos-15`, see the result) runs `swift build --build-tests` and `swift test` with `gui/.build` cached (§22.0 CI); GPU tests off; the YAML parses (checked locally), the job itself is unrun. (2) The intermittent stall of the full Swift run (about 150 s in which many tests finish together and the timing-sensitive ones fail; one run in five or so in the owner's sessions) was hunted with `gui/scripts/stall-hunt.sh`, which repeats `swift test` and, when a run passes its normal time by 30 s, takes two `sample`s of the test process with the power assertions, thread count and load. Twelve consecutive full runs on the Mac (macOS 27.2, Xcode 27.2, the App Nap activity of `TestProcess` in place) took 175 to 190 s with no stall, and four more under a saturated GPU (an MLX matmul loop, 99% device utilisation) took 198 to 219 s with none, so **the cause is not found**. Not the cause, as far as these runs show: App Nap (the `TestProcess` assertion was held during the 2026-11-02 23:01 stall, per `pmset -g log`) and GPU contention. Two concurrent full runs do not stall but fail each other's hit-testing tests (`WorldInputTests`: the off-screen windows of two processes overlap in screen coordinates), so one machine should not run two full suites at once. No fix was made: there was nothing captured to base one on. The script is the tool for the next occurrence. | **Stall hunt, 2026-11-04:** with background priority lowered (zsh BG_NICE, process state `SN`), 1 failing stall in 6 runs (318 s; the main thread sat in a 20 ms `RunLoop.run(until:)` for over 8 s, while a browser started video playback); at normal priority, 0 failing stalls in 17 runs (one slow passing run, 218 s). Probable cause: a low-priority test process starved by foreground work; not proven. The script now sets `NO_BG_NICE`, and its threshold is 260 s. **CI, 2026-11-04:** the first `swift` job on `macos-15` (Xcode 16.4, Swift 6.1.2) failed in Build: `RepoPathStore.swift:10`, "conformance to 'Sendable' must occur in the same source file as class 'UserDefaults'" (the macOS 26 SDK declares it `Sendable`); the job now runs on `macos-26` (Xcode 26.6, the image default), the oldest image with that SDK.
+| I92 | docs: DESIGN §49, the diel vertical migration extension (the normative text of `docs/DIEL.md` Revision 2, approved by the owner 2026-11-04; PR D0 of the diel series D0 to D6). **Docs only; no engine change** (no file under `src/`, `tests/` or `gui/`, no config key, default, layout, digest or golden changes; nothing in §49 is built until D1). §49 states the `[diel]` keys with defaults (all off) and validation, the light factor on the photic term only (`V = min(1, B + L Pk)`, `L = 1` bit-identical to the static profile) and why no ledger term is needed (the food source stays `INJECT_REGEN = sum(inc)`), the sky-light input (`sense`, D_IN 84 -> 85, silent, four hand-computed goldens), the matched control (`V_bar`, `L_bar`), the host-side observers and chronicle events (kinds 22 and 23), the oracle pilot and its GO/SMALL/STOP rule, the Long Night power (`diel_ctl`, no ledger term), the claim world (height 40, day 4,000, amendment A1) with the fallback ladder (P = 8,000 and H = 80, then STOP), the pre-committed sphere repeat and the build plan D0 to D6 with each PR's tests. One change from DIEL.md when condensing, now made in DIEL.md too (the same commit series): the first harmonic of the migration statistic uses the bin-centre hour angle `H_b = 2 pi (b + 1/2)/8 - pi`, because DIEL 5.1's bins put local noon in bin 4 while the old `cos(2 pi (b + 1/2)/8)` peaked at midnight; D3's test fixes it with a planted noon peak. Six further inconsistencies of `docs/DIEL.md` are fixed there: the status line and §9 now say approved on 2026-11-04; one GPU total, summed from the §8 table (about 27 h core, 38 h everything; §0, §8, §12 and §49.10 agree); the dead "§1.2" reference is §1.1 and "section 52" is 49; the report clause of §5.3 speaks of the photic-band share; `diel.oracle` is one definition (the start assignment with inheritance, §7.0 and the config table); the Long Night lower bound is `max(0.2, acos(1 - tw/2)/pi)` in DIEL 6 and §49.8. |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense
