@@ -103,7 +103,13 @@ enum BenchScene {
         let positions = (0..<rows).map { _ in SIMD3<Float>(next() * size, next() * size, next() * height) }
         var frame = TestFrames.frame(positions, step: step)
         frame.rgb = (0..<rows).map { WorldPalette.slots[$0 % WorldPalette.slots.count] }
-        frame.bonds = (0..<max(rows - 1, 0)).filter { $0 % 5 < 2 }.flatMap { [UInt32($0), UInt32($0 + 1)] }
+        // (spelled out with types: the one-line filter-flatMap chain exceeds the type checker's time limit on CI's Swift 6.3)
+        var bonds: [UInt32] = []
+        for i in 0..<max(rows - 1, 0) where i % 5 < 2 {
+            bonds.append(UInt32(i))
+            bonds.append(UInt32(i + 1))
+        }
+        frame.bonds = bonds
         return frame
     }
 }
