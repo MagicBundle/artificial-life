@@ -176,6 +176,25 @@ import Testing
         #expect(shell.contains("hidesStop: shell.page == .watch && shell.watchForm == .research && shell.observedGrowing"), "Watch's Run panel holds the one Stop")
     }
 
+    /// The folder is "the alife folder" everywhere the user reads: no string of either module says "repository". Two literals are not words
+    /// the user reads: the command line's placeholder (a golden test pins it) and a path that no folder has.
+    @Test func noStringOfTheAppSaysRepository() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let allowed = ["<repository folder>", "/var/empty/alife-no-repository-chosen"]
+        var files = 0
+        for dir in ["AlifeControl", "AlifeCore"] {
+            let folder = root.appendingPathComponent("Sources/\(dir)")
+            for name in try FileManager.default.contentsOfDirectory(atPath: folder.path) where name.hasSuffix(".swift") {
+                files += 1
+                let source = try String(contentsOf: folder.appendingPathComponent(name), encoding: .utf8)
+                for text in literals(source) where text.localizedCaseInsensitiveContains("repositor") {
+                    #expect(allowed.contains { text.contains($0) }, "'repository' in \(name): \"\(text)\"")
+                }
+            }
+        }
+        #expect(files > 50)
+    }
+
     @Test func theLabelsOfTheMenusAndTheSidebarAreThePageTitles() {
         #expect(ShellPage.allCases.map(\.title) == ["Worlds", "Watch", "Activity", "New world", "Details"])
         #expect(ShellPage.sidebarPages.map(\.title) == ["Worlds", "Watch", "Activity", "New world"])
