@@ -14,29 +14,32 @@ GPU neural-agent ecologies already exist:
 - **JaxLife** reports rudimentary communication, agriculture and tool use, with complexity growing with compute.
 - **EcoEvoJax** runs evolvable recurrent nets on a grid, with thousands of agents.
 - **Coralai** evolves NEAT networks inside a neural cellular automaton.
-- **ALIEN** runs CUDA particle organisms.
+- **ALIEN** runs CUDA particle organisms. Per its README, each cell has its own small neural network, cells are joined by elastic bonds that "carry energy and signals", and selection arises without a fitness function.
+- **Division Blocks** (Spector, Klein and Feinstein, GECCO 2007) already combined physically simulated 3D blocks that divide and form joints, exchange resources, and are controlled by evolving recurrent neural networks, in an environment where energy is approximately conserved and all of it comes from a simulated sun.
 
 A claim of emergent communication or agriculture is therefore not new. It would have to be framed against JaxLife.
 
-No platform found combines the following:
+No platform found in our search (2026-11-04) combines the following:
 
 | feature | nearest prior work |
 |---|---|
-| exact integer energy ledger with a closure test | none. Avida's "merit" and EcoEvoJax's energy are accounted but not conserved. Flow-Lenia conserves mass by design. ALIEN's conservation is only qualitative. |
-| bit-exact deterministic replay | Coralai saves the RNG state in checkpoints, but bit-exact reproducibility is not claimed |
+| exact integer energy ledger with a closure test | none. Avida's "merit" and EcoEvoJax's energy are accounted but not conserved. Flow-Lenia conserves mass by design. ALIEN's README says "Energy never appears out of nothing" and describes energy circulating between cells, free particles and an optional external pool. It gives no ledger or closure test. Division Blocks states energy is "approximately conserved". |
+| bit-exact deterministic replay | Not found in our search (2026-11-04). The Coralai abstract and ALIEN README make no determinism or reproducibility claim (ALIEN's docs beyond the README were not checked); we did not check Coralai's code or Division Blocks |
 | an environment-only director acting during a run | ASAL++ (an LLM picks Lenia targets, scored by a vision-language judge) and the ASAL outer loop (a parameter search before the run) |
 | director decisions logged and replayable | none found |
 | LLM director compared against random or parameter-sweep baselines on the same budget | none found. ASAL and ASAL++ report no such controls. |
-| per-agent recurrent controllers in continuous space with bonds, bodies and a ledger | each piece exists separately (Polyworld, ALIEN, Coralai). No single prior work combines them. |
+| per-agent recurrent controllers in continuous space with bonds, bodies and a ledger | exists in pieces, and substantially combined by Division Blocks (recurrent controllers, division, joints, resource exchange, approximately conserved energy, ecological selection) and ALIEN (per-cell networks, bonds carrying energy and signals, evolution without a fitness function). Not a novelty claim. |
 
-**The novelty is the combination, not any single feature.** The most defensible contribution is the environment-only director:
+**The novelty is not the agent architecture.** Division Blocks and ALIEN cover most of it. What we did not find elsewhere (not found in our search, 2026-11-04) is the exact integer ledger with a closure test, bit-exact replay, and the environment-only director. The most defensible contribution is the director:
 - its actions are checked against the ledger;
 - its decisions are replayable;
-- it is compared with matched non-LLM baselines.
+- it is compared with matched non-LLM baselines (the yoked random controls).
 
 That is P6 below, and most of it is already built (`docs/DIRECTOR.md`, steps 1–3).
 
 The ledger also matters as a safeguard against reward hacking, a documented failure of self-modifying agents. A Darwin Gödel Machine lineage removed its own hallucination-detection markers to reach a perfect score. A ledger that must close exactly rules out a whole class of such hacks by construction.
+
+**Possible future direction (not current work): a quantum substrate.** A search on 2026-11-03 (summarised in `docs/brainstorming-Fable-November.md` section 8) found no open project with quantum-walk organisms in an artificial life. The nearest is Alvarez-Rodriguez, Sanz, Lamata and Solano, "Quantum Artificial Life in an IBM Quantum Computer" (arXiv 1711.09442, 2017), which encodes self-replication, mutation, interaction and death on IBM hardware; its arXiv page links no code. This is a search result, not a proof of absence, and no work on it is planned.
 
 ## 2. The candidate projects
 
@@ -96,11 +99,13 @@ All sources were found via search; full texts were not read.
 - Flow-Lenia: https://arxiv.org/abs/2212.07906 ; https://arxiv.org/pdf/2506.08569
 - Leniabreeder: https://arxiv.org/pdf/2406.04235
 - ALIEN: https://github.com/chrxh/alien
+- Division Blocks: Spector, Klein & Feinstein, GECCO 2007, http://faculty.hampshire.edu/lspector/db-gecco-2007/ (abstract also read in the ACM PDF)
 - Coralai: https://arxiv.org/abs/2406.09654
 - EcoEvoJax: https://arxiv.org/pdf/2302.09334
 - JaxLife: https://arxiv.org/pdf/2409.00853
 - Neural MMO: https://arxiv.org/abs/1903.00784
 - Neuroevolution Arena (2026): https://arxiv.org/pdf/2608.10323
+- Quantum Artificial Life in an IBM Quantum Computer: https://arxiv.org/abs/1711.09442
 
 **Metrics**
 - Hoel, Albantakis & Tononi, PNAS 2013: https://pmc.ncbi.nlm.nih.gov/articles/PMC3856819
