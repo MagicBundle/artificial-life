@@ -635,6 +635,10 @@ def init_state(cfg: Config) -> State | State3 | StateS:
     """Founders in rows ``[0, n_init)``, canonical dead rows elsewhere, seeded by ``run.seed``; evaluated."""
     s = _initial_state(cfg)
     mx.eval(s)
+    if cfg.diel.oracle > 0:  # static: a fresh oracle run labels its founders (DESIGN §49.7; a pilot forks)
+        from alife import diel_oracle
+
+        s = diel_oracle.assign(s, cfg)
     return s
 
 
