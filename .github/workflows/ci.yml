@@ -46,6 +46,35 @@ jobs:
         # (tests/worker_cache.py, DESIGN §22.0). loadfile keeps a file's tests in order on one worker.
         run: uv run pytest -m "not slow" -q -n 4 --dist loadfile
 
+  swift:
+    if: github.event_name != 'schedule'
+    # The GUI's Swift tests (gui/, SwiftPM; DESIGN §22.0). Pinned to macos-15 (Apple silicon, Xcode 16.x with Swift 6.1 or 6.2):
+    # Package.swift needs tools version 6.0 and macOS 14, and macos-latest moving to a newer image would change the compiler under
+    # the tests without a commit. The GPU tests stay off (ALIFE_GPU_TESTS is not set: the runner's virtualised GPU is not the
+    # Metal the shader tests were written against). The Python checks of the GUI (tests/test_gui_sync.py, tests/test_app_bundles.py)
+    # are text checks that run in the test job above, so they are not repeated here.
+    runs-on: macos-15
+    # On a Mac a cold build takes under a minute and the test run about three (a stall of 2.5 minutes was seen on one, I91); the
+    # package has no dependencies to fetch. A hosted runner is slower and has fewer cores, so 40 minutes is generous.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+      - uses: actions/cache@v4
+        with:
+          path: gui/.build
+          key: ${{ runner.os }}-${{ runner.arch }}-swiftpm-${{ hashFiles('gui/Package.swift') }}-${{ hashFiles('gui/Sources/**', 'gui/Tests/**') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-swiftpm-${{ hashFiles('gui/Package.swift') }}-
+      - name: Build
+        working-directory: gui
+        run: swift build --build-tests
+      - name: Tests
+        working-directory: gui
+        run: swift test
+
   nightly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04  # pinned with the test job: the goldens depend on the image's g++
