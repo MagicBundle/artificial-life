@@ -48,12 +48,13 @@ jobs:
 
   swift:
     if: github.event_name != 'schedule'
-    # The GUI's Swift tests (gui/, SwiftPM; DESIGN §22.0). Pinned to macos-15 (Apple silicon, Xcode 16.x with Swift 6.1 or 6.2):
-    # Package.swift needs tools version 6.0 and macOS 14, and macos-latest moving to a newer image would change the compiler under
-    # the tests without a commit. The GPU tests stay off (ALIFE_GPU_TESTS is not set: the runner's virtualised GPU is not the
+    # The GUI's Swift tests (gui/, SwiftPM; DESIGN §22.0). Pinned to macos-26 (Apple silicon, Xcode 26.x, the image's default):
+    # the sources need the macOS 26 SDK (`ToolbarSpacer` behind `#available(macOS 26.0, *)`, and `UserDefaults` being `Sendable`
+    # in that SDK; on macos-15's Xcode 16.4 the build fails with "conformance to 'Sendable' must occur in the same source file",
+    # I91), and macos-latest moving to a newer image would change the compiler under the tests without a commit. The GPU tests stay off (ALIFE_GPU_TESTS is not set: the runner's virtualised GPU is not the
     # Metal the shader tests were written against). The Python checks of the GUI (tests/test_gui_sync.py, tests/test_app_bundles.py)
     # are text checks that run in the test job above, so they are not repeated here.
-    runs-on: macos-15
+    runs-on: macos-26
     # On a Mac a cold build takes under a minute and the test run about three (a stall of 2.5 minutes was seen on one, I91); the
     # package has no dependencies to fetch. A hosted runner is slower and has fewer cores, so 40 minutes is generous.
     timeout-minutes: 40
