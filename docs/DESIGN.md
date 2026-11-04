@@ -15151,7 +15151,7 @@ not tested. The sphere's mirror is not tested (the box's is row 3); the weather,
 (`docs/brainstorming-Fable-November.md` §1 "Not to do"), the compiled step (the eager step is the object compared; the
 compiled step is tied to it by `test_determinism`), Metal (see Method).
 
-## 49. Diel vertical migration (a day-night light cycle on the photic food band; the diel series, PRs D0 to D6; **D1, D1b and D1c built**, rows I93, I94 and I96)
+## 49. Diel vertical migration (a day-night light cycle on the photic food band; the diel series, PRs D0 to D6; **D1, D1b, D2 and D1c built**, rows I93 to I96)
 
 Normative text of the diel extension. The specification with the reasoning, the evidence (`file:line`), the review findings and
 the owner decisions is `docs/DIEL.md` (Revision 2, approved by the owner on 2026-11-04); this section states what the engine
@@ -15163,9 +15163,10 @@ this section from "will" to "does" in the same change.** The section number 49 i
 light factor, matched control, `V_bar`, the `diel_ctl` state and its ramp, the probes, the bench mirror, the `diel`
 overlay); 49.11 records what D1 does where it differs from the text above. `sense`, `extinction`, `sense_control`,
 `silent_init` (D2) are declared and refused at non-default values. **After D1b (row I94)** the oracle pilot is built
-(`diel.oracle`, 49.7; what D1b does where it differs from 49.7 is in 49.12). **After D1c (row I96)** the first pilot's
-result, the round-trip schedule (`diel.oracle_schedule = 2`) and the lineage-fitness rule that replaced 49.7's measure for
-the second pilot are in 49.14.
+(`diel.oracle`, 49.7; what D1b does where it differs from 49.7 is in 49.12). **After D2 (row I95)** the sky-light input
+`diel.sense` is built (49.4; as built: 49.13), with `extinction`, `sense_control` and `silent_init`. **After D1c (row
+I96)** the first pilot's result, the round-trip schedule (`diel.oracle_schedule = 2`) and the lineage-fitness rule that
+replaced 49.7's measure for the second pilot are in 49.14.
 
 ### 49.1 What it is
 
@@ -15203,7 +15204,7 @@ existing config hashes and files are unchanged and `config.json` omits the secti
   <= 1`; `0 <= night_level < 1`; `control == "mean"`, `sense`, `sense_control`, `oracle` need `period > 0`; `sense_control ==
   "mute"` needs `sense`; `oracle` in [0, 100] and needs `control == "none"`; `extinction >= 0`.
 * `season_period == 0` or `season_period >= 8 * period`.
-* **`sense = true` is refused by `validate` until D2 lands** (D1 adds the key, not the layout block).
+* `sense = true` was refused by `validate` until D2 landed (D1 added the key, not the layout block); D2 allows it (49.13).
 * `alife run --director live` refuses a diel world until a diel exemption of the rule tier's fall criterion exists (§26.5;
   the exemption is deferred); `off`, `replay` and the player mode are allowed. The first claim runs with seasons, weather and
   director off.
@@ -15475,7 +15476,7 @@ the text above does not say, or says differently:
 * **`control = "mean"`** returns `V_bar` at every step (the cycle's clock and the ramp still run; `V_bar` is built at the
   configured `day_frac`, not the effective one, so Long Night does not move the control's food). `V_bar` is accumulated over
   the 720 phases in float64 one phase at a time (a (720, FZ, Npix) array is 550 MB on `64k3s`), cached per config.
-* **Validation**, beyond 49.2: `extinction != 0` and `silent_init = false` are refused until D2 as well as `sense` (both act
+* **Validation**, beyond 49.2 (in D1; D2 replaced it, 49.13): `extinction != 0` and `silent_init = false` were refused until D2 as well as `sense` (both act
   on the light input only, so a non-default value would change the hash with no effect), `oracle > 0` until D1b; the
   rows-per-day bound is checked as `period // metrics_every >= 12`. `--director live` is refused through `run.director ==
   "live"` in the row's `validate`, which `alife run`, `resume` and `fork` reach.
@@ -15488,7 +15489,7 @@ the text above does not say, or says differently:
 * **The geometry lint** allowlists the box half of `diel.split` (`world.field_cell` 1, `lattice` 1, reason "box branch";
   `diel.py` in `NOT_IN_SPEC_AUDIT`).
 * **The overlay** `diel` is the claim world's cycle (`world.height = 40`, `period = 4000`, `day_frac 0.5`, `twilight 0.25`,
-  `night_level 0`, `global`) without `sense` (refused until D2): today it gives arm N; D and K add `sense` after D2.
+  `night_level 0`, `global`) without `sense`: it gives arm N; D and K add `--set diel.sense=true` (D2, 49.13).
 * **Tests** (`tests/test_diel.py`, 60 cases): defaults, hash and `config.json`; the registry row (index 6, no footprint, the
   tail position after `niche`); a validation table (25 refusals, 4 acceptances); full light bit-identical; device light
   against the float64 reference (2e-6); terminator geometry (subsolar pixel at longitude `-th`, daily swing `cos(lat)`,
@@ -15563,6 +15564,33 @@ the override), `metrics.py` (the interval keys), `state.init_state` and `cli._pr
   the bench mirror bit-equal with the oracle; the pilot fork assigning from the source's rows, a continuing fork keeping the
   labels, resume bitwise; a run writing the 24 interval keys; the analysis on planted synthetic rows (GO, SMALL, STOP, nulls,
   reproducible bootstrap, photic share, the pinned hash, the driver's dry run).
+
+### 49.13 D2 as built (row I95)
+
+Files: `src/alife/diel.py` (`sense_input`, `sense_scale`, `l_bar`), the `diel` registry row (`ext/diel.py`: `layout_on`,
+the token `diel1@1`, the block `light`, the `inputs` hook, validation, `enable`), `tests/test_diel_sense.py`.
+
+* **Layout** as 49.4: `layout_on = period > 0 and sense`, one `Block("light", 1, silent = silent_init)`, mask bit 6, genome
+  layout version `base + 4*64` (258 in 3D), 3D `D_IN` 84 -> 85 (`IN_LIGHT` 84), `D_OUT` unchanged.
+* **The input**: `clip(1 + ln(I + e)/ln(1/e), 0, 1)`, `e = 1e-3`, with `I` the step's own light at the **ramped** day fraction
+  (`ramp(diel_ctl)[1]`, the value this step's food regrows under, so cue and food agree while Long Night ramps), the pixel's
+  in terminator mode (`ctx.fcell % Npix`), times `exp(-(H - z)/extinction)` when `extinction > 0`; under `control = "mean"` or
+  `sense_control = "mute"` the day mean `L_bar` (host float64 over the 720 phases at the configured `day_frac`: a scalar in
+  global mode, per pixel in terminator mode). The goldens of 49.4 hold to 1e-3 (`f(4.5e-5)` is 0.00638, which 49.4 rounds to
+  0.0065).
+* **Validation**: `extinction != 0` and `silent_init = false` need `sense` (inert otherwise); `sense_control = "mute"` needs
+  `sense` (49.2).
+* **Deviations.** (1) `sense_control` is changed by a **fork** of a lineage (the mute fork of E5 is a copy of a D lineage),
+  not by a resume: a resume admits only unhashed keys and `sense_control` changes the trajectory. (2) `alife migrate --enable
+  diel` adds the cycle **and** the light row to a diel-off evolved source (`enable` now sets `sense = true`); a diel world
+  without the sense cannot gain it by migration (an enabled feature never changes its layout, §43.8), so arm N (no sense) is a
+  fresh run.
+* **Tests**: the layout; validation; the goldens; the device input against the float64 reference over the day (box and
+  sphere), per pixel in terminator mode, and with depth under `extinction = 35`; `L_bar` under the control and the mute
+  setting; the per-pixel day mean; the silent row of founders and immigrants and the ledger over two days with the sense on;
+  the migration adding a zero row and behaving exactly as a fork with the cycle and no sense (no births in the window); a mute
+  fork sensing `L_bar`; the bench mirror bit-equal with the input.
+
 ### 49.14 The first oracle pilot; D1c, the round-trip schedule and the lineage-fitness rule (row I96)
 
 **The first pilot** (D4's go/no-go; run 2026-11-05 on main `cc0056f`, `runs/diel_pilot_2026-11-05`; seeds 21, 22, 23; a
@@ -15781,6 +15809,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I92 | docs: DESIGN §49, the diel vertical migration extension (the normative text of `docs/DIEL.md` Revision 2, approved by the owner 2026-11-04; PR D0 of the diel series D0 to D6). **Docs only; no engine change** (no file under `src/`, `tests/` or `gui/`, no config key, default, layout, digest or golden changes; nothing in §49 is built until D1). §49 states the `[diel]` keys with defaults (all off) and validation, the light factor on the photic term only (`V = min(1, B + L Pk)`, `L = 1` bit-identical to the static profile) and why no ledger term is needed (the food source stays `INJECT_REGEN = sum(inc)`), the sky-light input (`sense`, D_IN 84 -> 85, silent, four hand-computed goldens), the matched control (`V_bar`, `L_bar`), the host-side observers and chronicle events (kinds 22 and 23), the oracle pilot and its GO/SMALL/STOP rule, the Long Night power (`diel_ctl`, no ledger term), the claim world (height 40, day 4,000, amendment A1) with the fallback ladder (P = 8,000 and H = 80, then STOP), the pre-committed sphere repeat and the build plan D0 to D6 with each PR's tests. One change from DIEL.md when condensing, now made in DIEL.md too (the same commit series): the first harmonic of the migration statistic uses the bin-centre hour angle `H_b = 2 pi (b + 1/2)/8 - pi`, because DIEL 5.1's bins put local noon in bin 4 while the old `cos(2 pi (b + 1/2)/8)` peaked at midnight; D3's test fixes it with a planted noon peak. Six further inconsistencies of `docs/DIEL.md` are fixed there: the status line and §9 now say approved on 2026-11-04; one GPU total, summed from the §8 table (about 27 h core, 38 h everything; §0, §8, §12 and §49.10 agree); the dead "§1.2" reference is §1.1 and "section 52" is 49; the report clause of §5.3 speaks of the photic-band share; `diel.oracle` is one definition (the start assignment with inheritance, §7.0 and the config table); the Long Night lower bound is `max(0.2, acos(1 - tw/2)/pi)` in DIEL 6 and §49.8. |
 | I93 | feat: diel D1, the engine core of DESIGN §49 behind `diel.period` (default 0, off): `DielConfig` (11 keys, all in `POST_V01_KEYS` and `SERIAL_OMIT_KEYS` through the registry), the registry row `diel` (extension index 6, no brain footprint, `TAIL_ORDER` slot after `niche`), validation (`sense`, `extinction`, `silent_init` refused until D2, `oracle` until D1b, `--director live` refused), `alife.diel` (the light factor in global and terminator modes, the split profile with full light selecting the static profile bit for bit, `V_bar` over 720 phases, the `diel_ctl` ramp), the `diel=` keyword through the fields code, `niche.update`, the step, the bench mirror and the metrics probes, the conditional state field `diel_ctl` (2,) float32, the `diel` overlay. **Off: bit-identical** (identity matrix 0 DIFF against `2ec1f9b`; no file, hash, layout, counter or digest changes). On: the ledger closes over two days on `tiny3d` and `tiny3s`; per-platform golden pinned for the CPU. Deviations recorded in §49.11: the bit-identity by `where(S >= 1)`, the ramp before the light, no `DielLevers.swift` until D6 (every key CLI-only), the regeneration reference exact against the probe and within one quantum per cell of float64; a fork resets `diel_ctl` to the new config's rest (a review finding, fixed). |
 | I94 | feat: diel D1b, the depth-aware oracle pilot of DESIGN §49.7 behind `diel.oracle` (default 0; CLI only): `alife.diel_oracle` (assignment by uid hash at a fork's start or a fresh run's founders, strata from the four z bands, the reachable schedule, the cap-1 override and the scripted `mo.buoy` before the costs, no ledger term), the conditional per-agent int8 field `diel_orc` (inherited, immigrants 0), 24 harvest counters (oracle and comparison, per stratum, photic band and half of the day; 49.7 says 12), the per-stratum energy rows, `alife.analysis.diel_pilot` (G per stratum and pooled, day-block bootstrap, Holm, GO/SMALL/STOP, `rule_hash`) and `scripts/diel_pilot.py`. **Off: bit-identical** (identity matrix 0 DIFF; `oracle = 0` traces nothing new). Recorded in §49.12: global mode only, the counters for both groups, the analysis' judgment calls; a fork that changes a non-zero oracle is refused (review finding). Also fixes D1's omission of the `diel` preset from the GUI test list `PresetFileTests.presetNames` (found by the first full Swift CI run, I91). |
+| I95 | feat: diel D2, the sky-light brain input of DESIGN §49.4 behind `diel.sense` (default false): the `light` block (token `diel1@1`, mask bit 6, genome layout version base + 4*64, 3D `D_IN` 85, silent at founders and immigrants), `diel.sense_input` (log-scaled sky light of the step at the ramped day fraction, per pixel in terminator mode, the `extinction` arm, `L_bar` under the matched control and the mute setting), validation, `alife migrate --enable diel` adding the silent row. **Off: bit-identical** (identity matrix 0 DIFF). Deviations in §49.13: the mute setting by a fork, not a resume; the migration only from a diel-off source. |
 | I96 | feat: diel D1c, the first oracle pilot's result and the redesign for the second (§49.14): the first pilot (D1b's schedule, 3 seeds) gave no `G` (the oracle lineages died out by day 2 to 7 in the dusk starvation crash; `G` does not see mortality), so its printed SMALL carries no information. `diel.oracle_schedule` (default 1, D1b's; CLI only; post v0.1): schedule 2, round trips that leave the oracle rows at home a margin before dusk and dawn, by day to the lowest wholly photic field layer where reachable. `alife.analysis.diel_pilot2`: the lineage-fitness rule (censored daily increments of `ln(N_O/N_C)`, GO / SMALL / STOP / INVALID, `rule_hash` `0f4b7da9…`), set post hoc and approved by the owner before the second pilot; under it the first pilot reads STOP (`w` about -1 per day). **The second pilot (schedule 2, 3 seeds): STOP**, pooled `w` -0.68 per day (90% -0.83 to -0.53), every stratum negative; the box long runs are not spent. Driver `--schedule`, `--warm-from`. **Off and schedule 1: unchanged** (identity matrix 0 DIFF). |
 
 **Open questions for the user.**
