@@ -1,6 +1,6 @@
 # Diel vertical migration: a day-night light cycle on the photic food band (design specification)
 
-Status: Revision 1 (after the independent review `SP/diel_review/review.md`; Revision 0 is `spec_rev0.md`; the last section lists each finding and its disposition). Draft for the owner, docs only, nothing built or run. Date 2026-11-04. Source: `docs/brainstorming-Fable-November.md`
+Status: **Revision 2: decisions recorded (§9), awaiting owner approval to build.** Revision 1 (`spec_rev1.md`) answered the independent review (`SP/diel_review/review.md`, §11); Revision 0 is `spec_rev0.md`; §12 lists the changes of Revision 2. Docs only, nothing built or run. Date 2026-11-04. Source: `docs/brainstorming-Fable-November.md`
 §5 item 4 (line 203) and §9 item 1 (line 353). Paths are relative to the repo root (main checkout, read-only). Evidence is
 cited as `file:line`; a statement with no citation is a design proposal, and "UNVERIFIED" marks what I could not check.
 
@@ -25,8 +25,10 @@ cited as `file:line`; a statement with no citation is a design proposal, and "UN
 * Pre-registered claim C1 is "a daily vertical **rhythm**" in the box (`mini3d`, global mode) with lineages as the unit,
   paired against the mean-matched control; the word "**evolved migration**" is earned only by a discriminating endpoint
   (E5, a mute fork). Before any long run, an **oracle pilot** (scripted migrators) bounds the benefit and defines the
-  go/no-go (§7.0). Cost of the claim after a go: about 18 runs of 300,000 steps plus 6 short mute forks.
-* Build: eight PRs; the engine core (D1) is 600 to 900 source lines.
+  go/no-go (§7.0), depth-aware and stratified by band. The box world is `mini3d` with **height 40** and `P = 4,000`
+  (recorded amendment A1). A **sphere repeat is pre-committed** whatever the box outcome (§7.5): three arms on `mini3s`,
+  weather on and off.
+* Build: ten PRs; the engine core (D1) is 600 to 900 source lines; total GPU about 25 to 35 h (§8).
 
 ## 1. How light and food work today (evidence)
 
@@ -279,6 +281,12 @@ defaults (DESIGN §43.7 "defaults of omitted keys never change").
 * `alife migrate --enable diel` (`ExtSpec.enable`, DESIGN §43.8) adds the block to an evolved source (for example
   `runs/mini3d_s0`, 500,000 steps, `docs/HANDOVER.md:726`): the new W1 row is zero, so the migrated population behaves as
   before until it adapts (`state.py:851-855` describes the same property).
+* **Hand-computed goldens of the log formula** `f(I) = clip(1 + ln(I + e)/ln(1/e), 0, 1)`, `e = 1e-3`, `ln(1/e) = 6.9078`
+  (D2's test must reproduce them to 1e-3 and then compare the device against a host float64 reference on a grid):
+  `f(0) = 0`; `f(1) = 1` (the raw value 1.0001 is clipped); `f(4.5e-5) = 0.0065` (the floor at depth 80 under the Revision 0
+  attenuation, 0.007); `f(8.3e-4) = 0.0875`. **The coordinator's list gave `f(8.3e-4) ~ 0.13`; I get 0.0875** (`ln(1.83e-3) =
+  -6.3035`, `1 - 6.3035/6.9078`). A value of 0.13 needs `I = 1.45e-3`. I record 0.0875 and ask the coordinator to check the
+  source of the 0.13 before D2 pins any number.
 * Layout-affecting keys (`sense`) are start-of-run; a fork changes them only through the migration (DESIGN §43.7).
 * The inert twin (`control = "mean"`, `sense = true`) has the same layout and cost, so a contrast measures the *temporal*
   information only.
@@ -414,28 +422,45 @@ lexicon (`TEMPLATES` at `chronicle.py:63-104`, `tests/test_play_chronicle.py`).
 
 ## 7. Pre-registered first claim (C1), oracle gate and bounds
 
-### 7.0 The oracle pilot (go/no-go before any long run; review H3)
+### 7.0 The oracle pilot (go/no-go before any long run; review H3; decision 5)
 
 * **Why.** M1's lesson (`RESULTS_CALLS.md` §16: "the oracle's ceiling on exposure is not a ceiling on net benefit"). A food
-  share bounds the gain only before the costs. Rising at cap 1 is about 0.025 units/step (§1.3) against a floor-to-top-band
-  distance of at least 56 units in `mini3d` (80 high, band 8): about 2,240 steps of rise against a half-day of 2,000, and
-  sinking is slower still when `gamma` is up to 5; thrust (up to 0.1 units/step) costs energy (`energy.py`, `move_cost`).
-  Realistic migrants are top-band dwellers moving a few units.
-* **The oracle.** `diel.oracle = q` (percent): agents with `uid % 100 < q` have `mo.buoy` forced to 1 when `L > 0.5` and 0
-  otherwise (a `step.py` override of the decoded output before the costs, static branch on `oracle > 0`), so their buoyancy
-  due is paid as usual and the ledger is untouched. A variant forcing the pitch up exploratory ("thrust oracle"). Group
-  membership is by uid hash, so the comparison is within one world, same cells, same cycle.
-* **Measure.** `diel_orc_*` metrics rows: per group, mean energy and count by age bin (`age_mean` machinery,
-  `metrics.py:407`). Gain `G = ln(mean energy of oracle agents / mean energy of the rest)` at ages 300 to 500, pooled over
-  days 10 to 40, 3 seeds, day-block bootstrap, in the cycling world with `sense` irrelevant (the oracle needs no brain).
-  Pilot length 40 days = 160,000 steps = 18 min at 150 steps/s per seed; the oracle fraction is 20%.
-* **Decision rule (frozen before the pilot, hashed; thresholds provisional until the owner agrees):**
-  GO if the lower 90% bound of `G` >= 0.05; SMALL if `G` is between 0.02 and 0.05 (run stage 1 only, with the label ceiling
-  `daily rhythm, small`); **STOP** if the upper 90% bound of `G` < 0.02 at the base setting **and** at the pre-registered
-  variants (`photic_amp` 0.8, `P` 8,000, height 40). A STOP means "the ideal schedule pays less than 2% in this economy", the
-  program does not spend the long runs, and the claim is refuted for this economy, not for the idea.
-* A positive oracle followed by a negative C1 refutes "evolves under this sense and period in this world", not the possibility
-  (the sphere or other `P`).
+  share bounds the gain only before the costs. Rising is slow and costs energy (buoyancy rise at cap 1 about 0.025 units/step,
+  at the founders' cap 0.5 only 0.005; `energy.py:139-141`), so a single textbook schedule is not a fair ceiling: a floor
+  agent cannot do what a top agent does.
+* **The oracle is depth-aware (decision 5a).** Each scripted agent follows the daily schedule **its own band can reach**.
+  Strata (fixed, §below): floor (band 0 of the four equal z bands, `metrics.z_band`, `metrics.py:182`), mid (bands 1-2), top
+  (band 3). The agent has a home height `z_s` (the stratum's centre at its assignment) and, from its own cap, a reachable
+  excursion `up = min(z_top_band_centre - z_s, 0.8 * v_rise(cap) * P * day_frac)` and `down = min(z_s - 1, 0.8 * v_sink *
+  P * (1 - day_frac))`, `v_sink = gravity/drag`. In the lit half it rises (`mo.buoy` = 1) until `z_s + up`, then holds with the
+  balancing lift `b = gravity/(buoyancy_max * buoy_cap)` (clipped to [0,1]); in the dark half it sinks (`b = 0`) until `z_s -
+  down`, then holds. A step.py override of the decoded `mo.buoy` before the costs (static branch on `oracle > 0`), so the
+  buoyancy due is paid as usual and the ledger is untouched. The oracle's cap is raised to 1 for its group (it pays the cap
+  upkeep, `buoyancy_cap_cost`), otherwise the founders' 0.5 cap makes the ceiling a floor; a no-cap-change variant is
+  exploratory. A thrust oracle (pitch up, `move_cost`) is exploratory.
+* **Assignment and strata (decision 5b).** At the pilot's start (after a 40,000-step cycle-on warm-up, the founder boom
+  over) 20% of the living agents (by `uid` hash) get the oracle flag and each records the band it is in; the flag and the
+  stratum are **fixed then and inherited** by children (a conditional per-agent int8 field `diel_orc`, 0 none, 1-3 the
+  stratum, `on_birth = "inherit"`, `ext/base.py:51-59`; immigrants get 0). The rest of the population is the comparison group
+  of the same stratum (the same inheritance of the band tag with flag 0 recorded as -stratum), so the comparison is within
+  one world, same cells, same cycle. Lifespan is about 650 steps, so a start cohort is gone in about 1,000 steps: the
+  inheritance is what makes a 40-day pilot a comparison of lineages, and its caveat is that the groups differ in genes as
+  well as in behaviour (a random split of a mixed population; the seeds and the bootstrap carry that noise).
+* **Measure.** Per stratum, `G_s = ln(mean energy of oracle agents / mean energy of their comparison group)` at ages 300 to
+  500, pooled over days 10 to 40 of the pilot, 3 seeds, day-block bootstrap; pooled `G` over the strata weighted by
+  stratum size; the energy rows are the `age_mean` machinery (`metrics.py:407`) per `diel_orc` value. **Also reported** per
+  stratum, by day and by night (`L > 0.5`): the photic harvest share (harvest q in the photic layers over total harvest q),
+  from 12 counters (3 strata x {photic, all} x {day, night}, ExtSpec `count`, DESIGN §43.4), to tell "could not reach"
+  (the oracle's photic share did not rise) from "reached, did not pay" (it rose and `G_s` did not).
+* **Decision rule (frozen before the pilot, hashed; thresholds are the owner's/reviewer's to confirm):**
+  Holm adjustment across the three strata.
+  **GO** if the pooled lower 90% bound of `G` >= 0.05.
+  **SMALL** if the pooled bound is below that but some stratum's Holm-adjusted lower 90% bound >= 0.05 (label **`daily
+  rhythm, small, niche`**: run stage 1 only; the label ceiling follows).
+  **STOP** if the pooled upper 90% bound < 0.02 **and** every stratum's upper bound < 0.02. STOP means "the ideal schedule
+  of each band pays less than 2% in this economy": the box long runs are not spent and the claim is refuted for this
+  economy, not for the idea. Any other outcome (bounds straddling) is read as SMALL's stage-1 only, never as GO.
+* A GO followed by a negative C1 refutes "evolves under this sense and period in this world", not the possibility.
 
 ### 7.1 Claim, world and arms
 
@@ -445,13 +470,16 @@ and mean food. The words "**evolved migration**" are used only if E5 (the mute f
 surface and passive sinking can produce a daily oscillation with no behaviour at all (lifespan about 0.16 of a day, so each
 individual lives inside one phase; review H2).
 
-* World: `mini3d` + overlay `diel` (`period 4,000`, `day_frac 0.5`, `twilight 0.25`, `night_level 0`, `mode global`,
-  `sense true`, `extinction 0` sky light), seasons off, weather off, director off; 150 steps/s (`HANDOVER.md:726`), 300,000
-  steps = 33 min, 75 days. **P5 (full crossing, Revision 1):** the time to cross from the floor to the top band's centre,
-  `T_cross = (H - 1 - photic_lambda)/v_rise`, with `v_rise` the buoyancy rise at the evolved cap (0.025 at cap 1) must be
-  <= `P*day_frac` (the whole lit half, 2,000 at `P = 4,000`); at `H = 80` it is 2,840 steps: fails by buoyancy, so either thrust crossings are the regime (cost measured by the oracle variant) or the pre-registered remedy is
-  applied before any claim run: **world height 40** (then `T_cross` = 1,240 steps, feasible; food recalibrated in the pilot)
-  else `P = 8,000`. The check is on the full crossing, not on the 20-unit photic band of Revision 0.
+* World: `mini3d` + overlay `diel` with **`world.height = 40`** (`world.size` 160 satisfies height <= size/2, DESIGN §27.1)
+  (`period 4,000`, `day_frac 0.5`, `twilight 0.25`, `night_level 0`, `mode global`, `sense true`, `extinction 0` sky light),
+  seasons off, weather off, director off; 300,000 steps = 75 days; speed at height 40 is UNVERIFIED (assumed at least the
+  150 steps/s of `mini3d`, `HANDOVER.md:726`). **P5 is arithmetic, not a measurement, and fails at the preset height.** With
+  `gravity 0.015`, `buoyancy_max 0.04`, `photic_lambda 8`, `T_cross = (H - 1 - photic_lambda)/v_rise` with `v_rise = 0.04 -
+  0.015 = 0.025` units/step at cap 1: at `H = 80`, 71/0.025 = **2,840 steps > P*day_frac = 2,000**; at `H = 40`,
+  31/0.025 = **1,240 <= 2,000**. **Amendment A1 (recorded and hashed before the pilot): height 40.** Food is recalibrated in
+  the pilot (a half-height column holds less food; the K arm is the reference for P4). The check is on the full crossing, not
+  on the 20-unit photic band of Revision 0; at the founders' cap 0.5 the rise is 0.005 and the crossing needs the cap
+  to evolve, which the oracle's cap-1 group bounds.
 * Arms per lineage: **D** (cycle, sense), **K** (`control = "mean"`, sense; inert twin: senses `L_bar`), **N** (cycle, no
   sense; exploratory, not clock-free, §4.1). Lineage = fresh run from `run.seed` 21..26, same seed in D and K (paired), 300,000
   steps, metrics every 100. Sensitivity arm S (exploratory): D with `extinction = 35`.
@@ -491,9 +519,18 @@ individual lives inside one phase; review H2).
   pilot is rerun once). The realized ratio also enters E1 as a covariate.
 * **P3 (extended, M1)** a night is felt: the standing stock of the photic layers at **dusk and at dawn** is recorded; pass if
   dawn stock <= 50% of dusk stock. The surface is not food-free at night: `resource_diffusion_q8 = 4` (`config.py:187`)
-  moves stock from mid-water (0.489 of stock, 0.079 of regeneration, `RESULTS_3D.md` §4.2) over a 2,000-step night. **Remedy
-  order, pre-registered, each applied at most once, each a recorded amendment before any claim run:** R1 halve
-  `resource_diffusion_q8` to 2 in both arms; R2 `photic_amp` 0.5 to 0.8 in both arms; R3 stop (no claim runs).
+  moves stock from mid-water (0.489 of stock, 0.079 of regeneration, `RESULTS_3D.md` §4.2) over a 2,000-step night.
+* **The fallback ladder (decision 3; replaces Revision 1's R1/R2/R3; each step is a recorded amendment, hashed with the
+  pre-registration before the step is run).** Step 0: `P = 4,000`, `H = 40` (A1). If P1, P2 or P3 fail there: **one**
+  fallback, step 1: `P = 8,000`, `H = 80` (A2; `T_cross` 2,840 <= 4,000), the pilot is re-run in full (oracle included). If
+  P1-P3 fail again: **STOP** (no claim runs). No other world change is allowed; the cap raise of P2 is a calibration of the
+  same step, hashed as part of it. Constants (`gravity 0.015`, `buoyancy_max 0.04`, photic 0.5/8, `regen_max 1700`,
+  `resource_cap 8000`, `resource_diffusion_q8 4`) were re-read on main by the coordinator on 2026-11-04.
+* **The late-bloom extension (pre-registered; decision 3).** If E1 is null over the last 20 days (steps 220,000 to 300,000) but the offline detector of §5.2 (the D3 tool, `DIEL_RULES_VERSION`, independent of D5b) fires in the final
+  10% of the run (steps >= 270,000), the lineage's D and K runs are resumed for 100,000 more steps and E1 is re-evaluated once
+  over the last 20 days of the extension. Any result so obtained is labelled **`late`** and reported as **optional stopping**
+  (both evaluations shown, no p-value adjustment claimed); it can never upgrade a label above `daily rhythm (late, optional
+  stopping)`. Extra cost at most 12 runs x 100,000 steps (about 2.2 h).
 * **P4** population in D within 0.8 to 1.25 of K; lifespan from `age_mean` stated with the ratio lifespan/`P`;
   `ledger_error` 0 on every row; no `diag` error bit.
 * **P5** the full crossing (above).
@@ -514,16 +551,24 @@ Evaluate in order; the first row that matches is the label.
 
 I have no prior on the outcome; M1 was negative with a bounded pressure (`RESULTS_CALLS.md:461`).
 
-### 7.5 The claim world versus the product world (review M7)
+### 7.5 The sphere repeat (pre-committed) and the claim-product gap (review M7; decisions 2 and 6)
 
 The claim is in the **box with a global clock, weather off**. The product is the **sphere with a terminator, weather on**.
-A result in the box says nothing certain about the planet, positive or negative. Two differences matter: the terminator
-(horizontal chase is possible at `mini3s`, where the equatorial terminator speed is 0.075 against a swim speed of at most 0.1,
-and not at `64k3s` with `P = 3,000`, 0.19), and rain, which is added after the floor and is **not** scaled
-(`fields.py:140-141`), so with weather on the photic layers receive food at night and the contrast is diluted by an amount not
-measured here (the rain share of regeneration in `stormsph` is UNVERIFIED). Handling: D1 documents it; the sphere repeat is run
-with weather on and off and reports the dilution; an optional key `diel.rain_follow` (scale the rain term in the photic layers
-by `L/L_bar`) is deferred and offered as owner decision 6.
+A result in the box says nothing certain about the planet. Therefore the **sphere repeat is pre-committed and runs whatever
+the box outcome is** (a box STOP at the oracle gate does not cancel it; it has its own oracle pilot, same rule, on `mini3s`):
+
+* World `mini3s` (Rp 48, H 24: `T_cross` = (24-1-8)/0.025 = 600 steps <= 2,000), `P = 4,000`, `sense true`, sky light.
+* **Three arms** per lineage and weather setting: **K** (`control = "mean"`), **G** (`mode = "global"`: the clock without
+  geography), **T** (`mode = "terminator"`). Contrasts T-K (the planet), G-K (the clock), T-G (the geography). Weather off
+  and weather on (`stormsph22` overlay, `mini3s.toml` header), so 6 cells per lineage; 3 lineages (stage 1 only, descriptive
+  plus the pre-registered ratio below), 300,000 steps. Endpoints are E1 and E5 of §7.2 on local-solar-time bins, restricted to
+  |lat| < 60 degrees, plus the chase statistic (§5.2): the equatorial terminator speed at `mini3s` is 0.075 units/step against
+  a swim speed of at most 0.1, so a horizontal chase is possible and is reported, not excluded.
+* **Rain dilution (decision 6): accepted, not engineered.** Rain is added after the floor and is not scaled
+  (`fields.py:140-141`), so with weather on the photic layers get food at night. Pre-registered ratio per arm and lineage:
+  **`R_w = A(weather on) / A(weather off)`** (bias-corrected amplitudes, same seed). **Trigger: if the median `R_w` over
+  lineages is below about 0.5 in T or G, a later PR adds `diel.rain_follow`** (rain term in the photic layers scaled by
+  `L/L_bar`); it is not built now. The rain share of regeneration in `stormsph22` is UNVERIFIED and is read in the pilot.
 
 ## 8. Build plan
 
@@ -535,16 +580,32 @@ coordinator), new keys in the registry, goldens unmoved, CLAUDE.md and `docs/HAN
 |---|---|---|---|
 | D0 | this spec as DESIGN §49 (the last section is 48, `DESIGN.md:15073`; unless the coordinator has reserved 49) + Review-log row | docs | none |
 | D1 | `DielConfig` + validation (`sense` refused), registry row (no footprint), host builders (`fieldtab`, `fields_sph`), the `diel=` keyword threaded through `fertility`, `regen_rate`, `update_resource(_farm)`, `niche.update`, `state.py:567`, `metrics.py:285/726-729/740/814`, **the `bench.py:1134` mirror**, `step.py` ramp of `diel_ctl`, `V_bar`, conditional `diel_ctl`, CLI refusal of `--director live`, `diel` overlay, `DielLevers.swift` (lever file) | src 600-900 / tests 600-900 | identity matrix off; `L = 1` equals the static profile bit for bit; reference regeneration over a day; ledger closes 2 days on `tiny3d`/`tiny3s`; `V_bar`; validation table; geometry (subsolar longitude, poles constant); **checkpoint, resume and `alife migrate` round trip of `diel_ctl`** (a 2D/3D file without it is completed to rest); `bench` mirror digest equals the step; **Metal purity gate** (as G1's: the in-graph code is pure MLX, no host sync) ; sync test; per-platform golden |
-| D1b | the oracle hook (`step.py` override, `diel_orc_*` rows) and the pilot script | src 100-200 / tests 150-250 | ledger closes with 20% oracle; group split by uid; the override is the only change |
-| D2 | the light input: ExtSpec blocks, token, sensing hook, `sense` allowed, `sense_control`, `migrate --enable diel` | src 150-250 / tests 250-400 | layout version base+4*64; a migrated population's digest unchanged (silent row); formula against a host reference; `K` and mute give `L_bar`; resume with `sense_control` changed |
+| D1b | the depth-aware oracle (`step.py` override, conditional per-agent `diel_orc` with inheritance, 12 harvest counters, per-stratum energy rows, pilot script) | src 250-400 / tests 250-400 | ledger closes with 20% oracle; stratum fixed and inherited, immigrants 0; schedule per band against a host reference; checkpoint/resume of `diel_orc`; the override is the only change |
+| D2 | the light input: ExtSpec blocks, token, sensing hook, `sense` allowed, `sense_control`, `migrate --enable diel` | src 150-250 / tests 250-400 | layout version base+4*64; a migrated population's digest unchanged (silent row); formula against a host reference **and the four hand-computed goldens of §4.3 (f(0)=0, f(1)=1, f(4.5e-5)=0.0065, f(8.3e-4)=0.0875)**; `K` and mute give `L_bar`; resume with `sense_control` changed |
 | D3 | `diel_*` metrics block, `alife.analysis.diel` (`regen`, `profile`, `amplitude`, `prereg`, `compare`), validity study with planted worlds | src 400-700 / tests 400-600 | planted amplitude/phase; null false-positive rate; bias of `A` under the null; off-frequency floor; prereg hash |
-| D4 | **oracle pilot first** (go/no-go, §7.0), then P1-P5, pilot, stage rule, runs, mute forks, `docs/RESULTS_DIEL.md` | scripts 150-300; GPU 3 h oracle + 4 h pilot, then about 10 h claim + 1 h forks | preconditions as assertions |
+| D4 | **oracle pilot first** (go/no-go, §7.0), then P1-P5 with the ladder, stage rule, box runs, mute forks, late-bloom resumes if triggered, `docs/RESULTS_DIEL.md` | scripts 200-350; GPU in the table below | preconditions and the ladder as assertions; amendments hashed |
+| D4s | the sphere repeat (pre-committed): `mini3s` oracle pilot, 3 arms x weather on/off x 3 lineages, `R_w`, `docs/RESULTS_DIEL.md` addendum | scripts 100-200; GPU below | as D4 |
 | D5a | stream: `ENVS.diel` (compatible addition), `CLCK` unchanged | src 60-120 / tests 80-150 | absent when off; round trip |
 | D6 | GUI: Globe night side (world-frame sun in view space), Sphere view sun and organism floor, clock-strip day readout, "Day" rate (needs D5a, not D1) | Swift 300-500 / tests 150-250 | pure tests of `s(t)` and the rate; GPU luminance day/night per view; existing views unchanged without `ENVS.diel` |
 | D5b | game layer: event kinds 22-23, `from_diel`, alert class, report clause, power `lengthen_night`, lexicon pass (after D3's validity study) | src 300-500 / tests 350-550 | the power session test, replay equality, Rule P at a chapter end, ledger with all five powers, templates under the lexicon, constants digest re-pinned |
 
-Order: D1 -> D1b -> D4 oracle (go/no-go) -> D2 -> D3 -> D4 claim; D5a -> D6 may run in parallel after D1 (the picture does
-not depend on the claim); D5b after D3.
+Order: D1 -> D1b -> D4 oracle (go/no-go) -> D2 -> D3 -> D4 claim -> D4s (after the box, whatever its outcome); D5a -> D6 may run in parallel after D1 (the picture does
+not depend on the claim); D5b (Long Night, decision 4) after D3's validity study.
+
+**GPU budget** (all UNVERIFIED speeds: 150 steps/s assumed for the box at height 40, 100 steps/s for `mini3s`, which is unmeasured; Metal, one process at a time):
+
+| item | runs | steps | hours |
+|---|---|---|---|
+| box oracle pilot (3 seeds, 40k warm-up + 160k) | 3 | 200k | 1.1 |
+| box P1-P3 pilot (D and K, 40k, 3 seeds) | 6 | 40k | 0.5 |
+| ladder step 1 re-run, if triggered | up to 9 | | up to 2 |
+| box claim D and K, 6 lineages | 12 | 300k | 6.7 |
+| exploratory arms N and S, 6 lineages | 12 | 300k | 6.7 (optional) |
+| mute forks U and M, 6 lineages | 12 | 80k | 1.8 |
+| late-bloom resumes, worst case | 12 | 100k | 2.2 |
+| sphere oracle pilot (`mini3s`, 3 seeds) | 3 | 200k | 1.7 |
+| sphere repeat, 3 arms x 2 weather x 3 lineages | 18 | 300k | 15 |
+| **total** | | | **about 22 (core) to 36 (everything)** |
 
 **What only the owner can verify.** (1) Whether the day-night looks right in both views and the time-lapse reads as a day at
 the "Day" speed. (2) Metal numbers: golden re-pin on the M5, steps/s of the diel worlds, whether the Day speed is sustained.
@@ -552,26 +613,29 @@ the "Day" speed. (2) Metal numbers: golden re-pin on the M5, steps/s of the diel
 coordinator assigns Review-log IDs, GPU time and `runs/` space. (5) Whether a negative or STOP result is acceptable for the
 games vertical. (6) The thresholds of §7.0.
 
-## 9. Owner decisions (six)
+## 9. Owner decisions, 2026-11-04
 
-1. **What organisms sense.** A nothing; **B a silent light input, sky light (recommended)**; B' the same with an attenuated
-   light (`extinction` 35, arm S). B costs a layout bump in diel worlds only (D_IN 85), a migration path, and optics that are
-   less realistic than B' (a floor dweller sees the sky); in return it reaches the 53% of the population on the floor and
-   removes the time/depth confound. A costs nothing and leaves the claim weak.
-2. **Where the first claim and the first visual live, and the gap between them.** **Claim in the box, global clock, weather
-   off (recommended); visual and repeat on the sphere.** The claim says nothing certain about the planet (terminator chase,
-   rain at night, §7.5). Alternative: claim on `mini3s` terminator, more product-relevant, chaseable and dearer to interpret.
-3. **The day length.** 2,000, **4,000 (recommended)**, 8,000 steps. Lifespan about 0.16 of a day at 4,000; the full-column
-   crossing fails by buoyancy at height 80 (P5), so height 40 or `P = 8,000` may be forced by the pilot. 4,000 gives 75 days per
-   run and a Long Night of 1 to 3 days inside Food's 3,000 to 12,000 range.
-4. **The power and the sequencing.** **Long Night with a ramp, after the detector is validated (recommended)**; an instant
-   Eclipse; or the visual only. Long Night costs 1 unit and one conditional state field.
-5. **Go/no-go on the long runs after the oracle (new).** The thresholds of §7.0 (GO >= 0.05, SMALL 0.02 to 0.05, STOP < 0.02)
-   are mine; M1 was negative. Recommend accepting the gate: the oracle costs about 3 h of GPU against about 11 h for the claim
-   and decides whether the 11 h are worth spending; a STOP is a result to report, and the visual and the power can ship
-   regardless.
-6. **Rain at night (new).** Accept the dilution and measure it (recommended), or add `diel.rain_follow` in D1 (about 30 lines)
-   so the product world's night is dark.
+The owner delegated the Revision 1 section on decisions to a reviewer model; the coordinator verified its two findings on
+main (constants above; P5 at `H = 80` is 71/0.025 = 2,840 > 2,000 steps, deterministic). **The decisions below are recorded
+as made; the spec is awaiting the owner's approval to build.**
+
+1. **Sense: B, the silent sky-light input.** D2's test carries the four hand-computed goldens of the log formula (§4.3; note
+   the discrepancy on the fourth value). Attenuated light (`extinction` 35) stays exploratory arm S.
+2. **The claim is in the box; the sphere repeat is pre-committed whatever the box outcome**, with three arms (mean, global,
+   terminator) on `mini3s`, weather on and off (§7.5).
+3. **Day length 4,000 with height 40 fixed up front** (amendment A1; P5 is arithmetic). Fallback ladder in the
+   pre-registration: if P1-P3 fail at `H = 40`, one fallback to `P = 8,000`, `H = 80`, pilot re-run, then STOP; each step hashed
+   (§7.3). Late-bloom extension pre-registered, labelled "late", reported as optional stopping (§7.3).
+4. **Long Night, ramped, after D3's validity study** (D5b).
+5. **Oracle gate**, depth-aware, stratified by the band fixed at the pilot's start, Holm across the three strata; GO pooled
+   lower bound >= 0.05; SMALL (pooled below, some stratum's Holm-adjusted bound >= 0.05, label "daily rhythm, small, niche");
+   STOP (pooled and every stratum's upper bound < 0.02); photic harvest share per stratum by day and night (§7.0).
+6. **Rain: accept the dilution**; pre-registered `R_w = A(weather on)/A(weather off)` with a trigger below about 0.5 for a
+   later `rain_follow` PR (§7.5).
+
+**Still open for the owner/coordinator:** (a) the four-number check of decision 1; (b) whether a box STOP should also stop
+the sphere repeat's long runs (the spec says no, with its own oracle first); (c) the thresholds of §7.0 are the delegated
+reviewer's, the owner has not seen them; (d) the Review-log IDs and DESIGN §49.
 
 ## 10. Not verified / risks
 
@@ -618,3 +682,16 @@ games vertical. (6) The thresholds of §7.0.
 | L10 ramp and ulp | Noted in §6. |
 | Build plan items | Done: lever file in D1, bench mirror, checkpoint/resume/migrate tests, `sense` refused until D2, Metal purity gate, CLAUDE.md/HANDOVER update, D5/D6 reordered (D5a before D6), director note. |
 | Review Q2 (table vs in-graph L) | Adopted: in-graph scalar `L` in the cycling arm; the table only for the control. |
+
+## 12. Change list, Revision 2 (against `spec_rev1.md`)
+
+| where | change |
+|---|---|
+| status, §0 | "decisions recorded, awaiting owner approval to build"; summary: height 40, pre-committed sphere repeat, ten PRs, GPU 22 to 36 h |
+| §4.3 | the four hand-computed goldens of the log formula for D2's test; **f(8.3e-4) is 0.0875 by my computation, not 0.13: flagged, not adopted** |
+| §7.0 | oracle made depth-aware (per-band reachable schedule, cap-1 group); strata fixed at the pilot's start and inherited (`diel_orc` field); pooled and stratified `G`, Holm over three strata; GO/SMALL/STOP as decided; photic harvest share per stratum by day and night (12 counters); Revision 1's variant clause removed (the ladder covers the worlds) |
+| §7.1 | height 40 as amendment A1; P5 shown as arithmetic (71/0.025 = 2,840 at H=80; 31/0.025 = 1,240 at H=40) |
+| §7.3 | R1/R2/R3 replaced by the ladder (H=40,P=4,000 -> P=8,000,H=80 -> STOP), amendments hashed; late-bloom extension |
+| §7.5 | rewritten: pre-committed sphere repeat, three arms, weather on and off, `R_w` and its 0.5 trigger |
+| §8 | D1b enlarged; D2 test goldens; D4 ladder and late bloom; new D4s; GPU budget table |
+| §9 | replaced by the recorded decisions and four open items |
