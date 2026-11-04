@@ -82,6 +82,17 @@ FROZEN_OMITTED_DEFAULTS = {
     ("calls", "control"): "none",
     ("calls", "oracle_min"): 0.05,
     ("calls", "oracle_gain"): 1.0,
+    ("diel", "period"): 0,  # the day-night light cycle (DESIGN §49, PR D1)
+    ("diel", "mode"): "global",
+    ("diel", "day_frac"): 0.5,
+    ("diel", "twilight"): 0.25,
+    ("diel", "night_level"): 0.0,
+    ("diel", "control"): "none",
+    ("diel", "sense"): False,
+    ("diel", "extinction"): 0.0,
+    ("diel", "sense_control"): "none",
+    ("diel", "oracle"): 0,
+    ("diel", "silent_init"): True,
     (
         "arms",
         "dump_n",

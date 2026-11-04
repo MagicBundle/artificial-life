@@ -1,0 +1,18 @@
+# diel overlay: the day-night light cycle on the photic food band (DESIGN section 49, docs/DIEL.md). A WORLD overlay for
+# the claim world, `mini3d` with this overlay (DIEL section 7.1): the column is halved to height 40 (Amendment A1: at
+# the preset height 80 a cap-1 agent cannot cross to the photic band within half a day, 2,840 steps > 2,000), one day is
+# 4,000 steps (40 metrics rows at metrics_every 100), the sun is up half the day with a twilight of 0.25 and no photic
+# food at night, one clock for the whole world (`mode = "global"`).
+#
+# The sky-light brain input (`diel.sense = true` in the claim arms D and K) is refused until PR D2 lands, so this
+# overlay is the cycle alone for now (arm N). The matched control is `--set diel.control=mean`. Seasons, weather and the
+# director stay off for the claim; `--director live` is refused on a diel world (DESIGN section 49.2).
+[world]
+height = 40.0
+
+[diel]
+period = 4000
+mode = "global"
+day_frac = 0.5
+twilight = 0.25
+night_level = 0.0

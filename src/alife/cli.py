@@ -595,6 +595,12 @@ def _prepare_fork(
     # The environment levers restart inert for the new config (the source's director history does not carry
     # over; a replay fork brings its own log).
     env = default_env(cfg)
+    if (
+        cfg.diel.period > 0
+    ):  # the day fraction restarts at the new config's rest, as the levers (DESIGN §49.11)
+        from alife.ext.diel import rest_ctl
+
+        env = {**env, "diel_ctl": rest_ctl(cfg)}
     env_reset = any(not np.array_equal(to_numpy(getattr(s, k)), to_numpy(v)) for k, v in env.items())
     s = s._replace(
         diag=mx.zeros_like(s.diag), ledger_cum=mx.zeros_like(s.ledger_cum), total=total, total0=total, **env

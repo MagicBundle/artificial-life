@@ -15,6 +15,7 @@ import numpy as np
 
 from alife import (
     arms,
+    diel,
     ext,
     fields,
     geom,
@@ -282,7 +283,7 @@ def rain_audit(s: State | State3, ws: weather.WeatherState, cfg: Config) -> mx.a
     fg = dims(cfg).fg
     env = s.env if cfg.director.enabled else None  # static
     step = s.step - 1
-    base = fields.regen_rate(s.patch_pos, cfg, step, env)
+    base = fields.regen_rate(s.patch_pos, cfg, step, env, diel=diel.live(s, cfg))
     rain = weather.rain_regen(weather.rain_in(ws, cfg), cfg)
     room = cfg.fields.resource_cap - s.resource
     inc_total = mx.maximum(mx.minimum(base + rain, room), 0)
@@ -725,8 +726,11 @@ def rain_of(s: State | State3, cfg: Config) -> weather.RainIn | None:
 
 def _layer_regen(s: State | State3, cfg: Config, step: mx.array | None, env: Env | None) -> np.ndarray:
     """Integer regeneration per field cell, ``regen_rate``'s: (FG, FG) in 2D, (FZ, FG, FG) in 3D. With the
-    weather's rain on it includes the rain of the state's last step, exactly (``rain_of``)."""
-    return to_numpy(fields.regen_rate(s.patch_pos, cfg, step, env, rain_of(s, cfg))).astype(np.int64)
+    weather's rain on it includes the rain of the state's last step, exactly (``rain_of``). With the diel
+    cycle on it is the light of ``step`` at the state's day fraction, and the day mean ``V_bar`` with ``step``
+    None (§49.3)."""
+    rate = fields.regen_rate(s.patch_pos, cfg, step, env, rain_of(s, cfg), diel=diel.live(s, cfg))
+    return to_numpy(rate).astype(np.int64)
 
 
 def _c_ref(cfg: Config) -> float:
@@ -810,6 +814,7 @@ def seasonal_capacity_table(s: State | State3, cfg: Config, env: Env, amp: float
     )
     off = env._replace(season_amp=mx.array(0.0, dtype=f32), season_period=mx.array(0, dtype=i32))
 
+    # (the diel light acts above the floor layer only, V[0] = 1 at every phase: this table is unaffected)
     def total(step: int, e: Env) -> int:
         rate = fields.regen_rate(s.patch_pos, cfg, mx.array(step, dtype=i32), e)
         return int(to_numpy(rate[0] if is_3d(cfg) else rate).astype(np.int64).sum())

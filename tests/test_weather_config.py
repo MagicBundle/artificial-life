@@ -90,7 +90,7 @@ def test_the_section_has_the_41_keys_and_all_are_hashed() -> None:
     assert not [
         1 for sk in POST_V01_KEYS if sk[0] == "weather" and (sk in UNHASHED_KEYS or sk in OBSERVER_KEYS)
     ]
-    assert [f.name for f in fields(Config)][-8:] == [
+    assert [f.name for f in fields(Config)][-9:] == [
         "weather",
         "arms",
         "structures",
@@ -98,6 +98,7 @@ def test_the_section_has_the_41_keys_and_all_are_hashed() -> None:
         "comm",
         "niche",
         "calls",
+        "diel",
         "run",
     ]  # the feature sections follow weather (DESIGN §43)
 
@@ -263,12 +264,13 @@ def test_overlay_names() -> None:
         "comm",
         "niche",
         "calls",
+        "diel",
         "niche3d",
         "stormsph",
         "stormsph16",
         "stormsph22",
         "stormsph22h",
-    )  # build..calls: features; niche3d: farming at the 3D cost; stormsph*: a sphere's weather
+    )  # build..diel: features; niche3d: farming at the 3D cost; stormsph*: a sphere's weather
     assert ALL_OVERLAYS == (
         "fast",
         "storm",
@@ -278,6 +280,7 @@ def test_overlay_names() -> None:
         "comm",
         "niche",
         "calls",
+        "diel",
         "niche3d",
         "stormsph",
         "stormsph16",

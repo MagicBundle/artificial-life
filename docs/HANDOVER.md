@@ -197,6 +197,20 @@ the net benefit: read births and population too, DESIGN 47.7), `reflex_call` (th
 Next: the pilot K5** (it chooses `storm_u0`, `comm.cost`, `calls.far_xref`, hold, then the overlay values), M1, K3, K4. Tests:
 `tests/test_calls_*.py`.
 
+## The diel cycle (DESIGN §49, rows I92 and I93; D1 built)
+
+A day-night light cycle on the photic food band (spec `docs/DIEL.md` Revision 2, normative `DESIGN.md` §49; what D1 does
+where it differs from the spec text: §49.11). `diel.period > 0` turns it on in a 3D world: `alife.diel.light` gives the light
+factor `L` from the step (global mode: one clock; `terminator`, sphere only: a subsolar longitude moving west), and the food
+profile becomes `min(1, B + L Pk)` with only the photic term modulated; full light selects the static profile bit for bit.
+`diel.control = mean` is the matched control (the day-mean table `V_bar`). The state gains `diel_ctl` (2,) float32 =
+(target, effective) day fraction, ramped by at most `1/(2P)` per step: Long Night (D5b) will write the target. No ledger
+term; no brain footprint yet. World: `--preset mini3d --overlay diel` (height 40, period 4,000; arm N today, since `sense` is
+refused until D2). `alife migrate RUN --enable diel [--set diel.period=...]`. `--director live` is refused on a diel world.
+Every `[diel]` key is CLI-only until D6 (no GUI levers). The CPU golden is pinned in `tests/test_diel.py`; the Metal digests
+are recorded in §49.11 for the owner's check. **Next:** D1b (the depth-aware oracle), then the D4 oracle pilot (go/no-go),
+D2 (the light input). Tests: `tests/test_diel.py`.
+
 ## How to run
 
 ```bash

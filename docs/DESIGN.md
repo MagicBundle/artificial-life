@@ -15151,7 +15151,7 @@ not tested. The sphere's mirror is not tested (the box's is row 3); the weather,
 (`docs/brainstorming-Fable-November.md` §1 "Not to do"), the compiled step (the eager step is the object compared; the
 compiled step is tied to it by `test_determinism`), Metal (see Method).
 
-## 49. Diel vertical migration (a day-night light cycle on the photic food band; the diel series, PRs D0 to D6; **nothing built yet**)
+## 49. Diel vertical migration (a day-night light cycle on the photic food band; the diel series, PRs D0 to D6; **D1 built**, row I93)
 
 Normative text of the diel extension. The specification with the reasoning, the evidence (`file:line`), the review findings and
 the owner decisions is `docs/DIEL.md` (Revision 2, approved by the owner on 2026-11-04); this section states what the engine
@@ -15159,6 +15159,10 @@ will do and what each PR must prove, and points to `docs/DIEL.md` for the why (r
 **Status: D0 (this section and Review-log row I92) is docs only. Nothing in it is built: no engine file, config key, default,
 layout, state field, stream field, game surface or digest changes in D0. D1 onward implement it, each PR flipping its parts of
 this section from "will" to "does" in the same change.** The section number 49 is free (the last section before it is 48).
+**Status after D1 (row I93): the engine core is built** behind `diel.period` (config section, validation, registry row,
+light factor, matched control, `V_bar`, the `diel_ctl` state and its ramp, the probes, the bench mirror, the `diel`
+overlay); 49.11 records what D1 does where it differs from the text above. `sense`, `extinction`, `sense_control`,
+`silent_init` (D2) and `oracle` (D1b) are declared and refused at non-default values.
 
 ### 49.1 What it is
 
@@ -15431,6 +15435,72 @@ summed from its table). The games PRs (D5a to D5b) need the owner's go before me
 can verify the look of day and night, the Metal numbers (golden re-pin, steps/s, whether the Day speed holds), the wording of
 the chronicle lines and the power's caution, and the thresholds of 49.7.
 
+
+### 49.11 D1 as built (row I93)
+
+Files: `src/alife/diel.py` (the light factor, the host tables, the ramp), `src/alife/ext/diel.py` (the registry row and
+validation), `src/alife/presets/diel.toml`, `tests/test_diel.py`; the `diel=` keyword in `fields.fertility`, `regen_rate`,
+`update_resource(_farm)`, `fields_sph.fertility` (a `prof=` override), `niche.update`; `step.py`, the `bench.py` mirror and
+`metrics.py` (`rain_audit`, `_layer_regen`, so `carrying_capacity` and `floor_carrying_capacity`). Where D1 does something
+the text above does not say, or says differently:
+
+* **Full light is the static profile by selection, not by arithmetic.** Today's profile is summed and clipped in float64
+  and rounded once (`fields.vertical_profile`, `fieldtab.vertical_profile`); float32 constants `B` and `Pk` added on the
+  device do not reproduce it bit for bit. `diel.profile` is therefore `where(S >= 1, V_static, min(1, B + L Pk))`: the
+  smoothstep is exactly 1 for `x = 1`, so wherever the sun is fully up the profile is the static array element for element
+  (test: noon in `tiny3d` and `tiny3s`, `night_level` 0 and 0.3, profile and whole fertility byte-equal to the cycle-off
+  ones). The split terms (`diel.split`) use the same per-element float64 arithmetic as the static builders. The selection
+  needs float32 `S == 1`, that is `x` clipped at 1: at the exact lower bound `day_frac = acos(1 - tw/2)/pi` noon reaches
+  `x = 1` only up to rounding, so there it may take the `min(1, B + L Pk)` branch, which differs from the static profile by
+  float32 rounding (about 3e-8); at the defaults (`tw` 0.25, `day_frac` 0.5) noon is exactly 1.
+* **The ramp comes first.** Each step computes `diel_ctl' = ramp(diel_ctl)` (effective `+ clip(target - effective, -1/(2P),
+  1/(2P))`), uses the ramped effective value for its own light, and stores it; so a host probe of a stored state at
+  `step - 1` with `diel_ctl[1]` reproduces that step's regeneration exactly. With `target == effective` the ramp is the
+  identity bit for bit (the `+ 0`). Long Night's `apply` (D5b) writes the target only.
+* **A fork resets `diel_ctl`** to the new config's rest `(day_frac, day_frac)` (`cli._prepare_fork`, with the env levers):
+  a source's Long Night target does not carry over, and a fork that changes `day_frac` or `twilight` runs at its own value
+  at once (found in the D1 review: before the fix the stored pair kept the source's clock). A resume keeps it (bitwise). A
+  fork can turn the cycle on (the field is completed to rest); `full_check` accepts the result.
+* **The director's live probe** (`director/__init__.py`, `carrying_capacity(state, cfg, state.step, env)`) would read the
+  phase of the next step with the stored day fraction; it is unreachable while `--director live` is refused, and is to be
+  aligned (`step - 1`, as `rain_audit`) when the exemption lands.
+* **`diel=None`** means `diel.day_frac` as a float32 scalar on the device, the same value `diel_ctl` rests at, so a probe
+  without the state and the step agree while Long Night has not acted. The seasonal capacity table
+  (`metrics.seasonal_capacity_table`) reads the floor layer only, where `V[0] = 1` at every phase: it needs no keyword.
+* **`control = "mean"`** returns `V_bar` at every step (the cycle's clock and the ramp still run; `V_bar` is built at the
+  configured `day_frac`, not the effective one, so Long Night does not move the control's food). `V_bar` is accumulated over
+  the 720 phases in float64 one phase at a time (a (720, FZ, Npix) array is 550 MB on `64k3s`), cached per config.
+* **Validation**, beyond 49.2: `extinction != 0` and `silent_init = false` are refused until D2 as well as `sense` (both act
+  on the light input only, so a non-default value would change the hash with no effect), `oracle > 0` until D1b; the
+  rows-per-day bound is checked as `period // metrics_every >= 12`. `--director live` is refused through `run.director ==
+  "live"` in the row's `validate`, which `alife run`, `resume` and `fork` reach.
+* **`alife migrate --enable diel`** sets `period` to 4,000 (the claim world's) unless `--set diel.period=...` gives one; the
+  added `diel_ctl` is its rest `(day_frac, day_frac)`; no brain block, so the W1/W2 rows are untouched.
+* **A host check** (`ExtSpec.check`, run by `invariants.full_check`): `diel_ctl` holds two finite values in (0, 1).
+* **No GUI lever file in D1** (a deviation from the D1 row of 49.10): every `[diel]` key is `cli_only_keys` (the `calls`
+  precedent, `tests/test_gui_sync.py`), so the GUI neither shows nor writes them; `DielLevers.swift` lands with D6, where the
+  GUI first has something to show. The sphere guard lists `diel` in `SPHERE_READY` (`SPHERE_FEATURE_PR["diel"] = "D1"`).
+* **The geometry lint** allowlists the box half of `diel.split` (`world.field_cell` 1, `lattice` 1, reason "box branch";
+  `diel.py` in `NOT_IN_SPEC_AUDIT`).
+* **The overlay** `diel` is the claim world's cycle (`world.height = 40`, `period = 4000`, `day_frac 0.5`, `twilight 0.25`,
+  `night_level 0`, `global`) without `sense` (refused until D2): today it gives arm N; D and K add `sense` after D2.
+* **Tests** (`tests/test_diel.py`, 60 cases): defaults, hash and `config.json`; the registry row (index 6, no footprint, the
+  tail position after `niche`); a validation table (25 refusals, 4 acceptances); full light bit-identical; device light
+  against the float64 reference (2e-6); terminator geometry (subsolar pixel at longitude `-th`, daily swing `cos(lat)`,
+  less swing toward the poles); `V_bar` against the mean of the device profile over a 720-step day (2e-6) and as the
+  matched control and the time-average; the ramp; **regeneration over a day** (with a Long Night ramp in progress, so
+  the effective day fraction moves): each step's `INJECT_REGEN` equals the probe
+  `Σ regen_rate` of the stored state exactly, and the probe is within one quantum per cell of the float64 `floor(regen_max
+  fert V)` (the day total within 1e-4; exact equality with a float64 reference is not attainable because the device
+  multiplies in float32, so 49.3's "exactly" holds against the probe, not against float64); **the ledger closes** on every
+  step of two days on `tiny3d` and `tiny3s` (and, in the slow suite, `tiny3s` terminator and `tiny3d` mean), with a Long Night target written at step
+  300; the probes; the bench mirror bit-equal to the step with a ramp in progress; checkpoint and resume bitwise; the
+  migration completing `diel_ctl` to rest; a fork resetting it (same and changed `day_frac`) and a fork turning the cycle
+  on. The ledger test proves closure only (the ledger books whatever `inc` is); the regeneration test is the one that
+  checks the diel arithmetic. The **per-platform golden** (digest after 50 compiled float32 steps, `period`
+  400, `night_level` 0.1, `tiny3d`, `tiny3s`, `tiny3s` terminator) is pinned in `tests/test_diel.py` for Darwin-arm64-cpu
+  on MLX 0.32.3 and skips elsewhere; the Metal digests seen on the M5 Pro (`8372114a`, `0052bb25`, `251027ed`) are recorded
+  here, not pinned, for the owner's Metal check. The identity matrix with the feature off: 0 DIFF against `2ec1f9b`.
 ## Review log
 
 Each critic issue was verified against the text and, where it made a numeric claim, re-run in
@@ -15561,6 +15631,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I89 | fix: GUI only, **no engine file, config key, default or digest changes**; the golden command-line tests unchanged. (1) The sidebar listed a grown seed (`planet-1-grow`) as its own top-level row for the moment between the end of the pipeline (no pending planet any more) and the scan that reads the new planet's `play.json`: the open world had no row, so the nesting of `tree` had no parent. It was not the Watch row excluding the open world (it does not). `LibraryState.resolve` now lists a placeholder row for the open world when its `<name>-grow` seed is in the library, so the seed stays nested (rule in §33.4.12); tested for Starting, Live and Paused. (2) The one place that still said *Repository* to the user ("Use Set up environment, in the Repository box.") now says "Use Set up engine, on the Worlds page."; `NameAuditTests.noStringOfTheAppSaysRepository` scans every string of `AlifeControl` and `AlifeCore` for the word (the command line's `<repository folder>` placeholder and a path that no folder has are the two exceptions). |
 | I90 | test: symmetry goldens, an instrument-qualification suite (new §48; tests only: `tests/symmetry_helpers.py`, `tests/test_symmetry_goldens.py`; **no engine file, config key, default or digest changes**, the identity matrix is bit-identical). Six transformations the engine claims are irrelevant, each applied to a state, run, compared and with a negative control: permutation of the storage rows (exact once the three row-indexed draws are keyed by uid; the draws are the finding: sensing noise S5, bond priority S9, birth order S16), torus translation (within tolerance, flips by float-to-integer quantisation at step 17 to 20), mirror in x with the brain mirrored (within tolerance, flip at 21), the Elman RNN's hidden-unit gauge group (sign flips exact, permutations within tolerance), HEALPix lattice rotations (the quarter turn about the polar axis exact, the half turns within tolerance; feasibility argued in §48), and rotation of the tag (within tolerance). Findings: the bond priority only decides which end of a mutual handshake is the recorded proposer (`KIN_BOND_*` counters), `MAX_OCCUPANCY` is not translation invariant, mutation is not covariant (tests with births off where the genome is transformed). Runs on the CPU device by a stream context. |
 | I92 | docs: DESIGN §49, the diel vertical migration extension (the normative text of `docs/DIEL.md` Revision 2, approved by the owner 2026-11-04; PR D0 of the diel series D0 to D6). **Docs only; no engine change** (no file under `src/`, `tests/` or `gui/`, no config key, default, layout, digest or golden changes; nothing in §49 is built until D1). §49 states the `[diel]` keys with defaults (all off) and validation, the light factor on the photic term only (`V = min(1, B + L Pk)`, `L = 1` bit-identical to the static profile) and why no ledger term is needed (the food source stays `INJECT_REGEN = sum(inc)`), the sky-light input (`sense`, D_IN 84 -> 85, silent, four hand-computed goldens), the matched control (`V_bar`, `L_bar`), the host-side observers and chronicle events (kinds 22 and 23), the oracle pilot and its GO/SMALL/STOP rule, the Long Night power (`diel_ctl`, no ledger term), the claim world (height 40, day 4,000, amendment A1) with the fallback ladder (P = 8,000 and H = 80, then STOP), the pre-committed sphere repeat and the build plan D0 to D6 with each PR's tests. One change from DIEL.md when condensing, now made in DIEL.md too (the same commit series): the first harmonic of the migration statistic uses the bin-centre hour angle `H_b = 2 pi (b + 1/2)/8 - pi`, because DIEL 5.1's bins put local noon in bin 4 while the old `cos(2 pi (b + 1/2)/8)` peaked at midnight; D3's test fixes it with a planted noon peak. Six further inconsistencies of `docs/DIEL.md` are fixed there: the status line and §9 now say approved on 2026-11-04; one GPU total, summed from the §8 table (about 27 h core, 38 h everything; §0, §8, §12 and §49.10 agree); the dead "§1.2" reference is §1.1 and "section 52" is 49; the report clause of §5.3 speaks of the photic-band share; `diel.oracle` is one definition (the start assignment with inheritance, §7.0 and the config table); the Long Night lower bound is `max(0.2, acos(1 - tw/2)/pi)` in DIEL 6 and §49.8. |
+| I93 | feat: diel D1, the engine core of DESIGN §49 behind `diel.period` (default 0, off): `DielConfig` (11 keys, all in `POST_V01_KEYS` and `SERIAL_OMIT_KEYS` through the registry), the registry row `diel` (extension index 6, no brain footprint, `TAIL_ORDER` slot after `niche`), validation (`sense`, `extinction`, `silent_init` refused until D2, `oracle` until D1b, `--director live` refused), `alife.diel` (the light factor in global and terminator modes, the split profile with full light selecting the static profile bit for bit, `V_bar` over 720 phases, the `diel_ctl` ramp), the `diel=` keyword through the fields code, `niche.update`, the step, the bench mirror and the metrics probes, the conditional state field `diel_ctl` (2,) float32, the `diel` overlay. **Off: bit-identical** (identity matrix 0 DIFF against `2ec1f9b`; no file, hash, layout, counter or digest changes). On: the ledger closes over two days on `tiny3d` and `tiny3s`; per-platform golden pinned for the CPU. Deviations recorded in §49.11: the bit-identity by `where(S >= 1)`, the ramp before the light, no `DielLevers.swift` until D6 (every key CLI-only), the regeneration reference exact against the probe and within one quantum per cell of float64; a fork resets `diel_ctl` to the new config's rest (a review finding, fixed). |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

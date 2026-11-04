@@ -83,6 +83,7 @@ from alife import (
     calls,
     calltab,
     comm,
+    diel,
     ext,
     fields,
     invariants,
@@ -1126,12 +1127,15 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         dep = fields.deposit_chem(it.act.emit, fcell, it.costs.solvent, cfg)
         chem = fields.update_chem(s2.chem, dep, cfg)
         env = s2.env if cfg.director.enabled else None  # static
+        day = diel.ramp(s2.diel_ctl, cfg)[1] if cfg.diel.period > 0 else None  # static: as step.py (§49.8)
         if cfg.niche.farm:  # static: the soil bonus inside the regrowth clip (S17, DESIGN §41)
             resource, regen_inc, soil, nf = niche.update(
-                s2.resource, s2.patch_pos, s2.soil, it.xdec["niche"], fcell, cfg, s2.step, env, rain
+                s2.resource, s2.patch_pos, s2.soil, it.xdec["niche"], fcell, cfg, s2.step, env, rain, diel=day
             )
         else:
-            resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg, s2.step, env, rain)
+            resource, regen_inc = fields.update_resource(
+                s2.resource, s2.patch_pos, cfg, s2.step, env, rain, diel=day
+            )
         out = (chem, resource, regen_inc, fields.drift_patches(s2.patch_pos, s2.patch_vel, cfg, env))
         if cfg.structures.enabled:  # static: the material (S17, DESIGN §38)
             mat, sf = structures.update(s2.mat, it.xdec["structures"], fcell, alive0, dm, s2.step, cfg)
@@ -1226,6 +1230,8 @@ class _StagedStep:
             xdec = {**xdec, "niche": mat_out[-1]}
         if wthr_on:  # static
             s2 = s2._replace(wx=wx2)
+        if self.cfg.diel.period > 0:  # static: the ramped day fraction the field stage used (step.py)
+            s2 = s2._replace(diel_ctl=diel.ramp(s.diel_ctl, self.cfg))
         if self.cfg.director.enabled:  # static
             s2 = step_mod.consume_env(s2, s.env, lanes)
         flows = step_mod._Flows(

@@ -21,6 +21,7 @@ from alife import (
     brain,
     calls,
     comm,
+    diel,
     ext,
     fields,
     invariants,
@@ -110,6 +111,7 @@ class ExtActs(NamedTuple):
     comm: NamedTuple | None = None
     niche: NamedTuple | None = None
     calls: NamedTuple | None = None
+    diel: NamedTuple | None = None  # (no per-row observer data in D1)
 
 
 class ExtFlows(NamedTuple):
@@ -122,6 +124,7 @@ class ExtFlows(NamedTuple):
     comm: NamedTuple | None = None
     niche: NamedTuple | None = None
     calls: NamedTuple | None = None
+    diel: NamedTuple | None = None
 
 
 class Acts(NamedTuple):
@@ -424,15 +427,23 @@ def step(
         qs, t_mult = weather.organism_forcing(s.chem, s.pos, s.alive, ws, cfg)
         ws2, wd = weather.advance(ws, t, kw[0], cfg, qs=qs, t_mult=t_mult)
         rain = weather.rain_for(ws2, cfg)  # None when rain_gain == 0
+    # The diel cycle (§49.3, §49.8): the effective day fraction ramps toward Long Night's target first, and
+    # this step's light uses the ramped value, so a host probe of the stored state reproduces it exactly.
+    dctl = diel.ramp(s.diel_ctl, cfg) if cfg.diel.period > 0 else None  # static
+    day = None if dctl is None else dctl[1]
     if cfg.niche.farm:  # static: the soil bonus inside the regrowth clip, then the soil (§41)
         resource, regen_inc, soil, nflows = niche.update(
-            s2.resource, s2.patch_pos, s.soil, xdec["niche"], fcell, cfg, s2.step, env, rain
+            s2.resource, s2.patch_pos, s.soil, xdec["niche"], fcell, cfg, s2.step, env, rain, diel=day
         )
         xdec = {**xdec, "niche": nflows}
     else:
-        resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg, s2.step, env, rain)
+        resource, regen_inc = fields.update_resource(
+            s2.resource, s2.patch_pos, cfg, s2.step, env, rain, diel=day
+        )
     patch_pos = fields.drift_patches(s2.patch_pos, s2.patch_vel, cfg, env)
     s2 = s2._replace(chem=chem, resource=resource, patch_pos=patch_pos, key=key_next, step=t + 1)
+    if dctl is not None:  # static
+        s2 = s2._replace(diel_ctl=dctl)
     if cfg.niche.farm:  # static
         s2 = s2._replace(soil=soil)
     if st_on:  # static: deposit, cap, aperture gate and decay of the material (§38.2, §38.3)
