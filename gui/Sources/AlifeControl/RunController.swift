@@ -289,7 +289,7 @@ final class RunController: ObservableObject {
         guard job == nil, !canStart else { return nil }
         if !repoFolderExists { return repoProblem }
         if !repoReady {
-            return "The engine is not set up in this folder (.venv/bin/alife is missing). Use Set up environment, in the Repository box."
+            return "The engine is not set up in this folder (.venv/bin/alife is missing). Use Set up engine, on the Worlds page."
         }
         return validationErrors.first
     }

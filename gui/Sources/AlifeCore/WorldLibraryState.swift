@@ -303,7 +303,17 @@ package struct LibraryState: Equatable, Sendable {
                 note: p.stage == .growing ? "Growing first, then it becomes a planet." : "Being made.", step: nil, lastSaved: p.since,
                 madeFrom: SourceRef(name: p.seed, step: nil), isPlaceholder: true))
         }
-        let promised = Set(live.pending.map { NameFolding.fold($0.name) })
+        // The open world has no row yet (the pipeline is done and the scan has not seen its `play.json`): its `-grow` seed is still nested
+        // under it, never a top-level row of its own (the seed's planet exists, whatever the library has read so far).
+        var promised = Set(live.pending.map { NameFolding.fold($0.name) })
+        if let open = live.openWorld, !existing.contains(NameFolding.fold(open)), !promised.contains(NameFolding.fold(open)),
+           let seed = rows.first(where: { $0.kind == .research && $0.name == open + SetupPlan.growSuffix }) {
+            let openState: WorldState = live.openPhase == .starting ? .starting : (live.openPhase == .paused ? .paused : .live)
+            rows.append(LibraryRow(
+                name: open, kind: .played, shape: .planet, state: openState, note: live.openPhase == .starting ? "Being made." : nil, step: nil,
+                lastSaved: seed.lastSaved, madeFrom: SourceRef(name: seed.name, step: nil), isPlaceholder: true))
+            promised.insert(NameFolding.fold(open))
+        }
         state.unfinished.removeAll { promised.contains(NameFolding.fold($0.name)) }
         // A seed whose planet was never made (the pipeline was stopped, or the app was closed): the next action is Make planet.
         let known = Set(snapshot.records.map { NameFolding.fold($0.name) }).union(snapshot.problems.keys.map(NameFolding.fold)).union(promised)
