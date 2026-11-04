@@ -116,5 +116,5 @@ def test_observer_channel_flags_are_uint16_and_inert(nd: int) -> None:
         assert acts.ext is None
         flags = np.array(acts.flags).astype(np.int64)
         assert flags.max() < 128  # no extension bit is set by PR 0a
-    assert ExtFlows()._fields == ExtActs()._fields == ext.EXTENSIONS == (*stub.ALL, "calls")
+    assert ExtFlows()._fields == ExtActs()._fields == ext.EXTENSIONS == (*stub.ALL, "calls", "diel")
     assert (ActFlag.KILLED | ActFlag.FARMING).value == 64 + 2048

@@ -141,12 +141,14 @@ def update(
     step: mx.array,
     env: Any = None,
     rain: Any = None,
+    diel: Any = None,
 ) -> tuple[mx.array, mx.array, mx.array, Flows]:
     """S17: regrow the resource with the bonus of the START-of-step soil, then deposit, cap and decay the
-    soil. Returns ``(resource', inc, soil', Flows)``; ``inc`` is what ``INJECT_REGEN`` books."""
+    soil. Returns ``(resource', inc, soil', Flows)``; ``inc`` is what ``INJECT_REGEN`` books. ``diel`` is the
+    effective day fraction of the light cycle (``fields.fertility``; §49.3)."""
     n = cfg.niche
     resource2, inc, inc0 = fields.update_resource_farm(
-        resource, patch_pos, bonus_of(soil, cfg), cfg, step, env, rain
+        resource, patch_pos, bonus_of(soil, cfg), cfg, step, env, rain, diel
     )
     geo = sphere.geometry(cfg)
     dep = geo.deposit(fcell, dec.units)

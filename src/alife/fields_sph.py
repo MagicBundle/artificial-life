@@ -195,14 +195,17 @@ def fertility_cells(
     return mx.clip(base + terms.sum(axis=0), 0.0, 1.0)
 
 
-def fertility(patch_pos: mx.array, weights: mx.array | None, cfg: Config) -> mx.array:
+def fertility(
+    patch_pos: mx.array, weights: mx.array | None, cfg: Config, prof: mx.array | None = None
+) -> mx.array:
     """The sphere's ``fields.fertility``: ``(FZ, Npix)`` float32, the cell fertility times the vertical
-    profile ``V[k]`` (``V[0] = 1`` exactly, so layer 0 is the angular fertility)."""
+    profile ``V[k]`` (``V[0] = 1`` exactly, so layer 0 is the angular fertility). ``prof`` replaces the static
+    profile (the diel cycle's, (FZ,1) or (FZ, Npix); §49.3); None = ``profile(cfg)``."""
     fi = cfg.fields
     cells = fertility_cells(
         patch_pos, weights, cell_centres(cfg.world.nside), cfg.world.radius, fi.patch_sigma, fi.fertility_base
     )
-    return cells[None, :] * profile(cfg)
+    return cells[None, :] * (profile(cfg) if prof is None else prof)
 
 
 # --- the resource and the chemicals ----------------------------------------------------------------
