@@ -1,6 +1,6 @@
 # Diel vertical migration: a day-night light cycle on the photic food band (design specification)
 
-Status: **Revision 2: decisions recorded (§9), awaiting owner approval to build.** Revision 1 (`spec_rev1.md`) answered the independent review (`SP/diel_review/review.md`, §11); Revision 0 is `spec_rev0.md`; §12 lists the changes of Revision 2. Docs only, nothing built or run. Date 2026-11-04. Source: `docs/brainstorming-Fable-November.md`
+Status: **Revision 2: decisions recorded (§9), approved by the owner on 2026-11-04.** Revision 1 (`spec_rev1.md`) answered the independent review (`SP/diel_review/review.md`, §11); Revision 0 is `spec_rev0.md`; §12 lists the changes of Revision 2. Docs only, nothing built or run. Date 2026-11-04. Source: `docs/brainstorming-Fable-November.md`
 §5 item 4 (line 203) and §9 item 1 (line 353). Paths are relative to the repo root (main checkout, read-only). Evidence is
 cited as `file:line`; a statement with no citation is a design proposal, and "UNVERIFIED" marks what I could not check.
 
@@ -28,7 +28,7 @@ cited as `file:line`; a statement with no citation is a design proposal, and "UN
   go/no-go (§7.0), depth-aware and stratified by band. The box world is `mini3d` with **height 40** and `P = 4,000`
   (recorded amendment A1). A **sphere repeat is pre-committed** whatever the box outcome (§7.5): three arms on `mini3s`,
   weather on and off.
-* Build: ten PRs; the engine core (D1) is 600 to 900 source lines; total GPU about 25 to 35 h (§8).
+* Build: ten PRs; the engine core (D1) is 600 to 900 source lines; total GPU about 27 h (core) to 38 h (everything) (§8).
 
 ## 1. How light and food work today (evidence)
 
@@ -209,7 +209,7 @@ New dataclass `DielConfig`, section `[diel]`, one registry row `diel` appended t
 | `diel.sense` | false | adds the light brain input (§4); the only key with a layout footprint |
 | `diel.extinction` | 0.0 | 0 = sky light, independent of depth (the pre-registered choice, §4.2); > 0 = e-folding depth of an attenuated light |
 | `diel.sense_control` | "none" | "none" or "mute": the sensed light replaced by `L_bar` (the mute fork of E5; allowed on a resume) |
-| `diel.oracle` | 0 | pilot only: percent of agents (`uid % 100 < oracle`) whose buoyancy is scripted to the ideal schedule (§7.0); needs `control = "none"` |
+| `diel.oracle` | 0 | pilot only: percent of the living agents at the pilot's start (by `uid` hash) that get the oracle flag, fixed then and inherited by children (§7.0); their buoyancy is scripted to the ideal schedule; needs `control = "none"` |
 | `diel.silent_init` | true | the input's W1 row starts at zero for founders and immigrants (as `niche.silent_init`) |
 
 Validation (in `ext.validate_all`, `ext/__init__.py` order; patterns of `ext/niche.py` `_validate`):
@@ -318,7 +318,7 @@ Per window of `W` whole days (default 20), per run:
   migrants are top-band dwellers moving a few units (§7.0), so the population median barely moves; a share responds to them.
   Secondary variable: the mean height `diel_bin_z`, as a fraction of the shell. One definition each; the offline fit
   (`alife.analysis.diel amplitude`) uses the same bins plus a day-block bootstrap, not the per-row median.
-* First harmonic: `a = (2/8) sum_b u_b cos(2 pi (b + 1/2)/8)`, `b' = (2/8) sum_b u_b sin(...)`, raw amplitude
+* First harmonic: `a = (2/8) sum_b u_b cos(H_b)`, `b' = (2/8) sum_b u_b sin(H_b)`, with the bin-centre hour angle `H_b = 2 pi (b + 1/2)/8 - pi` (bin 4 holds local noon, §5.1), raw amplitude
   `A_raw = sqrt(a^2 + b'^2)` and **phase** `phi = atan2(b', a)` (0 = highest at local noon; pi = highest at midnight).
 * **Bias.** `A_raw` is a magnitude, so `E[A_raw] > 0` under the null and a paired contrast of two noisy magnitudes is
   biased. Use the **bias-corrected amplitude** `A = sqrt(max(A_raw^2 - mean_i A_raw(P'_i)^2, 0))`, with `P'_i` the off-
@@ -358,7 +358,7 @@ lexicon (`TEMPLATES` at `chronicle.py:63-104`, `tests/test_play_chronicle.py`).
   false-positive rate per 100 days. Thresholds (`A_min`, factor 3, `W`, hysteresis 3) are provisional until D3's study
   freezes them, with a version constant (`DIEL_RULES_VERSION`), as `INTENT_VERSION` (`game/rules.py:INTENT_VERSION`).
 * The live report (`game/report.py`, `REPORT_VERSION = 2`, line 119) gains one clause for the chapter ("this chapter
-  covered {n} days; the median height swung by {amp} units") behind the same lexicon; a version bump.
+  covered {n} days; the share of organisms in the upper layers varied by {amp} of the population") behind the same lexicon; a version bump.
 * The world's existing vertical archetypes Floater and Sinker (`game/rules.py:197-198, 324-335`) are *not* used for the
   daily event: their windows are EMA-averaged and would smooth the day away.
 
@@ -392,8 +392,8 @@ lexicon (`TEMPLATES` at `chronicle.py:63-104`, `tests/test_play_chronicle.py`).
   (`director/actions.py:95-107`), so `MENU` stays byte-identical (DESIGN §34.5 "The game table"); `GAME_POWERS["night"] =
   "lengthen_night"` (`actions.py:108-113`). `Spec(cost 1, cooldown 4_000, {"day": (0.2, 0.4)}, duration (4_000, 12_000),
   quantum 250)`: the duration range is one to three days at `P = 4,000` and matches Food's 3,000 to 12,000. The target day
-  fraction must be at least 0.05 under the world's `day_frac` (else refused, as Food's dead zone, `excluded`) and at least the
-  full-peak bound `acos(1 - tw/2)/pi` (§2.1); default 0.3.
+  fraction must be at least `max(0.2, acos(1 - tw/2)/pi)` (the range floor of the Spec, raised to the full-peak bound of §2.1
+  when the twilight is wide; else refused as Food's dead zone, `excluded`); default 0.3.
 * **State.** One conditional extension field `diel_ctl` (2,) f32 = `(target, effective)` day fraction, rest value
   `(day_frac, day_frac)`, `per_agent False`, `conserved False` (`ext/base.py:51-59`); it exists only while `diel` is on, so
   every other state and digest is unchanged. The step moves the effective value toward the target by at most
@@ -418,7 +418,7 @@ lexicon (`TEMPLATES` at `chronicle.py:63-104`, `tests/test_play_chronicle.py`).
   case". `ENVS.powers` lists it.
 * **Why this power.** It is the cheapest lever on the one new thing in the world, it is visible (the night side widens on the
   globe) and it has a measurable ecological consequence (the amplitude and phase statistic must follow). It cannot be abused
-  into extinction: the photic share is about 0.31 of regeneration (§1.2) and the effect lasts at most three days.
+  into extinction: the photic share is about 0.31 of regeneration (§1.1) and the effect lasts at most three days.
 
 ## 7. Pre-registered first claim (C1), oracle gate and bounds
 
@@ -605,7 +605,7 @@ not depend on the claim); D5b (Long Night, decision 4) after D3's validity study
 | late-bloom resumes, worst case | 12 | 100k | 2.2 |
 | sphere oracle pilot (`mini3s`, 3 seeds) | 3 | 200k | 1.7 |
 | sphere repeat, 3 arms x 2 weather x 3 lineages | 18 | 300k | 15 |
-| **total** | | | **about 22 (core) to 36 (everything)** |
+| **total** | | | **about 27 (core) to 38 (everything)** |
 
 **What only the owner can verify.** (1) Whether the day-night looks right in both views and the time-lapse reads as a day at
 the "Day" speed. (2) Metal numbers: golden re-pin on the M5, steps/s of the diel worlds, whether the Day speed is sustained.
@@ -617,7 +617,7 @@ games vertical. (6) The thresholds of §7.0.
 
 The owner delegated the Revision 1 section on decisions to a reviewer model; the coordinator verified its two findings on
 main (constants above; P5 at `H = 80` is 71/0.025 = 2,840 > 2,000 steps, deterministic). **The decisions below are recorded
-as made; the spec is awaiting the owner's approval to build.**
+as made; the spec was approved by the owner on 2026-11-04.**
 
 1. **Sense: B, the silent sky-light input.** D2's test carries the four hand-computed goldens of the log formula (§4.3; note
    the discrepancy on the fourth value). Attenuated light (`extinction` 35) stays exploratory arm S.
@@ -648,7 +648,7 @@ reviewer's, the owner has not seen them; (d) the Review-log IDs and DESIGN §49.
 * I did not read `game/report.py`, the Swift client beyond the sun uniform, `director/seasons.py` or all of `ext/calls.py`;
   the report clause, the lexicon and the stream changes in §5.3-§5.4 are designed from DESIGN §33-34 only.
 * That `snap_dev` can cheaply carry x, y positions, that a feature with a state field but no brain footprint is accepted by
-  the registry (the arms precedent suggests yes: `ext/base.py:20-22`), and that `DESIGN` section number 52 is free.
+  the registry (the arms precedent suggests yes: `ext/base.py:20-22`), and that `DESIGN` section number 49 is free (confirmed in D0).
 * Floating point differences between CPU and Metal in `sin`/`cos`/`exp` may move a `floor` boundary; the precedent is the
   per-platform golden.
 * Revision 1: the oracle thresholds, the `G` metric (energy at ages 300 to 500) and the P5 figures are my arithmetic and
@@ -687,7 +687,7 @@ reviewer's, the owner has not seen them; (d) the Review-log IDs and DESIGN §49.
 
 | where | change |
 |---|---|
-| status, §0 | "approved by the owner on 2026-11-04"; summary: height 40, pre-committed sphere repeat, ten PRs, GPU 22 to 36 h |
+| status, §0 | "approved by the owner on 2026-11-04"; summary: height 40, pre-committed sphere repeat, ten PRs, GPU 22 to 36 h (Revision 2 as written; recomputed to 27 to 38 h from the §8 table after D0) |
 | §4.3 | the four hand-computed goldens of the log formula for D2's test; **f(8.3e-4) is 0.0875 by my computation, not 0.13: flagged, not adopted** |
 | §7.0 | oracle made depth-aware (per-band reachable schedule, cap-1 group); strata fixed at the pilot's start and inherited (`diel_orc` field); pooled and stratified `G`, Holm over three strata; GO/SMALL/STOP as decided; photic harvest share per stratum by day and night (12 counters); Revision 1's variant clause removed (the ladder covers the worlds) |
 | §7.1 | height 40 as amendment A1; P5 shown as arithmetic (71/0.025 = 2,840 at H=80; 31/0.025 = 1,240 at H=40) |
