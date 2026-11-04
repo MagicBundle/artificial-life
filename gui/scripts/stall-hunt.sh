@@ -8,9 +8,11 @@
 # stalled run). It starts nothing but `swift test` and `sample`, only samples descendants of the `swift test` it started, and
 # never writes outside OUT_DIR. It opens no window of its own; the tests make theirs off screen (QuietWindow).
 set -u
+# zsh lowers the priority of background jobs (BG_NICE); a niced test process is what stalled (run of 2026-11-04).
+setopt NO_BG_NICE
 RUNS=${1:-12}
 OUT=${2:-$(mktemp -d "${TMPDIR:-/tmp}/stall-hunt.XXXXXX")}
-THR=${STALL_SECONDS:-205}
+THR=${STALL_SECONDS:-260}
 STOP=${STOP_ON_STALL:-1}
 GUI=${0:A:h:h}
 mkdir -p "$OUT"
