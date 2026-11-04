@@ -95,7 +95,7 @@ import Testing
         let bare = try folder("bare", in: scratch, engine: false)
         let noEngine = make(stored: bare, candidates: [none])
         let reason = try #require(noEngine.startBlockedReason)
-        #expect(reason.contains(".venv/bin/alife is missing") && reason.contains("Set up environment"))
+        #expect(reason.contains(".venv/bin/alife is missing") && reason.contains("Set up engine") && !reason.contains("epository"))
         // 3. Ready, but the settings are wrong: the first thing wrong.
         let ready = try folder("ready", in: scratch, engine: true)
         let controller = make(stored: ready, candidates: [none])

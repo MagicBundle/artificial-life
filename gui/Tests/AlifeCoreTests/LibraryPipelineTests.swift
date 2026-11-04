@@ -56,6 +56,22 @@ import Testing
         #expect(s.row(named: "planet-1")?.isPlaceholder == false && s.row(named: "planet-1")?.state == .live)
     }
 
+    @Test func aSeedStaysNestedUnderTheOpenPlanetBeforeTheScanSeesThePlanet() {
+        // the pipeline is done (no pending planet) and the open world's `play.json` is not read yet: the seed is not a top-level row
+        for phase in [LiveFacts.OpenPhase.starting, .live, .paused] {
+            let live = LiveFacts(openWorld: "planet-1", openPhase: phase)
+            let s = state([record("planet-1-grow"), record("planet-1", steps: [], status: "running", unfinished: true)], live: live)
+            let tree = LibraryState.tree(s.rows)
+            #expect(tree.map(\.row.name) == ["planet-1"] && tree.first?.children.map(\.name) == ["planet-1-grow"], "\(phase)")
+            #expect(s.unfinished.isEmpty)
+        }
+        // once the planet is a world, the real row nests as before; and a world that is not open gets no placeholder
+        let live = LiveFacts(openWorld: "planet-1", openPhase: .live)
+        let real = state([record("planet-1-grow"), record("planet-1", played: true)], live: live)
+        #expect(real.rows.filter { $0.name == "planet-1" }.count == 1 && real.row(named: "planet-1")?.isPlaceholder == false)
+        #expect(state([record("planet-1-grow")]).rows.map(\.name) == ["planet-1-grow"])
+    }
+
     @Test func theRunThisAppGrowsIsNeverAnUnfinishedBuildWhateverItLooksLikeWhileItIsBeingWritten() {
         let live = LiveFacts(growing: "g")
         let s = state([record("g", steps: [], status: "running", unfinished: true)], live: live)
