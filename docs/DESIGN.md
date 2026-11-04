@@ -15161,7 +15161,7 @@ not tested. The sphere's mirror is not tested (the box's is row 3); the weather,
 (`docs/brainstorming-Fable-November.md` §1 "Not to do"), the compiled step (the eager step is the object compared; the
 compiled step is tied to it by `test_determinism`), Metal (see Method).
 
-## 49. Diel vertical migration (a day-night light cycle on the photic food band; the diel series, PRs D0 to D6; **D1 built**, row I93)
+## 49. Diel vertical migration (a day-night light cycle on the photic food band; the diel series, PRs D0 to D6; **D1 and D1b built**, rows I93 and I94)
 
 Normative text of the diel extension. The specification with the reasoning, the evidence (`file:line`), the review findings and
 the owner decisions is `docs/DIEL.md` (Revision 2, approved by the owner on 2026-11-04); this section states what the engine
@@ -15172,7 +15172,8 @@ this section from "will" to "does" in the same change.** The section number 49 i
 **Status after D1 (row I93): the engine core is built** behind `diel.period` (config section, validation, registry row,
 light factor, matched control, `V_bar`, the `diel_ctl` state and its ramp, the probes, the bench mirror, the `diel`
 overlay); 49.11 records what D1 does where it differs from the text above. `sense`, `extinction`, `sense_control`,
-`silent_init` (D2) and `oracle` (D1b) are declared and refused at non-default values.
+`silent_init` (D2) are declared and refused at non-default values. **After D1b (row I94)** the oracle pilot is built
+(`diel.oracle`, 49.7; what D1b does where it differs from 49.7 is in 49.12).
 
 ### 49.1 What it is
 
@@ -15511,6 +15512,63 @@ the text above does not say, or says differently:
   400, `night_level` 0.1, `tiny3d`, `tiny3s`, `tiny3s` terminator) is pinned in `tests/test_diel.py` for Darwin-arm64-cpu
   on MLX 0.32.3 and skips elsewhere; the Metal digests seen on the M5 Pro (`8372114a`, `0052bb25`, `251027ed`) are recorded
   here, not pinned, for the owner's Metal check. The identity matrix with the feature off: 0 DIFF against `2ec1f9b`.
+
+### 49.12 D1b as built (row I94)
+
+Files: `src/alife/diel_oracle.py` (assignment, schedule, plan, override, counters, energy rows), the `diel` registry row
+(`ext/diel.py`: the field, the counter block, the snapshot hooks, validation), `step.py` and the `bench.py` mirror (the cap and
+the override), `metrics.py` (the interval keys), `state.init_state` and `cli._prepare_fork` (the assignment),
+`src/alife/analysis/diel_pilot.py` (the decision rule), `scripts/diel_pilot.py` (the driver), `tests/test_diel_oracle.py`,
+`tests/test_diel_pilot.py`.
+
+* **Assignment** (`diel_oracle.assign`, host side, once): on a fork whose `diel.oracle` differs from the source's (the pilot's
+  start: `alife run --init-from WARM --set diel.oracle=20`), and on the founders of a fresh run with `oracle > 0`. A living row
+  is chosen when `(uid * 2654435761 mod 2^32) / 2^32 < oracle/100`; its label is `+s` (chosen) or `-s` (comparison), `s` the
+  stratum of its height (`floor(4 z / H)` clipped: band 0 -> 1 floor, bands 1-2 -> 2 mid, band 3 -> 3 top); dead rows get 0.
+  The chosen rows' `buoy_cap` is set to 1. A fork that keeps the source's `oracle` keeps the labels (the lineages continue); a
+  resume is bitwise. A fork that changes a non-zero `oracle` (another share, or 0) is refused (`cli._prepare_fork`): the
+  former oracle rows' own cap is gone, so relabelling them would leave comparison rows at cap 1 (found in the D1b review); the
+  pilot forks the warm-up instead. `diel_orc` (N,) int8 exists only while `oracle > 0`; `on_birth = "inherit"`, immigrants get 0.
+* **The schedule** (`diel_oracle.schedule`, host constants): home heights `z_s` = the centres of band 0, of bands 1-2 and of
+  band 3 (`H/8`, `H/2`, `7H/8`); `v_rise = (buoyancy_max - gravity)/drag`, `v_sink = gravity/drag`, both clipped at `v_max`
+  (the overdamped `v = F/drag` along z; 49.7's `v_rise(cap)` at the oracle's cap 1); `up`, `down` as in 49.7 with the configured
+  `day_frac`; the hold lift `gravity/buoyancy_max`. On `mini3d --overlay diel`: up 30, 15, 0 and down 4, 19, 24 for the three
+  strata, hold 0.375.
+* **In the step** (static branch on `oracle > 0`): at the start of the step the oracle rows' cap is 1 (`diel_oracle.cap`, so a
+  child's mutated cap is lifted back the next step and the upkeep is always that of cap 1); after `decode_motion3` the alive
+  oracle rows' `mo.buoy` is replaced (`plan`, `apply`) before `pay_costs3`: in the lit half (`S > 1/2` at the step, from
+  `diel_ctl[1]`) full lift below the day target `z_s + up` and the hold lift at or above it; in the dark half no lift above the
+  night target `z_s - down` and the hold lift at or below it. A row outside the band holds (it is not driven back to the
+  target). The half of the day is that of the step's own light at the stored (start-of-step) `diel_ctl[1]`; the harvest
+  of step `t` reads the resource regrown at step `t - 1`, so the counters' day/night split is one step off at dawn and dusk
+  (about 1 step in 2,000; stated, not corrected). With the weather on, the cap of 1 also raises the oracle rows' wind
+  coupling (`alpha0 + alpha1 buoy_cap`); the pilot runs with the weather off. The buoyancy due is paid as for any row: **no ledger term**. The comparison rows are not touched. Global mode only
+  (validation; a terminator schedule per pixel is deferred), and `buoyancy_max > gravity > 0`.
+* **Counters** (24, not the 12 of 49.7): `DIEL_{O|C}{1|2|3}_{PHOTIC|ALL}_{DAY|NIGHT}`, the harvest quanta (`flows.got` of the
+  alive rows) of the oracle (O) and comparison (C) rows of each stratum, in the photic band (start-of-step height `>= H -
+  2 photic_lambda`, the band of DIEL 5.1) or anywhere, by the half of the day. The comparison group's split is needed to tell
+  "could not reach" from "reached, did not pay" against a baseline. Metrics rows: `diel_harv_<g><s>_<band>_<half>`.
+* **Energy rows** (`snap_row`, every metrics row): `diel_orc_pop` (alive), `diel_orc_n` and `diel_orc_energy` (count and mean
+  energy of the alive rows aged 300 to 500), six entries each in the order O1 O2 O3 C1 C2 C3.
+* **The decision rule** (`alife.analysis.diel_pilot`, frozen by `rule_hash()` =
+  `41a16f09002d86983882fb02d2c934b3079db48d3dee570b0274e214563be0f6` at B 2000 and days 10 to 40): rows are assigned to pilot
+  days by `(step - start_step) // P`; `G_s = ln(sum n E_O / sum n_O) - ln(sum n E_C / sum n_C)` from count-weighted sums over the
+  window's rows and the seeds; pooled `G` weighted by the mean stratum size; day-block bootstrap (whole days resampled within
+  each run, the same days for every stratum); two-sided 90% percentile bounds; Holm on one-sided bootstrap p-values of `G_s <=
+  0.05`, `p = (1 + #{G_s^b <= 0.05})/(B + 1)`, adjusted p below 0.05 (equivalent to a Holm-adjusted lower 90% bound >= 0.05);
+  GO, SMALL, STOP as in 49.7, a straddle reported as SMALL with `straddling = true`; a stratum with no data blocks STOP. Written by
+  a delegated agent and reviewed (these choices are its, recorded here; the thresholds remain the owner's to confirm, 49.7).
+* **Driver**: `scripts/diel_pilot.py --out ROOT [--seeds 21 22 23] [--dry-run]`: the warm-up (`mini3d --overlay diel`, 40,000
+  steps), the pilot fork (`--set diel.oracle=20`, 160,000 more steps) and the analysis; it refuses existing directories. Not
+  run in D1b (the pilot is D4).
+* **Tests**: validation; assignment (hash, strata, dead rows, cap); stratum band edges; the schedule constants; the plan
+  against a host reference at six phases, the override touching only the oracle rows; with every row a comparison row the
+  trajectory equals the cycle-only world field for field (the oracle is only the override and the cap); the ledger closes on
+  every step of two days with 20% oracle and the counters split the whole harvest (`FLOW_HARVEST`) when every harvester is
+  labelled, the half not in effect being 0; inheritance (a birth takes its parent's label, an immigrant 0); the energy rows;
+  the bench mirror bit-equal with the oracle; the pilot fork assigning from the source's rows, a continuing fork keeping the
+  labels, resume bitwise; a run writing the 24 interval keys; the analysis on planted synthetic rows (GO, SMALL, STOP, nulls,
+  reproducible bootstrap, photic share, the pinned hash, the driver's dry run).
 ## Review log
 
 Each critic issue was verified against the text and, where it made a numeric claim, re-run in
@@ -15647,6 +15705,7 @@ width for 820; storage, quit-flow and shell timings). **Open, the owner's decisi
 skip them there, or keep the job as a build gate only; the job fails until then.
 | I92 | docs: DESIGN §49, the diel vertical migration extension (the normative text of `docs/DIEL.md` Revision 2, approved by the owner 2026-11-04; PR D0 of the diel series D0 to D6). **Docs only; no engine change** (no file under `src/`, `tests/` or `gui/`, no config key, default, layout, digest or golden changes; nothing in §49 is built until D1). §49 states the `[diel]` keys with defaults (all off) and validation, the light factor on the photic term only (`V = min(1, B + L Pk)`, `L = 1` bit-identical to the static profile) and why no ledger term is needed (the food source stays `INJECT_REGEN = sum(inc)`), the sky-light input (`sense`, D_IN 84 -> 85, silent, four hand-computed goldens), the matched control (`V_bar`, `L_bar`), the host-side observers and chronicle events (kinds 22 and 23), the oracle pilot and its GO/SMALL/STOP rule, the Long Night power (`diel_ctl`, no ledger term), the claim world (height 40, day 4,000, amendment A1) with the fallback ladder (P = 8,000 and H = 80, then STOP), the pre-committed sphere repeat and the build plan D0 to D6 with each PR's tests. One change from DIEL.md when condensing, now made in DIEL.md too (the same commit series): the first harmonic of the migration statistic uses the bin-centre hour angle `H_b = 2 pi (b + 1/2)/8 - pi`, because DIEL 5.1's bins put local noon in bin 4 while the old `cos(2 pi (b + 1/2)/8)` peaked at midnight; D3's test fixes it with a planted noon peak. Six further inconsistencies of `docs/DIEL.md` are fixed there: the status line and §9 now say approved on 2026-11-04; one GPU total, summed from the §8 table (about 27 h core, 38 h everything; §0, §8, §12 and §49.10 agree); the dead "§1.2" reference is §1.1 and "section 52" is 49; the report clause of §5.3 speaks of the photic-band share; `diel.oracle` is one definition (the start assignment with inheritance, §7.0 and the config table); the Long Night lower bound is `max(0.2, acos(1 - tw/2)/pi)` in DIEL 6 and §49.8. |
 | I93 | feat: diel D1, the engine core of DESIGN §49 behind `diel.period` (default 0, off): `DielConfig` (11 keys, all in `POST_V01_KEYS` and `SERIAL_OMIT_KEYS` through the registry), the registry row `diel` (extension index 6, no brain footprint, `TAIL_ORDER` slot after `niche`), validation (`sense`, `extinction`, `silent_init` refused until D2, `oracle` until D1b, `--director live` refused), `alife.diel` (the light factor in global and terminator modes, the split profile with full light selecting the static profile bit for bit, `V_bar` over 720 phases, the `diel_ctl` ramp), the `diel=` keyword through the fields code, `niche.update`, the step, the bench mirror and the metrics probes, the conditional state field `diel_ctl` (2,) float32, the `diel` overlay. **Off: bit-identical** (identity matrix 0 DIFF against `2ec1f9b`; no file, hash, layout, counter or digest changes). On: the ledger closes over two days on `tiny3d` and `tiny3s`; per-platform golden pinned for the CPU. Deviations recorded in §49.11: the bit-identity by `where(S >= 1)`, the ramp before the light, no `DielLevers.swift` until D6 (every key CLI-only), the regeneration reference exact against the probe and within one quantum per cell of float64; a fork resets `diel_ctl` to the new config's rest (a review finding, fixed). |
+| I94 | feat: diel D1b, the depth-aware oracle pilot of DESIGN §49.7 behind `diel.oracle` (default 0; CLI only): `alife.diel_oracle` (assignment by uid hash at a fork's start or a fresh run's founders, strata from the four z bands, the reachable schedule, the cap-1 override and the scripted `mo.buoy` before the costs, no ledger term), the conditional per-agent int8 field `diel_orc` (inherited, immigrants 0), 24 harvest counters (oracle and comparison, per stratum, photic band and half of the day; 49.7 says 12), the per-stratum energy rows, `alife.analysis.diel_pilot` (G per stratum and pooled, day-block bootstrap, Holm, GO/SMALL/STOP, `rule_hash`) and `scripts/diel_pilot.py`. **Off: bit-identical** (identity matrix 0 DIFF; `oracle = 0` traces nothing new). Recorded in §49.12: global mode only, the counters for both groups, the analysis' judgment calls; a fork that changes a non-zero oracle is refused (review finding). Also fixes D1's omission of the `diel` preset from the GUI test list `PresetFileTests.presetNames` (found by the first full Swift CI run, I91). |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

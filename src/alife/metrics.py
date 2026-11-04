@@ -16,6 +16,7 @@ import numpy as np
 from alife import (
     arms,
     diel,
+    diel_oracle,
     ext,
     fields,
     geom,
@@ -633,6 +634,8 @@ def interval_row(
                     ),
                 }
             )
+        elif bname == "diel":  # the diel oracle pilot (§49.7): harvest quanta per group, stratum, band, half
+            row.update(diel_oracle.interval_keys(names, cs, at))
         at += len(names)
     row.update(
         {

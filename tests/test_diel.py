@@ -101,7 +101,10 @@ def test_the_overlay_is_the_claim_world_without_the_sense() -> None:
         (["diel.period=400", "diel.extinction=35"], "refused until PR D2"),
         (["diel.period=400", "diel.silent_init=false"], "refused until PR D2"),
         (["diel.period=400", "diel.sense_control=mute"], "needs diel.sense"),
-        (["diel.period=400", "diel.oracle=20"], "refused until PR D1b"),
+        (
+            ["diel.period=400", "diel.oracle=20", "physics.buoyancy_max=0"],
+            "diel.oracle needs physics.buoyancy_max",
+        ),
         (["diel.period=400", "diel.oracle=101"], "in [0, 100]"),
         (["diel.period=400", "diel.oracle=20", "diel.control=mean"], "needs diel.control = none"),
         (["diel.period=400", "fields.season_period=3000"], ">= 8 x diel.period"),

@@ -208,8 +208,12 @@ profile becomes `min(1, B + L Pk)` with only the photic term modulated; full lig
 term; no brain footprint yet. World: `--preset mini3d --overlay diel` (height 40, period 4,000; arm N today, since `sense` is
 refused until D2). `alife migrate RUN --enable diel [--set diel.period=...]`. `--director live` is refused on a diel world.
 Every `[diel]` key is CLI-only until D6 (no GUI levers). The CPU golden is pinned in `tests/test_diel.py`; the Metal digests
-are recorded in §49.11 for the owner's check. **Next:** D1b (the depth-aware oracle), then the D4 oracle pilot (go/no-go),
-D2 (the light input). Tests: `tests/test_diel.py`.
+are recorded in §49.11 for the owner's check. **D1b (row I94)**: the oracle pilot behind `diel.oracle` (§49.12): `alife run --init-from WARM
+--set diel.oracle=20` labels 20% of the living agents (by uid hash) with a scripted daily lift their stratum can reach, cap 1;
+the rest is the comparison group; 24 harvest counters and per-stratum energy rows; the decision rule is
+`python -m alife.analysis.diel_pilot RUN...` (`rule_hash` pinned) and the driver `scripts/diel_pilot.py --dry-run`. **Next:** the
+D4 oracle pilot (about 1.1 GPU hours on the box, DIEL §8; needs the owner's thresholds confirmed), then D2 (the light input).
+Tests: `tests/test_diel.py`, `tests/test_diel_oracle.py`, `tests/test_diel_pilot.py`.
 
 ## How to run
 

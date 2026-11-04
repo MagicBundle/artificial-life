@@ -578,6 +578,12 @@ def _prepare_fork(
         raise CheckpointError(
             f"population.n_init must equal the source's {src_cfg.population.n_init} (clade bins depend on it)"
         )
+    if src_cfg.diel.oracle > 0 and cfg.diel.oracle != src_cfg.diel.oracle:  # DESIGN §49.12
+        raise CheckpointError(
+            f"diel.oracle must equal the source's {src_cfg.diel.oracle}: the source's oracle rows had "
+            "their cap raised to 1 and their own cap is gone, so a fork cannot relabel or drop them; "
+            "fork the warm-up (the run before the oracle was assigned) instead"
+        )
     s = load_checkpoint(src, cfg, check_hash=False)
     # The planet's first save links the source save instead of writing the state again, when the state is
     # the source's byte for byte (checked below) under the source's own config hash (DESIGN 34.11).
@@ -607,6 +613,14 @@ def _prepare_fork(
     )
     if a.seed is not None:
         s = s._replace(key=init_keys(a.seed)[InitStream.STATE_KEY])
+    if cfg.diel.oracle > 0 and cfg.diel.oracle != src_cfg.diel.oracle:  # the pilot's start (DESIGN §49.7)
+        from alife import diel_oracle
+
+        s = diel_oracle.assign(s, cfg)
+        if not a.quiet:
+            print(
+                f"note: the diel oracle was assigned to {cfg.diel.oracle}% of the living agents", flush=True
+            )
     mx.eval(s)
     problems = full_check(s, cfg)
     if problems:

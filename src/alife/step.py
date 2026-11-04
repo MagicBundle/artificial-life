@@ -22,6 +22,7 @@ from alife import (
     calls,
     comm,
     diel,
+    diel_oracle,
     ext,
     fields,
     invariants,
@@ -212,6 +213,8 @@ def step(
     t = s.step
     W1, W2 = lifecycle.flush_pending(s.W1, s.W2, s.pend_slot, s.pend_W1, s.pend_W2)  # S0
     s = s._replace(W1=W1, W2=W2)
+    if cfg.diel.oracle > 0:  # static: the diel oracle's group lifts with cap 1 (DESIGN §49.7)
+        s = s._replace(buoy_cap=diel_oracle.cap(s, cfg))
     key_next, ks = step_keys(s.key)  # S1
     a = age(t, s.birth_step)
     nbr = spatial.find_neighbors(s.pos, s.alive, cfg)  # S2
@@ -255,6 +258,10 @@ def step(
     )  # the enabled features' own decodes ({} while every feature is off)
     if d3:  # static: the pitch change and the buoyancy fraction (§27.2)
         mo = actions.decode_motion3(y, s.alive, cfg)
+    if cfg.diel.oracle > 0:  # static: the scripted lift replaces the decoded one before the costs (§49.7)
+        oplan = diel_oracle.plan(s, cfg)
+        mo = diel_oracle.apply(mo, oplan)
+        xdec = {**xdec, "diel": oplan}
 
     if cfg.calls.far_range > 0.0:  # static: which rows heard a far sound (the CALLS_FAR_HEARD counter)
         assert ext_by is not None
