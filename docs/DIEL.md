@@ -687,7 +687,7 @@ reviewer's, the owner has not seen them; (d) the Review-log IDs and DESIGN §49.
 
 | where | change |
 |---|---|
-| status, §0 | "decisions recorded, awaiting owner approval to build"; summary: height 40, pre-committed sphere repeat, ten PRs, GPU 22 to 36 h |
+| status, §0 | "approved by the owner on 2026-11-04"; summary: height 40, pre-committed sphere repeat, ten PRs, GPU 22 to 36 h |
 | §4.3 | the four hand-computed goldens of the log formula for D2's test; **f(8.3e-4) is 0.0875 by my computation, not 0.13: flagged, not adopted** |
 | §7.0 | oracle made depth-aware (per-band reachable schedule, cap-1 group); strata fixed at the pilot's start and inherited (`diel_orc` field); pooled and stratified `G`, Holm over three strata; GO/SMALL/STOP as decided; photic harvest share per stratum by day and night (12 counters); Revision 1's variant clause removed (the ladder covers the worlds) |
 | §7.1 | height 40 as amendment A1; P5 shown as arithmetic (71/0.025 = 2,840 at H=80; 31/0.025 = 1,240 at H=40) |
