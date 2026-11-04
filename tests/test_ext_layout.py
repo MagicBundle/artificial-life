@@ -121,10 +121,11 @@ def test_version_integer_and_features_string() -> None:
 
 def test_tail_order_puts_arms_last_and_state_order_is_extensions_order() -> None:
     # the real orders: calls (DESIGN §47) is the sixth feature, its far-hearing tail (step K2) follows comm's
-    assert ext.TAIL_ORDER == ("structures", "bonds", "comm", "calls", "niche", "arms")
-    assert ext.EXTENSIONS == ("arms", "structures", "bonds", "comm", "niche", "calls")
+    # and diel (DESIGN §49) the seventh, its light input (D2) after niche's
+    assert ext.TAIL_ORDER == ("structures", "bonds", "comm", "calls", "niche", "diel", "arms")
+    assert ext.EXTENSIONS == ("arms", "structures", "bonds", "comm", "niche", "calls", "diel")
     blocks = ext.layout_blocks(_cfg(2, stub.ALL), 2)  # the stub mirrors the five features of PR 0a to F1
-    assert [owner for owner, *_ in blocks] == [n for n in ext.TAIL_ORDER if n != "calls"]
+    assert [owner for owner, *_ in blocks] == [n for n in ext.TAIL_ORDER if n not in ("calls", "diel")]
 
 
 def test_dims_plumbing_of_the_voice_width(monkeypatch: pytest.MonkeyPatch) -> None:

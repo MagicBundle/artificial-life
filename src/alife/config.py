@@ -450,6 +450,26 @@ class CallsConfig:  # event-triggered calls and far hearing (DESIGN §47); post 
 
 
 @dataclass(frozen=True)
+class DielConfig:  # the day-night light cycle on the photic food band (DESIGN §49); post v0.1
+    """Every key changes the compiled step, so every key is hashed (``POST_V01_KEYS`` through
+    ``ext.diel.SPEC.lever_keys``) and is inert at its default while ``period`` is 0 (``validate``). D1 builds
+    the light factor, the matched control and the Long Night ramp state; ``sense`` (D2) and ``oracle`` (D1b)
+    are declared and refused until their PRs."""
+
+    period: int = 0  # steps per day P; 0 = off (the feature switch), else [400, 2^20]
+    mode: str = "global"  # global (one clock) | terminator (sphere only: a moving subsolar longitude)
+    day_frac: float = 0.5  # fraction of the cycle the sun is up at the equator, [acos(1 - tw/2)/pi, 0.95)
+    twilight: float = 0.25  # tw, the width of the dawn and dusk ramp in units of the sun's sine, (0, 1]
+    night_level: float = 0.0  # n, the photic multiplier at night, [0, 1)
+    control: str = "none"  # none | mean (the day-mean table V_bar, the matched control, §49.5)
+    sense: bool = False  # the sky-light brain input (D2; refused until it lands)
+    extinction: float = 0.0  # 0 = sky light; > 0 = e-folding depth of the sensed light (D2)
+    sense_control: str = "none"  # none | mute (the sensed light replaced by its day mean; D2)
+    oracle: int = 0  # pilot only: percent of the agents given the scripted schedule (D1b; refused until then)
+    silent_init: bool = True  # the light input's W1 row starts at zero (D2)
+
+
+@dataclass(frozen=True)
 class Config:
     world: WorldConfig = field(default_factory=WorldConfig)
     population: PopulationConfig = field(default_factory=PopulationConfig)
@@ -471,6 +491,7 @@ class Config:
     comm: CommConfig = field(default_factory=CommConfig)
     niche: NicheConfig = field(default_factory=NicheConfig)
     calls: CallsConfig = field(default_factory=CallsConfig)
+    diel: DielConfig = field(default_factory=DielConfig)
     run: RunConfig = field(default_factory=RunConfig)
 
 
@@ -1110,13 +1131,26 @@ SPHERE_FEATURE_PR: Final[Mapping[str, str]] = {
     "comm": "S3",
     "niche": "S3",
     "calls": "K1",
+    "diel": "D1",
     "roles": "S3",
     "weather": "S4",
     "director": "S5",
     "observers": "S5",
 }
 SPHERE_READY: frozenset[str] = frozenset(
-    {"structures", "niche", "comm", "bonds", "roles", "arms", "calls", "weather", "observers", "director"}
+    {
+        "structures",
+        "niche",
+        "comm",
+        "bonds",
+        "roles",
+        "arms",
+        "calls",
+        "diel",
+        "weather",
+        "observers",
+        "director",
+    }
 )
 
 

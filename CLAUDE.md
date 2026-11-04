@@ -65,8 +65,9 @@ clip, booked in `INJECT_REGEN`; the put is `HEAT_ACTION`; its own exact soil ide
 engine) is implemented behind `niche.farm` (`--overlay niche`, or `niche3d` in a 3D world, `alife migrate --enable
 niche`, `alife bench --niche`); observers, GUI and the experiment are F2 to F4.
 
-A day-night light cycle on the photic food band (diel vertical migration; spec `docs/DIEL.md`, normative text `DESIGN.md` §49, row I92) is
-specified and approved but not built: D0 is docs only, D1 (the engine core behind `diel.period`) is next.
+A day-night light cycle on the photic food band (diel vertical migration; spec `docs/DIEL.md`, normative text `DESIGN.md` §49, rows I92
+and I93): D1, the engine core behind `diel.period` (`src/alife/diel.py`, `ext/diel.py`, `--overlay diel`), is implemented; D1b (the
+oracle) and D2 (the light input) are next.
 
 ## Conventions
 

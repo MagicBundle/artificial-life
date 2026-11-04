@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, NamedTuple
 import mlx.core as mx
 import numpy as np
 
+from alife import diel as diel_mod
 from alife import fields_sph, layout, ops, sphere, weather
 from alife.config import Config, dims, seasons_on
 
@@ -60,7 +61,11 @@ def season_weights(step: mx.array, cfg: Config, env: Env | None = None) -> mx.ar
 
 
 def fertility(
-    patch_pos: mx.array, cfg: Config, step: mx.array | None = None, env: Env | None = None
+    patch_pos: mx.array,
+    cfg: Config,
+    step: mx.array | None = None,
+    env: Env | None = None,
+    diel: mx.array | None = None,
 ) -> mx.array:
     """``clip(fertility_base + Σ_p w_p·torus-Gaussian_p, 0, 1)``, (FG,FG) f32 indexed [y, x].
 
@@ -77,6 +82,10 @@ def fertility(
     whose floor entry is exactly 1, so layer 0 equals the 2D fertility bit for bit. On a sphere (§46.5) it is
     (FZ,Npix): the chord-Gaussian of the unit-vector patches times the profile (``fields_sph.fertility``),
     with the same seasonal and director weights.
+
+    With the diel cycle on (§49.3) the profile is the light-modulated one of ``step`` (``diel_mod.profile``),
+    ``diel`` the effective day fraction (float32 scalar, ``State.diel_ctl[1]``; None = ``diel.day_frac``), and
+    the day mean ``V_bar`` when ``step`` is None; ``diel`` is ignored while the cycle is off.
     """
     if dims(cfg).sph:  # static: the sphere world
         w = None
@@ -84,7 +93,7 @@ def fertility(
             w = env.patch_gain * season_weights(step, cfg, env)
         elif step is not None and seasons_on(cfg.fields):  # static: seasons enabled
             w = season_weights(step, cfg)
-        return fields_sph.fertility(patch_pos, w, cfg)
+        return fields_sph.fertility(patch_pos, w, cfg, _profile(cfg, step, diel))
     fg, L, fc = dims(cfg).fg, cfg.world.size, cfg.world.field_cell
     centres = (mx.arange(fg, dtype=mx.float32) + 0.5) * fc
     inv = -1.0 / (2.0 * cfg.fields.patch_sigma**2)
@@ -98,8 +107,18 @@ def fertility(
         terms = season_weights(step, cfg)[:, None, None] * terms
     fert = mx.clip(cfg.fields.fertility_base + terms.sum(axis=0), 0.0, 1.0)
     if dims(cfg).d3:  # static: broadcast over the layers; never a (PP,FZ,FG,FG) array
-        return fert[None] * vertical_profile(cfg)
+        return fert[None] * _profile(cfg, step, diel)
     return fert
+
+
+def _profile(cfg: Config, step: mx.array | None, diel: mx.array | None) -> mx.array:
+    """The vertical profile ``fertility`` multiplies by: the static ``vertical_profile`` while the diel cycle
+    is off, else the light-modulated profile of ``step`` or, with ``step`` None, the day mean (§49.3)."""
+    if not diel_mod.on(cfg):  # static: the cycle is off (every existing world)
+        return vertical_profile(cfg)
+    if step is None:  # static: the time-average (initial resource, carrying-capacity estimate)
+        return diel_mod.v_bar(cfg)
+    return diel_mod.profile(cfg, step, diel, vertical_profile(cfg))
 
 
 def vertical_profile(cfg: Config) -> mx.array:
@@ -125,15 +144,16 @@ def regen_rate(
     step: mx.array | None = None,
     env: Env | None = None,
     rain: weather.RainIn | None = None,
+    diel: mx.array | None = None,
 ) -> mx.array:
     """Per-cell regeneration ``floor(regen_max·fertility)``, (FG,FG) int32 (seasonal at ``step`` if given).
 
     With ``env`` the product is scaled by ``env.regen_mult`` after ``regen_max·fertility``, so 1.0 is exact.
     In 3D it has the fertility's shape (FZ,FG,FG) (§27.5). With ``rain`` (the weather's, None when weather is
     off or ``rain_gain`` is 0) the integer ``weather.rain_regen`` is added after the floor: the director's
-    regeneration lever does not scale it (§30).
+    regeneration lever does not scale it (§30). ``diel`` is the effective day fraction of ``fertility``.
     """
-    rate = cfg.fields.regen_max * fertility(patch_pos, cfg, step, env)
+    rate = cfg.fields.regen_max * fertility(patch_pos, cfg, step, env, diel)
     if env is not None:  # static: director enabled
         rate = rate * env.regen_mult
     base = ops.floor_i32(rate)
@@ -348,6 +368,7 @@ def update_resource(
     step: mx.array | None = None,
     env: Env | None = None,
     rain: weather.RainIn | None = None,
+    diel: mx.array | None = None,
 ) -> tuple[mx.array, mx.array]:
     """Regenerate then integer-diffuse the resource: ``(resource', inc (FG,FG) int32)`` (§13.2, §10.2).
 
@@ -356,10 +377,13 @@ def update_resource(
     step index during the step) selects the seasonal weights; it is ignored with seasons off. ``env`` is the
     director's live levers (None when the director is off); ``rain`` is the weather's rain term for
     ``regen_rate`` (``INJECT_REGEN`` then books it, §30). In 3D both are (FZ,FG,FG) and the stencil is
-    ``ops.int_diffuse_3d``, with no flux through the floor and the surface (§27.6).
+    ``ops.int_diffuse_3d``, with no flux through the floor and the surface (§27.6). ``diel`` is the
+    effective day fraction of the light cycle (``fertility``; §49.3).
     """
     fi = cfg.fields
-    inc = mx.maximum(mx.minimum(regen_rate(patch_pos, cfg, step, env, rain), fi.resource_cap - resource), 0)
+    inc = mx.maximum(
+        mx.minimum(regen_rate(patch_pos, cfg, step, env, rain, diel), fi.resource_cap - resource), 0
+    )
     if dims(cfg).sph:  # static: the sphere world, int64 flux with geometric weights (§46.5)
         return fields_sph.diffuse(resource + inc, cfg), inc
     if dims(cfg).d3:
@@ -375,6 +399,7 @@ def update_resource_farm(
     step: mx.array | None = None,
     env: Env | None = None,
     rain: weather.RainIn | None = None,
+    diel: mx.array | None = None,
 ) -> tuple[mx.array, mx.array, mx.array]:
     """``update_resource`` with the farm bonus inside the clip: ``(resource', inc, inc0)`` (DESIGN §41).
 
@@ -383,7 +408,7 @@ def update_resource_farm(
     ``Σ(inc − inc0)`` is the yield of the soil after the cap (``FARM_YIELD``). ``bonus`` is an int32 array of
     the shape of the resource, >= 0; the director's ``regen_mult`` does not scale it (as the rain)."""
     fi = cfg.fields
-    base = regen_rate(patch_pos, cfg, step, env, rain)
+    base = regen_rate(patch_pos, cfg, step, env, rain, diel)
     room = fi.resource_cap - resource
     inc0 = mx.maximum(mx.minimum(base, room), 0)
     inc = mx.maximum(mx.minimum(base + bonus, room), 0)
