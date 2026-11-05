@@ -23,7 +23,8 @@ When one group falls below ``N_MIN`` on day ``d+1`` and the other does not, that
 the fallen group's count raised to ``N_MIN`` (an understatement of the loss, never a made-up floor), and the
 stratum's later increments of that run do not count (the lineage is absorbed; a ratio near a count of 0 says
 nothing). When both fall below ``N_MIN`` together, no further increment counts. ``w_s`` is the mean of the
-counted increments over the runs (each weighs the same), in units of 1/day; the pooled ``w`` is the mean of
+counted increments pooled over the runs (each increment weighs the same, so a run with more counted days
+weighs more), in units of 1/day; the pooled ``w`` is the mean of
 the ``w_s`` weighted by stratum size, the mean over the window's days and runs of ``N_O + N_C``.
 
 **Bootstrap.** Whole days are resampled with replacement within each run (as many as the run has

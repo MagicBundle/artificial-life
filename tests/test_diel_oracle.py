@@ -172,9 +172,9 @@ def test_the_round_trips_return_home_before_dusk_and_dawn() -> None:
 
 
 def _host_buoy2(orc: np.ndarray, z: np.ndarray, t: int, day: bool, cfg) -> np.ndarray:
-    """Schedule 2's lift in float64 (§49.14)."""
+    """Schedule 2's lift in float64 (§49.14), at the float32 day fraction the state carries."""
     sc = diel_oracle.schedule(cfg)
-    per, f = cfg.diel.period, cfg.diel.day_frac
+    per, f = cfg.diel.period, float(np.float32(cfg.diel.day_frac))
     k = np.abs(orc)
     home = np.array(sc.home)[k]
     phase = t % per
@@ -190,12 +190,16 @@ def _host_buoy2(orc: np.ndarray, z: np.ndarray, t: int, day: bool, cfg) -> np.nd
     return np.where(back, np.where(z < home, 1.0, sc.hold), np.where(z > tgt, 0.0, sc.hold))
 
 
-@pytest.mark.parametrize(
-    "t", [0, 300, 399, 400, 500, 800, 999, 1000, 1500, 2500, 2800, 2999, 3000, 3200, 3999]
-)
-def test_the_round_trip_plan_against_a_host_reference(t: int) -> None:
+_PHASES_05 = [0, 300, 399, 400, 500, 800, 999, 1000, 1500, 2500, 2800, 2999, 3000, 3200, 3999]
+_PHASES_03 = [0, 300, 470, 590, 610, 1000, 2000, 3000, 3390, 3410, 3530, 3999]  # dusk 600, dawn 3400
+
+
+@pytest.mark.parametrize(("frac", "t"), [("0.5", t) for t in _PHASES_05] + [("0.3", t) for t in _PHASES_03])
+def test_the_round_trip_plan_against_a_host_reference(frac: str, t: int) -> None:
     cfg = load_config(
-        preset="mini3d", overlays=["diel"], overrides=[F32, "diel.oracle=20", "diel.oracle_schedule=2"]
+        preset="mini3d",
+        overlays=["diel"],
+        overrides=[F32, "diel.oracle=20", "diel.oracle_schedule=2", f"diel.day_frac={frac}"],
     )
     s = init_state(cfg)
     n = s.alive.shape[0]
@@ -211,6 +215,15 @@ def test_the_round_trip_plan_against_a_host_reference(t: int) -> None:
     on = to_numpy(p.on)
     assert on.any()
     np.testing.assert_allclose(to_numpy(p.buoy)[on], ref[on], atol=1e-7)
+
+
+def test_a_photic_band_deeper_than_the_column_targets_layer_0() -> None:
+    cfg = load_config(
+        preset="mini3d",
+        overlays=["diel"],
+        overrides=[F32, "diel.oracle=20", "diel.oracle_schedule=2", "fields.photic_lambda=30"],
+    )
+    assert diel_oracle.photic_target(cfg) == 0.5 * cfg.world.field_cell
 
 
 # --- the plan and the override --------------------------------------------------------------------

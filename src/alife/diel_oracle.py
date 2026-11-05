@@ -82,10 +82,11 @@ class Schedule(NamedTuple):
 
 def photic_target(cfg: Config) -> float:
     """Schedule 2's day target: the centre of the lowest field layer lying wholly in the photic band
-    (``z >= H - PHOTIC_DEPTH·photic_lambda``); layer ``k`` spans ``[k·fc, (k+1)·fc)``, ``fc = field_cell``."""
+    (``z >= H - PHOTIC_DEPTH·photic_lambda``); layer ``k`` spans ``[k·fc, (k+1)·fc)``, ``fc = field_cell``. A
+    band deeper than the column makes it layer 0's centre."""
     fc = cfg.world.field_cell
     z_ph = sphere.geometry(cfg).height_max - PHOTIC_DEPTH * cfg.fields.photic_lambda
-    return (math.ceil(z_ph / fc - 1e-9) + 0.5) * fc
+    return (max(0, math.ceil(z_ph / fc - 1e-9)) + 0.5) * fc
 
 
 def schedule(cfg: Config) -> Schedule:
