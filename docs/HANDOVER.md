@@ -222,8 +222,11 @@ shows that the oracle's fixed costs alone (cap 1, hold lift) cost about -0.2 per
 spent. **D2 (row I95)**, built as a dormant capability (owner, 2026-11-05):
 the sky-light input behind `diel.sense` (§49.13; token `diel1@1`, 3D `D_IN` 85, silent row); the claim arms D and K are
 `--overlay diel --set diel.sense=true` (K adds `--set diel.control=mean`); the mute fork is `alife run --init-from D --set
-diel.sense_control=mute`. **Next (owner):** whether to try the thrust oracle. Tests: `tests/test_diel.py`,
-`tests/test_diel_oracle.py`, `tests/test_diel_pilot.py`, `tests/test_diel_pilot2.py`, `tests/test_diel_sense.py`.
+diel.sense_control=mute`. **D1d (row I97, §49.15)**: the no-cap-change oracle (`diel.oracle_cap = own`); its exploratory
+pilot (`runs/diel_pilot3_2026-11-05`) reads SMALL by the rule, pooled `w` -0.08 per day (-0.13 to -0.03), floor -0.02, mid
+-0.16, top -0.43: raising the cap explained most of the loss, but no scripted schedule beats the evolved population.
+**Next (owner):** whether to try the thrust oracle. Tests: `tests/test_diel.py`, `tests/test_diel_oracle.py`,
+`tests/test_diel_pilot.py`, `tests/test_diel_pilot2.py`, `tests/test_diel_sense.py`.
 
 ## How to run
 

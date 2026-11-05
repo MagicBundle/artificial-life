@@ -468,6 +468,9 @@ class DielConfig:  # the day-night light cycle on the photic food band (DESIGN �
     oracle: int = 0  # pilot only: percent of the agents given the scripted schedule (D1b; refused until then)
     silent_init: bool = True  # the light input's W1 row starts at zero (D2)
     oracle_schedule: int = 1  # the oracle's schedule: 1 (D1b, §49.12) | 2 (round trips, D1c, §49.14)
+    oracle_cap: str = (
+        "one"  # the oracle rows' cap: one (raised to 1, D1b) | own (their heritable cap, D1d, §49.15)
+    )
 
 
 @dataclass(frozen=True)

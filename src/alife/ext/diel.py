@@ -31,11 +31,16 @@ _KEYS = (
     "oracle",
     "silent_init",
     "oracle_schedule",
+    "oracle_cap",
 )
 MODES = ("global", "terminator")
 CONTROLS = ("none", "mean")
 SENSE_CONTROLS = ("none", "mute")
 ORACLE_SCHEDULES = (1, 2)  # D1b's schedule (§49.12) and D1c's round trips (§49.14)
+ORACLE_CAPS = (
+    "one",
+    "own",
+)  # the oracle rows' cap raised to 1 (D1b) or their own heritable cap (D1d, §49.15)
 PERIOD_MIN = 400
 PERIOD_MAX = 1 << 20
 DAY_FRAC_MAX = 0.95
@@ -162,6 +167,12 @@ def _validate(cfg: Any) -> None:
             bad.append(f"diel.oracle_schedule {c.oracle_schedule} must be one of {ORACLE_SCHEDULES}")
         elif c.oracle == 0 and c.oracle_schedule != dflt.oracle_schedule:
             bad.append("diel.oracle_schedule is inert while diel.oracle is 0: it must keep its default")
+        if c.oracle_cap not in ORACLE_CAPS:
+            bad.append(f"diel.oracle_cap {c.oracle_cap!r} must be one of {ORACLE_CAPS}")
+        elif c.oracle == 0 and c.oracle_cap != dflt.oracle_cap:
+            bad.append("diel.oracle_cap is inert while diel.oracle is 0: it must keep its default")
+        elif c.oracle_cap == "own" and c.oracle_schedule != 2:
+            bad.append("diel.oracle_cap own needs diel.oracle_schedule = 2 (the per-row round trips)")
         # the light input's keys are inert without it (D2): a config never changes its hash without effect
         if not c.sense:
             if c.extinction != dflt.extinction:

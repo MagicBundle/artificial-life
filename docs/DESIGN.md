@@ -15151,7 +15151,7 @@ not tested. The sphere's mirror is not tested (the box's is row 3); the weather,
 (`docs/brainstorming-Fable-November.md` §1 "Not to do"), the compiled step (the eager step is the object compared; the
 compiled step is tied to it by `test_determinism`), Metal (see Method).
 
-## 49. Diel vertical migration (a day-night light cycle on the photic food band; the diel series, PRs D0 to D6; **D1, D1b, D2 and D1c built**, rows I93 to I96)
+## 49. Diel vertical migration (a day-night light cycle on the photic food band; the diel series, PRs D0 to D6; **D1, D1b, D2, D1c and D1d built**, rows I93 to I97)
 
 Normative text of the diel extension. The specification with the reasoning, the evidence (`file:line`), the review findings and
 the owner decisions is `docs/DIEL.md` (Revision 2, approved by the owner on 2026-11-04); this section states what the engine
@@ -15166,7 +15166,8 @@ overlay); 49.11 records what D1 does where it differs from the text above. `sens
 (`diel.oracle`, 49.7; what D1b does where it differs from 49.7 is in 49.12). **After D2 (row I95)** the sky-light input
 `diel.sense` is built (49.4; as built: 49.13), with `extinction`, `sense_control` and `silent_init`. **After D1c (row
 I96)** the first pilot's result, the round-trip schedule (`diel.oracle_schedule = 2`) and the lineage-fitness rule that
-replaced 49.7's measure for the second pilot are in 49.14.
+replaced 49.7's measure for the second pilot are in 49.14; the no-cap-change oracle (`diel.oracle_cap = own`, D1d,
+row I97) is in 49.15.
 
 ### 49.1 What it is
 
@@ -15677,6 +15678,39 @@ thresholds are the owner's.
   extinction pattern as STOP, both INVALID paths, the window and a fork's start, a reproducible bootstrap, the pinned hash,
   the CLI); the driver's dry runs.
 
+### 49.15 D1d, the no-cap-change oracle (row I97)
+
+The second pilot's floor arm (49.14) lost about -0.2 per day without a day excursion, so the oracle's own costs (the cap
+raised to 1, its upkeep and the hold lift) may explain much of the STOP. 49.7 lists a no-cap-change oracle as exploratory;
+the owner asked for it on 2026-11-05.
+
+* **`diel.oracle_cap`** (`one` = D1b's, the default; `own`; CLI only; inert and refused at another value while `oracle` is 0;
+  `own` needs `oracle_schedule = 2`). With `own` the assignment and the step leave every cap as it is (heritable and
+  mutating as for any row), and schedule 2 is computed per row from the row's cap `c` (49.7's original wording):
+  `v_rise(c) = clip((c buoyancy_max - gravity)/drag, 0, v_max)`, the hold lift `min(1, gravity/(c buoyancy_max))`, and
+  `up`, `down` as in 49.14 with `trip(c) = 1/v_rise(c) + 1/v_sink`. A row whose cap cannot balance gravity
+  (`c <= gravity/buoyancy_max`, 0.375 on mini3d) makes no excursion and gets the lift clipped at 1: it sinks at its least
+  rate whatever it does, since its own brain cannot exceed full lift either. By night its time home is 0.
+* At cap 1 the plan equals schedule 2's (test). At the evolved median cap 0.56 on mini3d the mid stratum still reaches the
+  photic target (rising at 0.0074 per step) and dips about 6 below home at night; every stratum is home a margin before
+  dusk and dawn (kinematic test).
+* Same rule, `alife.analysis.diel_pilot2` (hash `0f4b7da9…`), read as exploratory (49.7). Driver `--cap own`. No ledger term.
+* **The third pilot** (exploratory; run 2026-11-05 on `engine/diel-d1d` at `c13bb04`, `runs/diel_pilot3_2026-11-05`; the
+  first pilot's warm-ups forked with `--set diel.oracle=20 --set diel.oracle_schedule=2 --set diel.oracle_cap=own`, 160,000
+  steps): the rule prints **SMALL**, `w` per day floor -0.02 (90% -0.08 to +0.04), mid -0.16 (-0.24 to -0.08), top -0.43
+  (-0.64 to -0.13), pooled -0.08 (-0.13 to -0.03). It falls short of STOP only through the floor's upper bound; no stratum
+  is positive. Oracle extinctions: the floor in 2 of 3 seeds (days 29 and 37), the mid in all 3 (days 11 to 37), the top on
+  days 2 to 5. Photic share of the day harvest: mid 0.43 against 0.32 for the comparison. Reading, against the second pilot
+  (cap 1: floor -0.23, mid -0.76, top -0.61):
+  * Raising the cap to 1 accounts for all of the floor arm's loss and most of the mid stratum's.
+  * The scripted day trip to the photic layer is still selected against at the evolved caps (mid -0.16).
+  * The top stratum, whose home is in the band that starves at dusk, still loses.
+  * In this economy no buoyancy-scripted vertical schedule tried (three variants, nine runs) beats what the evolved
+    population already does. The box long runs stay unspent (49.7); the thrust oracle remains untried.
+* **Tests**: validation; the caps kept by the assignment and the step; the plan against a float64 per-row reference at 10
+  phases with caps from 0 to 1; equality with schedule 2 at cap 1; the round trips at cap 0.56; the ledger and the bench
+  mirror for the variant.
+
 ## Review log
 
 Each critic issue was verified against the text and, where it made a numeric claim, re-run in
@@ -15811,6 +15845,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I94 | feat: diel D1b, the depth-aware oracle pilot of DESIGN §49.7 behind `diel.oracle` (default 0; CLI only): `alife.diel_oracle` (assignment by uid hash at a fork's start or a fresh run's founders, strata from the four z bands, the reachable schedule, the cap-1 override and the scripted `mo.buoy` before the costs, no ledger term), the conditional per-agent int8 field `diel_orc` (inherited, immigrants 0), 24 harvest counters (oracle and comparison, per stratum, photic band and half of the day; 49.7 says 12), the per-stratum energy rows, `alife.analysis.diel_pilot` (G per stratum and pooled, day-block bootstrap, Holm, GO/SMALL/STOP, `rule_hash`) and `scripts/diel_pilot.py`. **Off: bit-identical** (identity matrix 0 DIFF; `oracle = 0` traces nothing new). Recorded in §49.12: global mode only, the counters for both groups, the analysis' judgment calls; a fork that changes a non-zero oracle is refused (review finding). Also fixes D1's omission of the `diel` preset from the GUI test list `PresetFileTests.presetNames` (found by the first full Swift CI run, I91). |
 | I95 | feat: diel D2, the sky-light brain input of DESIGN §49.4 behind `diel.sense` (default false): the `light` block (token `diel1@1`, mask bit 6, genome layout version base + 4*64, 3D `D_IN` 85, silent at founders and immigrants), `diel.sense_input` (log-scaled sky light of the step at the ramped day fraction, per pixel in terminator mode, the `extinction` arm, `L_bar` under the matched control and the mute setting), validation, `alife migrate --enable diel` adding the silent row. **Off: bit-identical** (identity matrix 0 DIFF). Deviations in §49.13: the mute setting by a fork, not a resume; the migration only from a diel-off source. |
 | I96 | feat: diel D1c, the first oracle pilot's result and the redesign for the second (§49.14): the first pilot (D1b's schedule, 3 seeds) gave no `G` (the oracle lineages died out by day 2 to 7 in the dusk starvation crash; `G` does not see mortality), so its printed SMALL carries no information. `diel.oracle_schedule` (default 1, D1b's; CLI only; post v0.1): schedule 2, round trips that leave the oracle rows at home a margin before dusk and dawn, by day to the lowest wholly photic field layer where reachable. `alife.analysis.diel_pilot2`: the lineage-fitness rule (censored daily increments of `ln(N_O/N_C)`, GO / SMALL / STOP / INVALID, `rule_hash` `0f4b7da9…`), set post hoc and approved by the owner before the second pilot; under it the first pilot reads STOP (`w` about -1 per day). **The second pilot (schedule 2, 3 seeds): STOP**, pooled `w` -0.68 per day (90% -0.83 to -0.53), every stratum negative; the box long runs are not spent. Driver `--schedule`, `--warm-from`. **Off and schedule 1: unchanged** (identity matrix 0 DIFF). |
+| I97 | feat: diel D1d, the no-cap-change oracle (§49.15): `diel.oracle_cap` (`one` default = D1b's; `own`, CLI only, needs `oracle_schedule = 2`) keeps the oracle rows' heritable cap and computes schedule 2 per row from it (rise speed, hold lift, reachable excursions; a cap that cannot balance gravity makes no excursion and gets full lift). Exploratory under the rule of §49.14; driver `--cap own`. **Off, `one`: unchanged** (identity matrix 0 DIFF). The third pilot (3 seeds): SMALL by the rule (pooled `w` -0.08 per day, 90% -0.13 to -0.03; floor -0.02, mid -0.16, top -0.43); the cap raised to 1 explained most of the second pilot's loss, and no stratum is positive. |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense
