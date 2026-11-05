@@ -23,6 +23,7 @@ from alife.weather import ENGINE_FIXED, WeatherForcing, WeatherParams
 
 BLOCK = 4000  # steps per reported block
 RENORM = 100  # steps between renormalisations of the power iteration
+EVAL_EVERY = 50  # steps between evaluations (a block-long lazy graph took 77 GB at Nw 126)
 
 
 def make_params(nw: int, radius: float, c: float, f0: float = 0.025, **over: float) -> WeatherParams:
@@ -62,6 +63,8 @@ def rms_blocks(
     out, prev = [], None
     for i in range(1, nsteps + 1):
         s, _ = weather_sph.step(s, fo, key, p, radius, dry=dry, advect=False, seeds=False, kappa_d=kappa_d)
+        if i % EVAL_EVERY == 0:
+            mx.eval(*s)
         if i % BLOCK == 0:
             d = mx.stack([s.h1, s.h2]) - base
             r = math.log(float(mx.sqrt((d * d).mean())))

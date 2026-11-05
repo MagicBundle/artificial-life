@@ -66,6 +66,7 @@ def test_with_every_feature_off_every_function_is_the_identity() -> None:
         "stormsph16",
         "stormsph22",
         "stormsph22h",
+        "stormsph128",
     )
     assert ext.check_registry() == []
 

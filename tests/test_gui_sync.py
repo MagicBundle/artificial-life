@@ -712,7 +712,8 @@ def test_the_play_launch_flags_are_flags_of_alife_play() -> None:
     choices = {s: a.choices for a in parser._actions for s in a.option_strings if a.choices}  # type: ignore[attr-defined]
     assert swift_enum_values(text, "PlayHouses") == set(choices["--houses"])
     assert swift_enum_values(text, "PlayDirector") == set(choices["--director"])
-    assert {"storm", "storm160", "stormsph", "stormsph16", "stormsph22"} <= set(choices["--overlay"])
+    sphere_overlays = {"stormsph", "stormsph16", "stormsph22", "stormsph128"}
+    assert {"storm", "storm160"} | sphere_overlays <= set(choices["--overlay"])
     # The launcher passes the overlay of the source's geometry, planet shape and size (DESIGN §37.2, §46.8,
     # §46.9): all the names are engine overlays, a planet's is chosen by the source's `world.geometry` and
     # shape (never by an alias; none is passed for a shape without one), and `miniWorldSize` is the
@@ -733,21 +734,21 @@ def test_the_play_launch_flags_are_flags_of_alife_play() -> None:
 
 def test_the_launcher_overlay_table_holds_the_shapes_the_overlays_are_made_for() -> None:
     """`PlanetSpec.weatherOverlays` pairs a planet shape (radius, height, nside, layers) with its overlay.
-    Each row is the shape of one engine sphere preset (`tiny3s`, `mini3s`, `64k3s`) and an engine overlay that
-    validates on exactly that preset and is refused on the other two."""
+    Each row is the shape of one engine sphere preset (`tiny3s`, `mini3s`, `64k3s`, `128k3s`) and an engine
+    overlay that validates on exactly that preset and is refused on the other sphere presets."""
     text = (CORE / "PlayLaunch.swift").read_text(encoding="utf-8")
-    rows = re.findall(
-        r'\(PlanetShape\(radius: (\d+), height: (\d+), nside: (\d+), layers: (\d+)\), "([a-z0-9]+)"\)', text
-    )
-    assert [r[4] for r in rows] == ["stormsph", "stormsph16", "stormsph22"]
-    preset_of = {"stormsph": "64k3s", "stormsph16": "tiny3s", "stormsph22": "mini3s"}
-    # every calibrated planet has a row; the extra-large ones (128k3s, 256k3s, 576k3s) have none
-    assert sorted(preset_of.values()) == sorted(config.SPHERE_PRESETS[:3])
+    shape_re = r"PlanetShape\(radius: ([\d.]+), height: (\d+), nside: (\d+), layers: (\d+)\)"
+    rows = re.findall(rf'\({shape_re}, "([a-z0-9]+)"\)', text)
+    assert [r[4] for r in rows] == ["stormsph", "stormsph16", "stormsph22", "stormsph128"]
+    preset_of = {"stormsph": "64k3s", "stormsph16": "tiny3s", "stormsph22": "mini3s", "stormsph128": "128k3s"}
+    # every calibrated planet has a row; the other extra-large ones (256k3s, 576k3s) have none
+    assert sorted(preset_of.values()) == sorted([*config.SPHERE_PRESETS[:4]])
     for radius, height, nside, layers, overlay in rows:
         assert overlay in config.WORLD_OVERLAYS
         cfg = config.load_config(preset=preset_of[overlay], overlays=[overlay])
         w = cfg.world
-        assert [int(radius), int(height), int(nside), int(layers)] == [w.radius, w.height, w.nside, w.layers]
+        expect = [float(radius), int(height), int(nside), int(layers)]
+        assert expect == [w.radius, w.height, w.nside, w.layers]
         assert cfg.weather.enabled and cfg.weather.cells == 2 * int(nside)
         for (
             other
@@ -764,19 +765,19 @@ def test_the_launcher_spinup_table_is_the_engines_and_follows_the_overlay_table(
     from alife import weather_spinup
 
     text = (CORE / "PlayLaunch.swift").read_text(encoding="utf-8")
-    shape = r"PlanetShape\(radius: (\d+), height: (\d+), nside: (\d+), layers: (\d+)\)"
+    shape = r"PlanetShape\(radius: ([\d.]+), height: (\d+), nside: (\d+), layers: (\d+)\)"
     spin = re.search(r"sphereSpinups: \[\(shape: PlanetShape, steps: Int\)\] = \[(.*?)\n    \]", text, re.S)
     assert spin, "no sphereSpinups table in PlayLaunch.swift"
     rows = re.findall(rf"\({shape}, ([0-9_]+)\)", spin.group(1))
     over = re.findall(rf"\({shape}, \"[a-z0-9]+\"\)", text)
     assert [r[:4] for r in rows] == [tuple(o) for o in over]  # one row per overlay row, in order
-    assert set(weather_spinup.SPHERE_SPINUP) == set(config.SPHERE_PRESETS[:3])
+    assert set(weather_spinup.SPHERE_SPINUP) == set(config.SPHERE_PRESETS[:4])
     for radius, height, nside, layers, steps in rows:
         match = [
             name
-            for name in config.SPHERE_PRESETS[:3]
+            for name in config.SPHERE_PRESETS[:4]
             if (lambda w: [w.radius, w.height, w.nside, w.layers])(config.load_config(preset=name).world)
-            == [int(radius), int(height), int(nside), int(layers)]
+            == [float(radius), int(height), int(nside), int(layers)]
         ]
         assert len(match) == 1, (radius, height, nside, layers)
         n = int(steps.replace("_", ""))

@@ -42,7 +42,7 @@ CHUNK = 16  # weather steps per evaluation: enough to hide dispatch latency, sma
 # storm count of that planet's weather have settled, times 1.3 (DESIGN §46.6, ``alife.analysis.w0_sphere``).
 # ``PlanetSpec.sphereSpinups`` in ``gui/Sources/AlifeCore/PlayLaunch.swift`` is the launcher's copy;
 # ``tests/test_gui_sync.py`` keeps the two equal.
-SPHERE_SPINUP: dict[str, int] = {"64k3s": 15_000, "tiny3s": 10_000, "mini3s": 8_000}
+SPHERE_SPINUP: dict[str, int] = {"64k3s": 15_000, "tiny3s": 10_000, "mini3s": 8_000, "128k3s": 32_000}
 CACHE_VERSION = 1  # the format of a cache entry and of its key (bump it when either changes)
 CACHE_OFF_ENV = "ALIFE_SPINUP_CACHE"  # set to "0" to switch the cache of the command line off
 
