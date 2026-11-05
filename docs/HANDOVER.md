@@ -4,6 +4,8 @@ Status of the `alife` project as of 2026-10-23 (the storm world's engine couplin
 session (a local Claude Code session on the owner's MacBook Pro, M5 Pro, 48 GB). Read this, then `CLAUDE.md`, then the parts of
 `docs/DESIGN.md` you need.
 
+**Save default (owner, 2026-11-05, DESIGN I99):** a new `alife run` (fresh or fork) writes `run.saves = "single"` and keeps only its newest checkpoint, and a newly played world starts in save mode `single`; use `--set run.saves=all` (run) or `--saves all` (play) for the old behaviour. Existing worlds are unchanged. Measurement runs that need older saves (resim windows, `emergence record`, the W2 runs) must pass `--set run.saves=all`.
+
 ## What this is
 
 A neural artificial-life engine in Python on Apple MLX. It replicates the agent affordances from a Fraser Price
@@ -602,7 +604,7 @@ and resumed once. There is one run per condition apart from the seed pair.
 - **Not done (W2b; needs the owner's go, about 10.7 GPU hours and 119 GB):** the occupancy gate G0 (before the calibration; remedy `cell_capacity` 64 is hashed),
   the calibration of `rain_gain`, `storm_*`, `seed_gain`, `shade_gain` (`presets/storm.toml` still holds W1's provisional values), the 14 runs (arms A, N, S, WB, A1, E on
   s0 and s1, A and N on s2, 100,000 steps), the held-out label windows and `LABEL_VERDICTS` rows, `docs/RESULTS_W2.md`. The commands need
-  `--set game.observe=true --set game.tracers=16384 --set run.eco_every=250 --set run.wx_every=500 --set run.keep_checkpoints=5` (DESIGN §32.12).
+  `--set game.observe=true --set game.tracers=16384 --set run.eco_every=250 --set run.wx_every=500 --set run.keep_checkpoints=5 --set run.saves=all` (DESIGN §32.12).
 - **Open for the owner** (the eight decisions of the W2 spec were taken as recommended by the coordinator, to revisit; DESIGN §32.12): which seeds (s2 added for A and N),
   the eddy hazard, `RULES_V3` as the default for every world, run length, the arms (WB and E added), the PR split and the GPU go, **seeding is density-driven**
   (crowds seed whatever their genes: STORMS §4's "sub-threshold emission alone does not trigger rain-out" is not met; P1c reports the paid share and a hinge is a later variant), and the bond break is not calibrated.

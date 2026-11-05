@@ -47,7 +47,7 @@ def short_cadence(monkeypatch: pytest.MonkeyPatch) -> None:
 def planet_args(source: Path, out: Path, *extra: str) -> list[str]:
     return [
         "play", "--init-from", f"{source}:12", "--overlay", "storm", "--weather-spinup", str(SPINUP),
-        "--out", str(out), "--no-control", "--rate", "max", "--until", "52", *extra,
+        "--out", str(out), "--no-control", "--rate", "max", "--until", "52", "--saves", "all", *extra,
     ]  # fmt: skip
 
 
