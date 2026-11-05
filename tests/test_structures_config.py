@@ -202,6 +202,12 @@ def test_silent_build_zeroes_the_build_column_of_founders_only() -> None:
 def test_the_build_overlay_validates_against_the_presets_that_can_be_coloured() -> None:
     assert "build" in config.WORLD_OVERLAYS and "build" not in config.OVERLAYS
     for preset in config.PRESETS:
+        if (
+            preset == "576k3s"
+        ):  # cap 4096 x 857 304 field cells overflows the int32 MAT_TOTAL counter: refused
+            with pytest.raises(ConfigError, match="overflows the int32 MAT_TOTAL counter"):
+                load_config(preset=preset, overlays=["build"])
+            continue
         cfg = load_config(preset=preset, overlays=["build"])
         if (
             preset in config.SPHERE_PRESETS

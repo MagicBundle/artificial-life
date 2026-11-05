@@ -9,7 +9,7 @@ import Testing
 /// and their manifest are complete.
 @Suite struct PresetGuideTests {
     private static let config = try! String(contentsOf: Repo.root.appendingPathComponent("src/alife/config.py"), encoding: .utf8)
-    private static let sphereNames: Set<String> = ["tiny3s", "mini3s", "64k3s"]
+    private static let sphereNames: Set<String> = ["tiny3s", "mini3s", "64k3s", "128k3s", "256k3s", "576k3s"]
 
     /// The names of `PRESETS: tuple[str, ...] = (...)` in config.py.
     private static func enginePresets() -> [String] {
@@ -78,7 +78,7 @@ import Testing
         let planets = Set(PresetGroup.planet.presets.map(\.rawValue))
         #expect(planets == Self.sphereNames)
         let engine = Self.config
-        #expect(engine.contains("SPHERE_PRESETS: tuple[str, ...] = (\"tiny3s\", \"mini3s\", \"64k3s\")"))
+        #expect(engine.contains("SPHERE_PRESETS: tuple[str, ...] = (\"tiny3s\", \"mini3s\", \"64k3s\", \"128k3s\", \"256k3s\", \"576k3s\")"))
     }
 
     @Test func everyPresetIsInExactlyOneGroup() {
@@ -159,8 +159,9 @@ import Testing
         let manifest = try #require(Self.manifest, "gui/PresetSnapshots/manifest.json is missing or unreadable")
         #expect(!manifest.machine.isEmpty)
         #expect(manifest.gitDirty == false, "the final snapshots are made from committed code")
-        #expect(manifest.snapshots.count == Preset.allCases.count)
-        for preset in Preset.allCases {
+        #expect(manifest.snapshots.count == Preset.measured.count)
+        for preset in Preset.measured {
+            #expect(!Preset.unmeasured.contains(preset))
             let entry = try #require(manifest.entry(for: preset), "\(preset.rawValue) has no manifest entry")
             let facts = try #require(PresetFacts.preset(preset, repo: Repo.root))
             #expect(entry.seed == 1)
@@ -179,7 +180,7 @@ import Testing
         }
     }
 
-    @Test(arguments: Preset.allCases)
+    @Test(arguments: Preset.measured)
     func theCommittedSnapshotIsAJPEGOfTheRightShapeAndSize(preset: Preset) throws {
         let url = PresetSnapshotManifest.imageURL(preset, repo: Repo.root)
         let data = try Data(contentsOf: url)
@@ -190,6 +191,17 @@ import Testing
         let props = try #require(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
         #expect(props[kCGImagePropertyPixelWidth] as? Int == 640)
         #expect(props[kCGImagePropertyPixelHeight] as? Int == 400)
+    }
+
+    @Test func theUnmeasuredPresetsAreTheExtraLargePlanetsAndHaveNoSnapshotOrComparison() throws {
+        #expect(Preset.unmeasured == [.k128_3s, .k256_3s, .k576_3s])
+        let manifest = try #require(Self.manifest)
+        for preset in Preset.unmeasured {
+            #expect(manifest.entry(for: preset) == nil, "\(preset.rawValue): a snapshot was made; remove it from Preset.unmeasured and give it comparisons")
+            #expect(!Preset.comparisons.contains { $0.preset == preset || $0.reference == preset }, "\(preset.rawValue): no measured speed to hold a comparison to")
+            #expect(preset.group == .planet && preset.guide.what.contains("64k3s"))
+            #expect(preset.guide.goodFor.contains("Not yet calibrated"))
+        }
     }
 
     @Test func aRepositoryWithoutSnapshotsGivesEntriesWithoutThemAndNoCrash() throws {
@@ -295,7 +307,7 @@ import Testing
         for preset in Preset.allCases {
             let facts = try #require(PresetFacts.preset(preset, repo: Repo.root))
             let note = PresetFacts.nameNote(preset, nMax: facts.nMax)
-            if ["64k", "256k", "64k3d", "64k3s"].contains(preset.rawValue) {
+            if ["64k", "256k", "64k3d", "64k3s", "128k3s", "256k3s", "576k3s"].contains(preset.rawValue) {
                 #expect(note?.contains(PresetFacts.count(facts.nMax)) == true, "\(preset.rawValue): \(String(describing: note))")
             } else {
                 #expect(note == nil, "\(preset.rawValue)")

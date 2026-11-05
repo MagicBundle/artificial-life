@@ -572,9 +572,13 @@ PRESETS: tuple[str, ...] = (
     "tiny3s",
     "mini3s",
     "64k3s",
+    "128k3s",
+    "256k3s",
+    "576k3s",
 )
-# The planets (DESIGN §46.9), the sphere analogues of tiny3d, mini3d and 64k3d: a subset of ``PRESETS``.
-SPHERE_PRESETS: tuple[str, ...] = ("tiny3s", "mini3s", "64k3s")
+# The planets (DESIGN §46.9), the sphere analogues of tiny3d, mini3d and 64k3d, then the three uncalibrated
+# extra-large ones (``128k3s``, ``256k3s``, ``576k3s``: 64k3s scaled by area): a subset of ``PRESETS``.
+SPHERE_PRESETS: tuple[str, ...] = ("tiny3s", "mini3s", "64k3s", "128k3s", "256k3s", "576k3s")
 OVERLAYS: tuple[str, ...] = ("fast",)  # compose with every preset
 # Overlays that need a particular world (DESIGN §30): validated against whatever preset they land on, and not
 # part of ``OVERLAYS`` (which means "composes with every preset").

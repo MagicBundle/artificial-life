@@ -55,6 +55,10 @@ struct SetupModelTests {
         }
         m.choose(.preset(.k64_3s))   // a planet of the third calibrated shape
         #expect(m.goalsAllowed == [.play, .research])
+        for big in [Preset.k128_3s, .k256_3s, .k576_3s] {   // the extra-large planets: no calibrated weather, so research only
+            m.choose(.preset(big))
+            #expect(m.goalsAllowed == [.research], "\(big.rawValue)")
+        }
         m.choose(.preset(.tiny))   // a flat preset
         #expect(m.goalsAllowed == [.research])
         m.choose(.preset(.tiny3d))   // a 3D box: weather has its overlay

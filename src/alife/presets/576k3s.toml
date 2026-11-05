@@ -1,0 +1,53 @@
+# 576k3s: an extra-large planet, 64k3s scaled by floor area at equal density (DESIGN section 46.9, an uncalibrated test of how
+# large a planet the Mac can run). It is `64k3s.toml` with the radius 270.0 instead of 90: a floor area of 916 088 against
+# 64k3s's 101 788 (9 times the area), n_max 589824 and n_init 147456 in proportion, HEALPix Nside 63
+# (the pixel area stays 19.23 units^2, as in 64k3s, so food per unit of area is the same) and 18 equal-volume layers
+# (857 304 field cells; the limit is 2^20 = 1 048 576), n_patches 72 and max_births_per_step 9216. Everything else is
+# 64k3s's: the shell thickness 40, the physics, the economy, patch_sigma, regen_max 1 340 and cell_capacity 32.
+# `world.size` is only the image length of min_image and must exceed 4 (radius + height) = 1 240.
+#
+# NOT CALIBRATED. 64k3s's regen_max 1 340 and hash capacity were measured on Metal for radius 90 (DESIGN 46.9); they were
+# not measured here. The population level, the founders' boom and the hash occupancy at this size are untested, and no
+# speed or memory has been measured. No storm weather is calibrated for it: the `stormsph` overlays are made for 64k3s,
+# mini3s and tiny3s, and the engine refuses them on another shape. One key per line: the GUI reads the scalars of this
+# file.
+[population]
+n_max = 589824
+n_init = 147456
+max_births_per_step = 9216
+
+[world]
+geometry = "sphere"
+size = 2048.0
+dims = 3
+height = 40.0
+radius = 270.0
+nside = 63
+layers = 18
+
+[physics]
+gravity = 0.015
+floor_eps = 0.1
+buoyancy_max = 0.04
+
+[sensing]
+k_neighbors = 8
+cell_capacity = 32
+
+[energy]
+brain_cost_per_l1 = 0.0905
+buoyancy_cost = 16
+buoyancy_cap_cost = 8
+
+[mutation]
+buoy_init = 0.5
+buoy_sigma = 0.02
+
+[fields]
+n_patches = 72
+patch_sigma = 24.0
+regen_max = 1340
+chem_diffusion = [0.16, 0.10, 0.16]
+benthic_lambda = 8.0
+photic_amp = 0.5
+photic_lambda = 8.0
