@@ -15622,6 +15622,8 @@ thresholds are the owner's.
     pilot it gave SMALL (pooled `w` -0.05, 90% -0.13 to +0.02) despite 9 of 9 oracle extinctions: a stratum whose comparison
     group also died out returned to a ratio of 1, and the absorbed days diluted the mean. The censoring and the start at
     day 0 replaced it (the owner, 2026-11-05) before the second pilot.
+* **The geometry lint** allowlists the box-only read of `world.field_cell` in `diel_oracle.photic_target` (1, reason "box
+  branch"; `diel_oracle.py` in `NOT_IN_SPEC_AUDIT`); the validation compares with `sphere.geometry(cfg).height_max`.
 * **Driver**: `scripts/diel_pilot.py --schedule {1|2}` (default 2; it picks the rule) and `--warm-from DIR` (forks existing
   warm-ups; the second pilot forks the first pilot's, so both pilots start from the same states).
 * **Tests**: validation (the value, inert while the oracle is off, no photic layer); the schedule-2 constants on mini3d; the

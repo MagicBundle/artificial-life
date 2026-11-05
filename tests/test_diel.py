@@ -46,8 +46,9 @@ def test_every_key_is_off_by_default_hashed_and_omitted_from_config_json() -> No
         0,
         True,
     )
+    assert d.oracle_schedule == 1  # D1c (§49.14)
     keys = {("diel", f.name) for f in dataclasses.fields(DielConfig)}
-    assert keys == set(ext.lever_keys()["diel"]) == set(SPEC.lever_keys) and len(keys) == 11
+    assert keys == set(ext.lever_keys()["diel"]) == set(SPEC.lever_keys) and len(keys) == 12
     assert keys <= set(config.POST_V01_KEYS) and keys <= set(config.SERIAL_OMIT_KEYS)
     assert not keys & (set(config.UNHASHED_KEYS) | set(config.OBSERVER_KEYS))
     off, on = load(), load(ON)

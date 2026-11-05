@@ -180,11 +180,11 @@ def _validate(cfg: Any) -> None:
                     "balancing lift)"
                 )
             if c.oracle_schedule == 2:  # D1c (§49.14): the day target is a layer of the box's field
-                from alife import diel_oracle
+                from alife import diel_oracle, sphere
 
                 if cfg.world.geometry == "sphere":
                     bad.append("diel.oracle_schedule 2 needs the box (its day target is a field layer)")
-                elif diel_oracle.photic_target(cfg) >= cfg.world.height:
+                elif diel_oracle.photic_target(cfg) >= sphere.geometry(cfg).height_max:
                     bad.append(
                         "diel.oracle_schedule 2 needs a field layer wholly in the photic band (raise "
                         "fields.photic_lambda or lower world.field_cell)"
