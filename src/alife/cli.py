@@ -96,6 +96,7 @@ RESUME_KEYS: frozenset[str] = frozenset(
         "metrics_every",
         "checkpoint_every",
         "keep_checkpoints",
+        "saves",
         "heavy_metrics_every",
         "components_iters",
         "diversity_sample",
@@ -491,8 +492,19 @@ def _prepare_run(
     return rd, cfg, box, _spin_weather(a, rd, cfg, box)
 
 
+def _with_default_saves(a: argparse.Namespace, overrides: list[str]) -> list[str]:
+    """A new research run (fresh or fork) keeps only its newest checkpoint (``run.saves = single``, DESIGN
+    §34.10, I99) unless ``run.saves`` is set in ``--set`` or in the ``--config`` file. It is written into the
+    new run's ``config.json``; a config.json without the key (every older run) is ``all`` on resume."""
+    if any(i.partition("=")[0].strip() == "run.saves" for i in overrides):
+        return overrides
+    if a.config is not None and "saves" in (config_mod._read_file(Path(a.config)).get("run") or {}):
+        return overrides
+    return ["run.saves=single", *overrides]
+
+
 def _cmd_run(a: argparse.Namespace) -> int:
-    overrides = _run_overrides(a)
+    overrides = _with_default_saves(a, _run_overrides(a))
     if a.init_from is not None:
         return _fork(a, overrides)
     rd, cfg, box, code = _prepare_run(a, overrides)
@@ -1306,9 +1318,11 @@ def _cut_listing(rd: RunDir, step: int) -> str:
     ) + f" and {len(chunks)} event chunk(s) {chunks}"
 
 
-def _save_mode(a: argparse.Namespace, saved: dict[str, Any] | None) -> str:
-    """The save mode of this session (DESIGN 34.10): ``--saves``, else play.json's ``saves``, else ``all``."""
-    mode = getattr(a, "saves", None) or (saved or {}).get("saves") or "all"
+def _save_mode(a: argparse.Namespace, saved: dict[str, Any] | None, *, new_world: bool = False) -> str:
+    """The save mode of this session (DESIGN 34.10): ``--saves``, else play.json's ``saves``, else ``all``
+    for a world that exists, but ``single`` for a world being made now (``new_world``, I99): its
+    play.json then records it. A world whose play.json says nothing keeps ``all``."""
+    mode = getattr(a, "saves", None) or (saved or {}).get("saves") or ("single" if new_world else "all")
     if mode not in play.SAVE_MODES:
         raise ConfigError(f"play.json's saves is one of {play.SAVE_MODES}, not {mode!r}")
     return str(mode)
@@ -1454,7 +1468,7 @@ def _play_serve(
     if a.until is not None and a.until < step:
         raise ConfigError(f"--until {a.until} is before the start step {step}")
     saved = saved or {}
-    saves = _save_mode(a, saved)
+    saves = _save_mode(a, saved, new_world=fresh)
     base_rate = a.base_rate or saved.get("base_rate") or play.BASE_RATE
     rate = 1.0 if a.rate is None or a.rate == 0 else a.rate
     paused = a.rate is None or a.rate == 0 or a.paused
@@ -2033,9 +2047,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--saves",
         choices=play.SAVE_MODES,
         default=None,
-        help="all (default): keep the last 3 saves and the origin; newest: only the newest save and the "
-        "origin; single: only the newest save (kept in play.json; the `saves` control line changes it while "
-        "playing, DESIGN 34.10, 34.11)",
+        help="all: keep the last 3 saves and the origin; newest: only the newest save and the origin; "
+        "single: only the newest save. The default is single for a world made now, and the world's own "
+        "play.json for one that exists (all where it says nothing). Kept in play.json; the `saves` control "
+        "line changes it while playing (DESIGN 34.10, 34.11, I99)",
     )
     p.add_argument("--no-control", action="store_true", help="do not read stdin")
     p.set_defaults(func=_cmd_play)

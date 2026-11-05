@@ -143,7 +143,7 @@ def planet(
     out = tmp_path / "planet"
     args = [
         "play", "--init-from", f"{source}:{MADE_AT}", "--overlay", "storm", "--weather-spinup", "32",
-        "--out", str(out), "--no-control", "--rate", "max", "--until", "1510",
+        "--out", str(out), "--no-control", "--saves", "all", "--rate", "max", "--until", "1510",
     ]  # fmt: skip
     code = cli.main(args)
     cap = capfdbinary.readouterr()
@@ -224,7 +224,7 @@ def test_the_cli_gives_the_pacer_the_planets_origin_on_a_new_world_and_on_a_resu
     out = tmp_path / "p"
     new = [
         "play", "--init-from", f"{source}:{MADE_AT}", "--overlay", "storm", "--weather-spinup", "32",
-        "--out", str(out), "--no-control", "--rate", "max", "--until", "1010",
+        "--out", str(out), "--no-control", "--saves", "all", "--rate", "max", "--until", "1010",
     ]  # fmt: skip
     assert cli.main(new) == 0
     assert seen[-1].origin_step == MADE_AT
