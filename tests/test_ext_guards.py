@@ -94,6 +94,7 @@ FROZEN_OMITTED_DEFAULTS = {
     ("diel", "oracle"): 0,
     ("diel", "silent_init"): True,
     ("diel", "oracle_schedule"): 1,  # the oracle's schedule (DESIGN §49.14, PR D1c)
+    ("diel", "oracle_cap"): "one",  # the oracle rows' cap (DESIGN §49.15, PR D1d)
     (
         "arms",
         "dump_n",
