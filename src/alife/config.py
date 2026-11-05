@@ -462,12 +462,15 @@ class DielConfig:  # the day-night light cycle on the photic food band (DESIGN �
     twilight: float = 0.25  # tw, the width of the dawn and dusk ramp in units of the sun's sine, (0, 1]
     night_level: float = 0.0  # n, the photic multiplier at night, [0, 1)
     control: str = "none"  # none | mean (the day-mean table V_bar, the matched control, §49.5)
-    sense: bool = False  # the sky-light brain input (D2; refused until it lands)
+    sense: bool = False  # the sky-light brain input (D2): one silent input block, a layout change
     extinction: float = 0.0  # 0 = sky light; > 0 = e-folding depth of the sensed light (D2)
     sense_control: str = "none"  # none | mute (the sensed light replaced by its day mean; D2)
     oracle: int = 0  # pilot only: percent of the agents given the scripted schedule (D1b; refused until then)
     silent_init: bool = True  # the light input's W1 row starts at zero (D2)
     oracle_schedule: int = 1  # the oracle's schedule: 1 (D1b, §49.12) | 2 (round trips, D1c, §49.14)
+    oracle_cap: str = (
+        "one"  # the oracle rows' cap: one (raised to 1, D1b) | own (their heritable cap, D1d, §49.15)
+    )
 
 
 @dataclass(frozen=True)

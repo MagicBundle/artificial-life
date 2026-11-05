@@ -170,6 +170,21 @@ def test_driver_dry_run(tmp_path):
         check=True,
     ).stdout.splitlines()
     assert len(w) == 4 and sum(f"--init-from {warm}/warm_" in x for x in w) == 3
+    own = subprocess.run(
+        [
+            sys.executable,
+            str(REPO / "scripts" / "diel_pilot.py"),
+            "--out",
+            str(root),
+            "--dry-run",
+            "--cap",
+            "own",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    assert sum("diel.oracle_cap=own" in x and "diel.oracle_schedule=2" in x for x in own) == 3
     assert not root.exists()
     root.mkdir()
     (root / "warm_21").mkdir()
