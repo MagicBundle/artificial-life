@@ -336,6 +336,10 @@ def run(
     t = int(to_numpy(state.step))
     end = t + steps
     rd.update_meta(status="running")
+    if pacer is None and run_cfg.saves != "all":
+        # a research run's ``run.saves`` (DESIGN §34.10, I99). ``all`` leaves the object as it is (a fresh
+        # RunDir is ``all``), and a played world's mode is the pacer's.
+        rd.set_save_mode(run_cfg.saves)
     obs: Observer | None = None
     if cfg.game.observe:
         obs, note = Observer.open(rd, state, cfg)
