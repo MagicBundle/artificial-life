@@ -741,7 +741,8 @@ def test_the_launcher_overlay_table_holds_the_shapes_the_overlays_are_made_for()
     )
     assert [r[4] for r in rows] == ["stormsph", "stormsph16", "stormsph22"]
     preset_of = {"stormsph": "64k3s", "stormsph16": "tiny3s", "stormsph22": "mini3s"}
-    assert sorted(preset_of.values()) == sorted(config.SPHERE_PRESETS)  # every planet has a row
+    # every calibrated planet has a row; the extra-large ones (128k3s, 256k3s, 576k3s) have none
+    assert sorted(preset_of.values()) == sorted(config.SPHERE_PRESETS[:3])
     for radius, height, nside, layers, overlay in rows:
         assert overlay in config.WORLD_OVERLAYS
         cfg = config.load_config(preset=preset_of[overlay], overlays=[overlay])
@@ -769,11 +770,11 @@ def test_the_launcher_spinup_table_is_the_engines_and_follows_the_overlay_table(
     rows = re.findall(rf"\({shape}, ([0-9_]+)\)", spin.group(1))
     over = re.findall(rf"\({shape}, \"[a-z0-9]+\"\)", text)
     assert [r[:4] for r in rows] == [tuple(o) for o in over]  # one row per overlay row, in order
-    assert set(weather_spinup.SPHERE_SPINUP) == set(config.SPHERE_PRESETS)
+    assert set(weather_spinup.SPHERE_SPINUP) == set(config.SPHERE_PRESETS[:3])
     for radius, height, nside, layers, steps in rows:
         match = [
             name
-            for name in config.SPHERE_PRESETS
+            for name in config.SPHERE_PRESETS[:3]
             if (lambda w: [w.radius, w.height, w.nside, w.layers])(config.load_config(preset=name).world)
             == [int(radius), int(height), int(nside), int(layers)]
         ]

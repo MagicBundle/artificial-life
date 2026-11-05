@@ -396,7 +396,7 @@ after any change to `Shaders.swift` or `Renderer.swift`.
 
 ## The sphere world
 
-A world with `world.geometry = "sphere"` (presets `tiny3s`, `mini3s`, `64k3s`) is drawn as a planet by the Watch page, played or observed (DESIGN §46.8): drag turns
+A world with `world.geometry = "sphere"` (presets `tiny3s`, `mini3s`, `64k3s`, and the uncalibrated extra-large `128k3s`, `256k3s`, `576k3s`, which have no snapshot, no speed figure and no calibrated weather) is drawn as a planet by the Watch page, played or observed (DESIGN §46.8): drag turns
 the planet, a two-finger scroll pans (View > Scroll zooms swaps it with the zoom), a pinch or a wheel zooms, T O L S tilt, H goes home, I shows the minimap (an
 equal-area Mollweide chart). Its levers are under New world > Advanced. The GPU tests are opt-in:
 `ALIFE_GPU_TESTS=1 swift test --filter "GPUSphereTests|GPUPlanetWindowTests"` (pictures under `$ALIFE_GPU_TESTS_OUT`; `$ALIFE_SPHERE_STREAM` names a protocol 2 play stream to draw).
