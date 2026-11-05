@@ -536,7 +536,8 @@ def test_strm_envs_and_caps() -> None:
     storm = pf._storm_obj(0)["storms"][0]
     many = {"detect_step": 0, "storms": [storm] * 64, "ended": []}
     blob = sr.encode_strm(step=0, seq=0, tick=25, obj=many)
-    assert len(blob) <= 24 * 1024 + 64  # budget: STRM <= 24 KB for 64 storms (I100; this storm has a short track)
+    # budget: STRM <= 24 KB for 64 storms (I100; this storm has a short track)
+    assert len(blob) <= 24 * 1024 + 64
     with pytest.raises(sr.RecordError, match="cap"):
         sr.encode_strm(step=0, seq=0, tick=25, obj={**many, "storms": [storm] * 65})
     rec = _one(8, sr.encode_envs(step=1, seq=0, obj=pf._pools()))
