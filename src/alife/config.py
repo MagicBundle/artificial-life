@@ -467,6 +467,7 @@ class DielConfig:  # the day-night light cycle on the photic food band (DESIGN �
     sense_control: str = "none"  # none | mute (the sensed light replaced by its day mean; D2)
     oracle: int = 0  # pilot only: percent of the agents given the scripted schedule (D1b; refused until then)
     silent_init: bool = True  # the light input's W1 row starts at zero (D2)
+    oracle_schedule: int = 1  # the oracle's schedule: 1 (D1b, §49.12) | 2 (round trips, D1c, §49.14)
 
 
 @dataclass(frozen=True)

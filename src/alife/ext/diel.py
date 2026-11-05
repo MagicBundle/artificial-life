@@ -30,10 +30,12 @@ _KEYS = (
     "sense_control",
     "oracle",
     "silent_init",
+    "oracle_schedule",
 )
 MODES = ("global", "terminator")
 CONTROLS = ("none", "mean")
 SENSE_CONTROLS = ("none", "mute")
+ORACLE_SCHEDULES = (1, 2)  # D1b's schedule (§49.12) and D1c's round trips (§49.14)
 PERIOD_MIN = 400
 PERIOD_MAX = 1 << 20
 DAY_FRAC_MAX = 0.95
@@ -156,6 +158,10 @@ def _validate(cfg: Any) -> None:
             bad.append(f"diel.oracle {c.oracle} must be in [0, 100]")
         elif c.oracle > 0 and c.control != "none":
             bad.append("diel.oracle needs diel.control = none")
+        if c.oracle_schedule not in ORACLE_SCHEDULES:
+            bad.append(f"diel.oracle_schedule {c.oracle_schedule} must be one of {ORACLE_SCHEDULES}")
+        elif c.oracle == 0 and c.oracle_schedule != dflt.oracle_schedule:
+            bad.append("diel.oracle_schedule is inert while diel.oracle is 0: it must keep its default")
         # the steps that have not landed: declared so their hash and file format are fixed, refused until
         # built
         if c.sense:
@@ -173,6 +179,16 @@ def _validate(cfg: Any) -> None:
                     "diel.oracle needs physics.buoyancy_max > physics.gravity > 0 (the scripted rise and the "
                     "balancing lift)"
                 )
+            if c.oracle_schedule == 2:  # D1c (§49.14): the day target is a layer of the box's field
+                from alife import diel_oracle, sphere
+
+                if cfg.world.geometry == "sphere":
+                    bad.append("diel.oracle_schedule 2 needs the box (its day target is a field layer)")
+                elif diel_oracle.photic_target(cfg) >= sphere.geometry(cfg).height_max:
+                    bad.append(
+                        "diel.oracle_schedule 2 needs a field layer wholly in the photic band (raise "
+                        "fields.photic_lambda or lower world.field_cell)"
+                    )
         sp = cfg.fields.season_period
         if sp != 0 and sp < 8 * c.period:
             bad.append(f"fields.season_period {sp} must be 0 or >= 8 x diel.period ({8 * c.period})")

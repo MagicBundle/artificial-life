@@ -211,9 +211,17 @@ Every `[diel]` key is CLI-only until D6 (no GUI levers). The CPU golden is pinne
 are recorded in §49.11 for the owner's check. **D1b (row I94)**: the oracle pilot behind `diel.oracle` (§49.12): `alife run --init-from WARM
 --set diel.oracle=20` labels 20% of the living agents (by uid hash) with a scripted daily lift their stratum can reach, cap 1;
 the rest is the comparison group; 24 harvest counters and per-stratum energy rows; the decision rule is
-`python -m alife.analysis.diel_pilot RUN...` (`rule_hash` pinned) and the driver `scripts/diel_pilot.py --dry-run`. **Next:** the
-D4 oracle pilot (about 1.1 GPU hours on the box, DIEL §8; needs the owner's thresholds confirmed), then D2 (the light input).
-Tests: `tests/test_diel.py`, `tests/test_diel_oracle.py`, `tests/test_diel_pilot.py`.
+`python -m alife.analysis.diel_pilot RUN...` (`rule_hash` pinned) and the driver `scripts/diel_pilot.py --dry-run`. **D1c (row
+I96, §49.14)**: the first pilot (`runs/diel_pilot_2026-11-05`) gave no `G`: the oracle lineages died out by day 2 to 7 in the
+world's dusk starvation crash, and `G` (survivor energy) does not see mortality. The second pilot uses
+`diel.oracle_schedule = 2` (round trips home before dusk and dawn) and the lineage-fitness rule `python -m
+alife.analysis.diel_pilot2 RUN...` (`rule_hash` `0f4b7da9…`; it reads the first pilot as STOP, `w` about -1 per day); driver
+`scripts/diel_pilot.py --warm-from runs/diel_pilot_2026-11-05 --out ROOT`. **The second pilot (`runs/diel_pilot2_2026-11-05`)
+decided STOP**: pooled `w` -0.68 per day (90% -0.83 to -0.53), every stratum negative; the floor arm (no day excursion)
+shows that the oracle's fixed costs alone (cap 1, hold lift) cost about -0.2 per day. Per §49.7 the box long runs are not
+spent. **Next (owner):** whether D2 (PR #95, the light input) still merges, and whether to try the exploratory
+no-cap-change or thrust oracle. Tests: `tests/test_diel.py`, `tests/test_diel_oracle.py`, `tests/test_diel_pilot.py`,
+`tests/test_diel_pilot2.py`.
 
 ## How to run
 

@@ -93,6 +93,7 @@ FROZEN_OMITTED_DEFAULTS = {
     ("diel", "sense_control"): "none",
     ("diel", "oracle"): 0,
     ("diel", "silent_init"): True,
+    ("diel", "oracle_schedule"): 1,  # the oracle's schedule (DESIGN §49.14, PR D1c)
     (
         "arms",
         "dump_n",

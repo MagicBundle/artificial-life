@@ -134,7 +134,42 @@ def test_driver_dry_run(tmp_path):
     lines = p.stdout.strip().splitlines()
     assert len(lines) == 7  # 3 seeds x (warm-up + pilot) + analysis
     assert sum("--steps 40000" in x for x in lines) == 3
-    assert sum("--init-from" in x and "diel.oracle=20" in x for x in lines) == 3
+    assert (
+        sum("--init-from" in x and "diel.oracle=20" in x and "diel.oracle_schedule=2" in x for x in lines)
+        == 3
+    )
+    assert "alife.analysis.diel_pilot2" in lines[-1]
+    v1 = subprocess.run(
+        [
+            sys.executable,
+            str(REPO / "scripts" / "diel_pilot.py"),
+            "--out",
+            str(root),
+            "--dry-run",
+            "--schedule",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    assert not any("oracle_schedule" in x for x in v1) and v1[-1].split()[4] == "alife.analysis.diel_pilot"
+    warm = tmp_path / "old"
+    w = subprocess.run(
+        [
+            sys.executable,
+            str(REPO / "scripts" / "diel_pilot.py"),
+            "--out",
+            str(root),
+            "--dry-run",
+            "--warm-from",
+            str(warm),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    assert len(w) == 4 and sum(f"--init-from {warm}/warm_" in x for x in w) == 3
     assert not root.exists()
     root.mkdir()
     (root / "warm_21").mkdir()
