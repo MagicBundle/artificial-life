@@ -1359,7 +1359,7 @@ enum RecordDecoder {
     /// The largest JSON a record may carry; a corrupt length is refused before the payload is waited for.
     static let maxJSON = 1 << 20
     static let maxEvents = 64
-    static let maxStorms = 32
+    static let maxStorms = 64
     static let maxAlerts = 16
     /// The JSON caps of the G3b records (the writer's: DESIGN §34.6).
     static let maxAlertJSON = 24 << 10

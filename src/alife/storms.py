@@ -772,7 +772,7 @@ class StormLayer:
         }
 
     def _strm(self, t: int, events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-        """The ``STRM`` object (§33.1.6): the active tracks, at most 32 (the highest peaks), shortened to fit
+        """The ``STRM`` object (§33.1.6): the active tracks, at most 64 (the highest peaks), shortened to fit
         the record's byte cap if need be."""
         active = sorted(self.tracker.active(), key=lambda x: (-self.notes[x.id].peak, x.id))[
             : streamrec.MAX_STORMS
