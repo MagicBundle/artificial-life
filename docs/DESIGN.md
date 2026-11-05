@@ -15151,7 +15151,7 @@ not tested. The sphere's mirror is not tested (the box's is row 3); the weather,
 (`docs/brainstorming-Fable-November.md` §1 "Not to do"), the compiled step (the eager step is the object compared; the
 compiled step is tied to it by `test_determinism`), Metal (see Method).
 
-## 49. Diel vertical migration (a day-night light cycle on the photic food band; the diel series, PRs D0 to D6; **D1 and D1b built**, rows I93 and I94)
+## 49. Diel vertical migration (a day-night light cycle on the photic food band; the diel series, PRs D0 to D6; **D1, D1b and D1c built**, rows I93, I94 and I96)
 
 Normative text of the diel extension. The specification with the reasoning, the evidence (`file:line`), the review findings and
 the owner decisions is `docs/DIEL.md` (Revision 2, approved by the owner on 2026-11-04); this section states what the engine
@@ -15163,7 +15163,9 @@ this section from "will" to "does" in the same change.** The section number 49 i
 light factor, matched control, `V_bar`, the `diel_ctl` state and its ramp, the probes, the bench mirror, the `diel`
 overlay); 49.11 records what D1 does where it differs from the text above. `sense`, `extinction`, `sense_control`,
 `silent_init` (D2) are declared and refused at non-default values. **After D1b (row I94)** the oracle pilot is built
-(`diel.oracle`, 49.7; what D1b does where it differs from 49.7 is in 49.12).
+(`diel.oracle`, 49.7; what D1b does where it differs from 49.7 is in 49.12). **After D1c (row I96)** the first pilot's
+result, the round-trip schedule (`diel.oracle_schedule = 2`) and the lineage-fitness rule that replaced 49.7's measure for
+the second pilot are in 49.14.
 
 ### 49.1 What it is
 
@@ -15345,7 +15347,9 @@ hashed before the pilot; Holm adjustment over the three strata): **GO** if the p
 bound >= 0.05; **STOP** if the pooled upper 90% bound < 0.02 and every stratum's upper bound < 0.02 (the box long runs are not
 spent; the claim is refuted for this economy, not for the idea); any other outcome is read as SMALL's stage 1 only, never GO.
 A GO followed by a negative C1 refutes "evolves under this sense and period in this world", not the possibility. The
-thresholds are the delegated reviewer's, not yet seen by the owner. DIEL 7.0.
+thresholds are the delegated reviewer's, not yet seen by the owner. DIEL 7.0. **Superseded for the second pilot**: the first
+pilot could not be read under this rule (the oracle lineages died out before day 10, and `G` does not see mortality); the
+schedule and the rule of the second pilot are in 49.14.
 
 ### 49.8 The player power: Long Night
 
@@ -15559,6 +15563,73 @@ the override), `metrics.py` (the interval keys), `state.init_state` and `cli._pr
   the bench mirror bit-equal with the oracle; the pilot fork assigning from the source's rows, a continuing fork keeping the
   labels, resume bitwise; a run writing the 24 interval keys; the analysis on planted synthetic rows (GO, SMALL, STOP, nulls,
   reproducible bootstrap, photic share, the pinned hash, the driver's dry run).
+### 49.14 The first oracle pilot; D1c, the round-trip schedule and the lineage-fitness rule (row I96)
+
+**The first pilot** (D4's go/no-go; run 2026-11-05 on main `cc0056f`, `runs/diel_pilot_2026-11-05`; seeds 21, 22, 23; a
+40,000-step warm-up `mini3d --overlay diel`, then the fork `--set diel.oracle=20` for 160,000 steps; ledger error 0). The rule
+of 49.7 and 49.12 gave no estimate: every `G_s` and the pooled `G` are undefined, so the printed decision, SMALL, came from its
+"any other outcome" branch and carries no information. **The oracle lineages died out** in every stratum and seed by pilot
+day 2 to 7, before the window of days 10 to 40. The world has a daily boom and bust: the population grows to about 7,900 in
+the lit half and falls to about 4,850 within 600 steps after dusk (phase `P/4`), by starvation (the deaths by starvation
+triple, and the top band's share of the population falls from 31% to 2%). Schedule 1 sends every stratum towards the top
+band's centre in the lit half and starts sinking only at dusk (`v_sink` = 0.015 per step), so in the first crash the oracle
+rows lost 40%, 92% and 95% (floor, mid, top) against about 0%, 33% and 86% of their comparison groups. The survivors aged 300
+to 500 had `G_s` between -0.15 and +0.10 while both groups were numerous: **`G` is conditioned on survival and does not see
+mortality.** Read under the rule below (exploratory, since that rule was set after this result): `w` = -0.97, -1.07 and
+-1.28 per day, pooled -1.03 (90% -1.16 to -0.86), STOP. Schedule 1 is strongly selected against in this economy. That is a
+finding about the schedule, which keeps its rows in the band that starves at dusk, not about migration timed to the food.
+
+**The owner's decision (2026-11-05)**: redesign and rerun, with schedule 2 and the rule below, both approved before the
+second pilot ran. This is post hoc: the first pilot's analysis had been blinded and was seen when the owner ran it. The
+thresholds are the owner's.
+
+* **Schedule 2** (`diel.oracle_schedule`, default 1 = D1b's, so the first pilot's runs reproduce; inert and refused at
+  another value while `oracle` is 0; box only, and validation needs a field layer wholly in the photic band). With
+  `trip = 1/v_rise + 1/v_sink` (steps per unit of height there and back at cap 1):
+  * **Targets.** By day, `z_ph`, the centre of the lowest field layer wholly in the photic band, `(ceil((H - 2
+    photic_lambda)/field_cell) + 1/2) field_cell` (26 on mini3d, inside the mid band and below the top band); `up_s = z_ph -
+    z_s` when `z_ph > z_s` and `up_s · trip <= 0.8 P day_frac`, else 0, and that stratum holds at home by day. By night,
+    `down_s = min(z_s - 1, 0.8 P (1 - day_frac)/trip)`. On mini3d: up 0, 6, 0 (the floor's 21 units there and back would
+    take 2,240 > 1,600 steps; the top's home is already photic) and down 4, 15, 15.
+  * **Round trips.** In each half the row goes out (full lift by day, no lift by night) to the target and holds there; it
+    heads home when the time left in the half, less the margin `0.1 × half` (the unused fifth of the budget, split), is
+    at most its time home (`(z - z_s)/v_sink` by day, `(z_s - z)/v_rise` by night), and holds at home. The time left comes
+    from the phase `step mod P` (noon at 0, the lit half within `f P/2` of noon, `f` the effective day fraction
+    `diel_ctl[1]`); at the boundary step, where the light's half (`S > 1/2`) and the phase disagree in float32, it is 0.
+    On mini3d (the kinematic test): the mid stratum is at 26 from phase 3,240 to 400 and home by 800 (dusk at 1,000, less
+    200); by night it is down at 5 by 2,000 and home by 2,800. No oracle row is above its home height at dusk.
+  * The floor stratum, which holds at home by day, is the control of the cap's cost: cap 1 and up to 8 quanta per step of
+    upkeep over a comparison row (whose evolved cap had a median of 0.56).
+  * As schedule 1 otherwise: cap 1 at the start of the step, the override of the decoded `mo.buoy` before the costs, **no
+    ledger term**, the same counters and rows; step and bench mirror share `diel_oracle.plan`.
+* **The rule** (`alife.analysis.diel_pilot2`, frozen by `rule_hash()` =
+  `0f4b7da91a64ab4f135ee21fbd7acbc70537671f1ddb24244d24653ae3d7fd9e` at B 2000 and days 0 to 40; D1b's rule and hash are
+  unchanged and stay the record of the first pilot). The measure is **lineage fitness**, not survivor energy:
+  * Per run, stratum and day, `N_O` and `N_C` are the day's mean `diel_orc_pop` (alive rows, all ages). The data are the
+    daily increments of `ln(N_O/N_C)` over days 0 to 39; day 0's increment holds the schedule's first application.
+  * **Censoring**: an increment counts only while both groups hold at least 10 agents on its first day. When one group
+    falls below 10 on the next day and the other does not, that last increment counts with the fallen group's count raised
+    to 10 (an understatement of the loss), and the stratum's later increments in that run do not count. When both fall
+    below 10 together, nothing further counts.
+  * `w_s` is the mean of the counted increments over the runs (per day); the pooled `w` is weighted by the stratum's mean
+    `N_O + N_C`. Day-block bootstrap within each run (the same days for the strata), B = 2000, 90% percentile bounds.
+  * **Decision**: INVALID if a run's first metrics row has fewer than 50 oracle rows in a stratum, or a stratum has no
+    counted increment in any run; else GO if the pooled lower bound >= +0.01 per day (about 1.5 times the relative
+    frequency over 40 days); else STOP if the pooled upper bound < 0 and every stratum's upper bound < +0.005; else SMALL
+    (stage 1 only). `G` and the photic harvest shares are reported, not decisive.
+  * As first approved, the measure floored an extinct group at half an agent and used days 1 to 39. Tested on the first
+    pilot it gave SMALL (pooled `w` -0.05, 90% -0.13 to +0.02) despite 9 of 9 oracle extinctions: a stratum whose comparison
+    group also died out returned to a ratio of 1, and the absorbed days diluted the mean. The censoring and the start at
+    day 0 replaced it (the owner, 2026-11-05) before the second pilot.
+* **Driver**: `scripts/diel_pilot.py --schedule {1|2}` (default 2; it picks the rule) and `--warm-from DIR` (forks existing
+  warm-ups; the second pilot forks the first pilot's, so both pilots start from the same states).
+* **Tests**: validation (the value, inert while the oracle is off, no photic layer); the schedule-2 constants on mini3d; the
+  plan against a float64 host reference at 15 phases; the kinematic round trips over two days (home a margin before dusk and
+  dawn, the mid stratum at the target at noon and 15 below home at midnight); the ledger test and the bench mirror for both
+  schedules; the rule on synthetic runs (GO, STOP, null and one-stratum SMALL, the three censoring cases computed by hand, an
+  extinction pattern as STOP, both INVALID paths, the window and a fork's start, a reproducible bootstrap, the pinned hash,
+  the CLI); the driver's dry runs.
+
 ## Review log
 
 Each critic issue was verified against the text and, where it made a numeric claim, re-run in
@@ -15691,6 +15762,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I92 | docs: DESIGN §49, the diel vertical migration extension (the normative text of `docs/DIEL.md` Revision 2, approved by the owner 2026-11-04; PR D0 of the diel series D0 to D6). **Docs only; no engine change** (no file under `src/`, `tests/` or `gui/`, no config key, default, layout, digest or golden changes; nothing in §49 is built until D1). §49 states the `[diel]` keys with defaults (all off) and validation, the light factor on the photic term only (`V = min(1, B + L Pk)`, `L = 1` bit-identical to the static profile) and why no ledger term is needed (the food source stays `INJECT_REGEN = sum(inc)`), the sky-light input (`sense`, D_IN 84 -> 85, silent, four hand-computed goldens), the matched control (`V_bar`, `L_bar`), the host-side observers and chronicle events (kinds 22 and 23), the oracle pilot and its GO/SMALL/STOP rule, the Long Night power (`diel_ctl`, no ledger term), the claim world (height 40, day 4,000, amendment A1) with the fallback ladder (P = 8,000 and H = 80, then STOP), the pre-committed sphere repeat and the build plan D0 to D6 with each PR's tests. One change from DIEL.md when condensing, now made in DIEL.md too (the same commit series): the first harmonic of the migration statistic uses the bin-centre hour angle `H_b = 2 pi (b + 1/2)/8 - pi`, because DIEL 5.1's bins put local noon in bin 4 while the old `cos(2 pi (b + 1/2)/8)` peaked at midnight; D3's test fixes it with a planted noon peak. Six further inconsistencies of `docs/DIEL.md` are fixed there: the status line and §9 now say approved on 2026-11-04; one GPU total, summed from the §8 table (about 27 h core, 38 h everything; §0, §8, §12 and §49.10 agree); the dead "§1.2" reference is §1.1 and "section 52" is 49; the report clause of §5.3 speaks of the photic-band share; `diel.oracle` is one definition (the start assignment with inheritance, §7.0 and the config table); the Long Night lower bound is `max(0.2, acos(1 - tw/2)/pi)` in DIEL 6 and §49.8. |
 | I93 | feat: diel D1, the engine core of DESIGN §49 behind `diel.period` (default 0, off): `DielConfig` (11 keys, all in `POST_V01_KEYS` and `SERIAL_OMIT_KEYS` through the registry), the registry row `diel` (extension index 6, no brain footprint, `TAIL_ORDER` slot after `niche`), validation (`sense`, `extinction`, `silent_init` refused until D2, `oracle` until D1b, `--director live` refused), `alife.diel` (the light factor in global and terminator modes, the split profile with full light selecting the static profile bit for bit, `V_bar` over 720 phases, the `diel_ctl` ramp), the `diel=` keyword through the fields code, `niche.update`, the step, the bench mirror and the metrics probes, the conditional state field `diel_ctl` (2,) float32, the `diel` overlay. **Off: bit-identical** (identity matrix 0 DIFF against `2ec1f9b`; no file, hash, layout, counter or digest changes). On: the ledger closes over two days on `tiny3d` and `tiny3s`; per-platform golden pinned for the CPU. Deviations recorded in §49.11: the bit-identity by `where(S >= 1)`, the ramp before the light, no `DielLevers.swift` until D6 (every key CLI-only), the regeneration reference exact against the probe and within one quantum per cell of float64; a fork resets `diel_ctl` to the new config's rest (a review finding, fixed). |
 | I94 | feat: diel D1b, the depth-aware oracle pilot of DESIGN §49.7 behind `diel.oracle` (default 0; CLI only): `alife.diel_oracle` (assignment by uid hash at a fork's start or a fresh run's founders, strata from the four z bands, the reachable schedule, the cap-1 override and the scripted `mo.buoy` before the costs, no ledger term), the conditional per-agent int8 field `diel_orc` (inherited, immigrants 0), 24 harvest counters (oracle and comparison, per stratum, photic band and half of the day; 49.7 says 12), the per-stratum energy rows, `alife.analysis.diel_pilot` (G per stratum and pooled, day-block bootstrap, Holm, GO/SMALL/STOP, `rule_hash`) and `scripts/diel_pilot.py`. **Off: bit-identical** (identity matrix 0 DIFF; `oracle = 0` traces nothing new). Recorded in §49.12: global mode only, the counters for both groups, the analysis' judgment calls; a fork that changes a non-zero oracle is refused (review finding). Also fixes D1's omission of the `diel` preset from the GUI test list `PresetFileTests.presetNames` (found by the first full Swift CI run, I91). |
+| I96 | feat: diel D1c, the first oracle pilot's result and the redesign for the second (§49.14): the first pilot (D1b's schedule, 3 seeds) gave no `G` (the oracle lineages died out by day 2 to 7 in the dusk starvation crash; `G` does not see mortality), so its printed SMALL carries no information. `diel.oracle_schedule` (default 1, D1b's; CLI only; post v0.1): schedule 2, round trips that leave the oracle rows at home a margin before dusk and dawn, by day to the lowest wholly photic field layer where reachable. `alife.analysis.diel_pilot2`: the lineage-fitness rule (censored daily increments of `ln(N_O/N_C)`, GO / SMALL / STOP / INVALID, `rule_hash` `0f4b7da9…`), set post hoc and approved by the owner before the second pilot; under it the first pilot reads STOP (`w` about -1 per day). Driver `--schedule`, `--warm-from`. **Off and schedule 1: unchanged** (identity matrix 0 DIFF). |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense
