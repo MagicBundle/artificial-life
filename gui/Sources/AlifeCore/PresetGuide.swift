@@ -77,7 +77,7 @@ package struct PresetComparison: Equatable, Sendable {
     package func holds(in manifest: PresetSnapshotManifest) -> Bool { ratio(in: manifest).map(band.contains) ?? false }
 }
 
-/// A statement that a preset has the highest speed or the lowest memory of all ten.
+/// A statement that a preset has the highest speed or the lowest memory of all the presets that have a snapshot (`Preset.unmeasured` have none).
 package struct PresetExtreme: Equatable, Sendable {
     package enum Kind: Equatable, Sendable { case fastest, lightest }
     package var preset: Preset
@@ -87,7 +87,7 @@ package struct PresetExtreme: Equatable, Sendable {
     package func holds(in manifest: PresetSnapshotManifest) -> Bool {
         guard let mine = manifest.entry(for: preset) else { return false }
         let others = manifest.snapshots.filter { $0.preset != preset.rawValue }
-        guard others.count == Preset.allCases.count - 1 else { return false }
+        guard others.count == Preset.measured.count - 1 else { return false }
         switch kind {
         case .fastest: return others.allSatisfy { mine.stepsPerSecond > $0.stepsPerSecond }
         case .lightest:
@@ -114,17 +114,24 @@ extension Preset {
     ]
 
     package static let extremes: [PresetExtreme] = [
-        PresetExtreme(preset: .tiny, kind: .fastest, sentence: "The fastest of the ten."),
-        PresetExtreme(preset: .tiny, kind: .lightest, sentence: "It needs the least memory of the ten."),
+        PresetExtreme(preset: .tiny, kind: .fastest, sentence: "The fastest of the ten that have been measured."),
+        PresetExtreme(preset: .tiny, kind: .lightest, sentence: "It needs the least memory of the ten that have been measured."),
     ]
 }
 
 extension Preset {
+    /// The presets with no snapshot, no speed and no memory: the extra-large planets, which are not calibrated and have not been run for the
+    /// guide. They have no `PresetComparison` (a band would be invented); the guide says in words that they are heavier and shows no figure.
+    package static let unmeasured: Set<Preset> = [.k128_3s, .k256_3s, .k576_3s]
+
+    /// Every other preset: the ones the manifest must have an entry and a picture for.
+    package static var measured: [Preset] { allCases.filter { !unmeasured.contains($0) } }
+
     package var group: PresetGroup {
         switch self {
         case .tiny, .dev, .k64, .k256: return .flat
         case .tiny3d, .k64_3d, .mini3d: return .box3D
-        case .tiny3s, .mini3s, .k64_3s: return .planet
+        case .tiny3s, .mini3s, .k64_3s, .k128_3s, .k256_3s, .k576_3s: return .planet
         }
     }
 
@@ -183,6 +190,21 @@ extension Preset {
             what = "The full-size planet: the planet version of 64k3d, with room for the same number of organisms."
             goodFor = "Long runs on a planet. An optional storm-weather extra, stormsph, is made for it (it is not part of this preset)."
             lead = "Heavy."
+        case .k128_3s:
+            // 128k3s.toml: "64k3s scaled by floor area at equal density"; radius 128.6, n_max 131 072; "NOT CALIBRATED"; no stormsph overlay is made for it.
+            what = "An extra-large planet: about twice the area of 64k3s, with room for twice as many organisms."
+            goodFor = "Not yet calibrated: a test of how large a planet your Mac can run. No storm weather is made for it, so it is for research."
+            lead = "Heavier than 64k3s. It has not been measured: a larger planet runs slower in proportion to the number of organisms it holds."
+        case .k256_3s:
+            // 256k3s.toml: "64k3s scaled by floor area at equal density"; radius 180, n_max 262 144; "NOT CALIBRATED".
+            what = "A very large planet: four times the area of 64k3s, with room for four times as many organisms."
+            goodFor = "Not yet calibrated: a test of how large a planet your Mac can run. No storm weather is made for it, so it is for research."
+            lead = "Much heavier than 64k3s. It has not been measured: a larger planet runs slower in proportion to the number of organisms it holds."
+        case .k576_3s:
+            // 576k3s.toml: "64k3s scaled by floor area at equal density"; radius 270, n_max 589 824; "NOT CALIBRATED".
+            what = "The largest planet: nine times the area of 64k3s, with room for nine times as many organisms."
+            goodFor = "Not yet calibrated: a test of how large a planet your Mac can run. No storm weather is made for it, so it is for research."
+            lead = "By far the heaviest planet. It has not been measured: a larger planet runs slower in proportion to the number of organisms it holds, and this one may be too large to play."
         }
         let sentences = Self.extremes.filter { $0.preset == self }.map(\.sentence) + Self.comparisons.filter { $0.preset == self }.map(\.sentence)
         return PresetGuide(what: what, goodFor: goodFor, cost: ([lead] + sentences).joined(separator: " "))

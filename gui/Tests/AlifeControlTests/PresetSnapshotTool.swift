@@ -66,7 +66,7 @@ struct PresetSnapshotTool {
     @Test func drawEverySnapshot() throws {
         let only = environment["ALIFE_PRESET_SNAPSHOT_ONLY"].map { Set($0.split(separator: ",").map(String.init)) }
         var drawn = 0
-        for preset in Preset.allCases where only?.contains(preset.rawValue) ?? true {
+        for preset in Preset.measured where only?.contains(preset.rawValue) ?? true {
             let input = work.appendingPathComponent("\(preset.rawValue).stream.bin")
             guard FileManager.default.fileExists(atPath: input.path) else {
                 Issue.record("no stream for \(preset.rawValue): \(input.path)")

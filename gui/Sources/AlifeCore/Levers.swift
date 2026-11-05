@@ -300,6 +300,10 @@ package enum Preset: String, CaseIterable, Identifiable {
     case tiny3s
     case mini3s
     case k64_3s = "64k3s"
+    /// The extra-large planets (DESIGN §46.9): `64k3s` scaled by floor area at the same density, 2.04, 4 and 9 times its area. Not calibrated.
+    case k128_3s = "128k3s"
+    case k256_3s = "256k3s"
+    case k576_3s = "576k3s"
     package var id: String { rawValue }
 }
 

@@ -24,7 +24,12 @@ TABLE = {
     "tiny3s": (36.0, 16.0, 8, 8, 5, 1024, 256, 320, 32, 4, 12.0),
     "mini3s": (48.0, 24.0, 11, 12, 7, 20480, 4096, 2400, 32, 3, 18.0),
     "64k3s": (90.0, 40.0, 21, 18, 13, 65536, 16384, 1340, 32, 8, 24.0),
+    # the extra-large planets: 64k3s scaled by area at equal density, NOT calibrated (only validated)
+    "128k3s": (128.6, 40.0, 30, 18, 13, 131072, 32768, 1340, 32, 16, 24.0),
+    "256k3s": (180.0, 40.0, 42, 18, 13, 262144, 65536, 1340, 32, 32, 24.0),
+    "576k3s": (270.0, 40.0, 63, 18, 13, 589824, 147456, 1340, 32, 72, 24.0),
 }
+LARGE = ("128k3s", "256k3s", "576k3s")
 BOX_ANALOGUE = {"tiny3s": "tiny3d", "mini3s": "mini3d", "64k3s": "64k3d"}
 FLOOR_AREA = {name: 4.0 * 3.141592653589793 * v[0] ** 2 for name, v in TABLE.items()}
 
@@ -43,6 +48,9 @@ def test_the_preset_list_is_exact() -> None:
         "tiny3s",
         "mini3s",
         "64k3s",
+        "128k3s",
+        "256k3s",
+        "576k3s",
     )
     assert tuple(TABLE) == config.SPHERE_PRESETS
     spheres = [p for p in config.PRESETS if load_config(preset=p).world.geometry == "sphere"]
@@ -78,6 +86,42 @@ def test_every_sphere_preset_validates_with_its_table_values(name: str) -> None:
     assert (
         not cfg.weather.enabled and not cfg.structures.enabled
     )  # a dry world until an overlay says otherwise
+
+
+@pytest.mark.parametrize("name", LARGE)
+def test_the_large_planets_are_64k3s_scaled_by_area_at_equal_density(name: str) -> None:
+    """Everything but the size keys is 64k3s's (the preset files say so, and say they are not calibrated); the
+    area, the population and the patches scale together and the HEALPix pixel area stays 64k3s's."""
+    big, ref = load_config(preset=name), load_config(preset="64k3s")
+    scaled = {
+        ("population", "n_max"),
+        ("population", "n_init"),
+        ("population", "max_births_per_step"),
+        ("world", "size"),
+        ("world", "radius"),
+        ("world", "nside"),
+        ("fields", "n_patches"),
+    }
+    for section in ("population", "world", "physics", "sensing", "energy", "mutation", "fields", "run"):
+        for key, value in vars(getattr(ref, section)).items():
+            if (section, key) not in scaled:
+                assert getattr(getattr(big, section), key) == value, (section, key)
+    ratio = FLOOR_AREA[name] / FLOOR_AREA["64k3s"]
+    assert big.population.n_max == pytest.approx(65536 * ratio, rel=0.03)
+    assert big.population.n_init * 4 == big.population.n_max
+    assert big.population.max_births_per_step == big.population.n_max // 64
+    pixel = FLOOR_AREA[name] / (12 * big.world.nside**2)
+    assert pixel == pytest.approx(FLOOR_AREA["64k3s"] / (12 * 21**2), rel=0.01)
+    assert 18 * 12 * big.world.nside**2 <= 2**20  # the field-cell limit
+    text = (PRESET_DIR / f"{name}.toml").read_text(encoding="utf-8")
+    assert "NOT CALIBRATED" in text and "One key per line: the GUI reads the scalars of this" in text
+
+
+@pytest.mark.parametrize("name", LARGE)
+def test_no_weather_overlay_is_made_for_a_large_planet(name: str) -> None:
+    for overlay in ("stormsph", "stormsph22", "stormsph16"):
+        with pytest.raises(ConfigError):
+            load_config(preset=name, overlays=[overlay])
 
 
 @pytest.mark.parametrize("name", ["mini3s", "64k3s"])
@@ -118,6 +162,10 @@ def test_all_five_features_validate_on_every_planet(name: str) -> None:
     launcher's source runs use validates on the three presets, with and without the weather of its size."""
     base = ["arms.enabled=true"]
     feats = ["build", "bonds", "comm", "niche3d"]
+    if name == "576k3s":  # found by the test below: the build overlay's cap x cells overflows int32 here
+        with pytest.raises(ConfigError, match="overflows the int32 MAT_TOTAL counter"):
+            load_config(preset=name, overlays=feats, overrides=base)
+        return
     cfg = load_config(preset=name, overlays=feats, overrides=base)
     assert cfg.structures.enabled and cfg.comm.enabled and cfg.arms.enabled and cfg.niche.farm
     assert cfg.bonds.share_mode != "off" or cfg.roles.enabled
@@ -239,5 +287,7 @@ def test_the_pools_sit_at_forty_degrees_three_per_hemisphere_and_fit_the_planet(
 def test_an_overlay_is_refused_on_a_planet_it_is_not_made_for(name: str, overlay: str) -> None:
     if OVERLAY_OF.get(name) == overlay:
         pytest.skip("the planet the overlay is made for")
+    if name in LARGE:
+        pytest.skip("the large planets are covered by test_no_weather_overlay_is_made_for_a_large_planet")
     with pytest.raises(ConfigError, match=r"Courant|latitude|arc length|power of two"):
         load_config(preset=name, overlays=[overlay])
