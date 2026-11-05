@@ -362,6 +362,8 @@ class StudySettings:
     series_every: int = 20
     min_dets: int = MIN_DETS
     exposure: bool = True
+    count_lo: int = COUNT_LO  # the named-storm count band per hemisphere (``--count-lo/--count-hi``, I100)
+    count_hi: int = COUNT_HI
 
 
 def _mean_latitude(tr: Track, radius: float) -> float:
@@ -516,8 +518,8 @@ def run_study(cfg: Config, st: StudySettings, progress: Any = None) -> dict[str,
     times_a = np.asarray(times, dtype=np.int64)
     win = times_a >= st.spinup
     nn, na = np.asarray(rows_named, dtype=np.int64), np.asarray(rows_all, dtype=np.int64)
-    counts = count_stats(nn[win], na[win])
-    d5 = w0.storm_counts(tracks, times_a[win].tolist(), st.min_dets)
+    counts = count_stats(nn[win], na[win], st.count_lo, st.count_hi)
+    d5 = w0.storm_counts(tracks, times_a[win].tolist(), st.min_dets, st.count_lo, st.count_hi)
     counts["d5"] = {
         "in_range_both": d5["in_range_fraction"],
         **{
@@ -587,6 +589,7 @@ def run_study(cfg: Config, st: StudySettings, progress: Any = None) -> dict[str,
     wall = time.time() - t0
     return {
         "settings": dataclasses.asdict(st),
+        "count_band": [st.count_lo, st.count_hi],
         "planet": {
             "radius": radius,
             "nw": sp.nside,
@@ -770,10 +773,11 @@ def write_outputs(rec: dict[str, Any], out: Path) -> None:
 def one_line(rec: dict[str, Any]) -> str:
     c = rec["counts"]["named"]
     lt = rec["lifetime"]["named_hindsight"]
+    lo, hi = rec.get("count_band", (COUNT_LO, COUNT_HI))  # a summary from before I100 used 2 to 6
     return (
         f"named N {c['north']['mean']:.2f} [{c['north']['min']}-{c['north']['max']}] "
         f"S {c['south']['mean']:.2f} [{c['south']['min']}-{c['south']['max']}] "
-        f"in2-6 both {c['in_range_both']:.3f} | "
+        f"in{lo}-{hi} both {c['in_range_both']:.3f} | "
         f"D5 both {rec['counts']['d5']['in_range_both']:.3f} | life med {lt['median_text']} (n {lt['n']}) "
         f"max {rec['tracks']['named_life_max']:.0f} | {rec['wall_s']}s"
     )
@@ -796,6 +800,9 @@ def _cand_args(base: dict[str, Any], cand: dict[str, Any], seed: int, out: Path)
         args += ["--pools", json.dumps(merged["pools"])]
     if not merged.get("exposure", True):
         args += ["--no-exposure"]
+    for key, flag in (("count_lo", "--count-lo"), ("count_hi", "--count-hi")):
+        if key in merged:
+            args += [flag, str(merged[key])]
     return args
 
 
@@ -850,9 +857,19 @@ def sweep(spec: dict[str, Any], out: Path, jobs: int, mem_gb: float, per_proc_gb
 def _run_cmd(a: argparse.Namespace) -> int:
     pools = json.loads(a.pools) if a.pools else None
     cfg = build_config(a.preset, a.overlay, a.set, pools)
-    st = StudySettings(steps=a.steps, spinup=a.spinup, seed=a.seed, tick=a.tick, exposure=not a.no_exposure)
+    st = StudySettings(
+        steps=a.steps,
+        spinup=a.spinup,
+        seed=a.seed,
+        tick=a.tick,
+        exposure=not a.no_exposure,
+        count_lo=a.count_lo,
+        count_hi=a.count_hi,
+    )
     if st.steps % st.tick:
         raise SystemExit("--steps must be a multiple of --tick")
+    if not 0 <= st.count_lo <= st.count_hi:
+        raise SystemExit("--count-lo and --count-hi must satisfy 0 <= lo <= hi")
     rec = run_study(cfg, st, progress=lambda t, n, s: print(f"  step {t}/{n} {s:.0f}s", flush=True))
     rec["argv"] = sys.argv[1:]
     print(one_line(rec))
@@ -872,11 +889,23 @@ def _table_cmd(a: argparse.Namespace) -> int:
 
 def _sweep_cmd(a: argparse.Namespace) -> int:
     spec = json.loads(Path(a.spec).read_text(encoding="utf-8"))
+    base = spec.setdefault("base", {})
+    for key in ("count_lo", "count_hi"):
+        if getattr(a, key) is not None:
+            base.setdefault(key, getattr(a, key))  # a spec's own value wins over the command line's
     dirs = sweep(spec, Path(a.out), a.jobs, a.mem_gb, a.proc_gb)
     for d in dirs:
         rec = json.loads((d / "summary.json").read_text())
         print(f"{d.name:40s} {one_line(rec)}")
     return 0
+
+
+def _add_band(p: argparse.ArgumentParser, sweep: bool = False) -> None:
+    """``--count-lo`` / ``--count-hi``: the named-storm count band per hemisphere (default 2 and 6). On a
+    sweep they are the default of a spec that names no ``count_lo`` / ``count_hi`` itself."""
+    where = "; a spec's base or candidate overrides it" if sweep else ""
+    p.add_argument("--count-lo", type=int, default=None if sweep else COUNT_LO, help=f"band low{where}")
+    p.add_argument("--count-hi", type=int, default=None if sweep else COUNT_HI, help=f"band high{where}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -892,6 +921,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--seed", type=int, default=0)
     r.add_argument("--tick", type=int, default=25, help="steps between detections (the engine's is 25)")
     r.add_argument("--no-exposure", action="store_true")
+    _add_band(r)
     r.add_argument("--out", required=True)
     r.set_defaults(fn=_run_cmd)
     s = sub.add_parser("sweep", help="many studies in parallel worker processes")
@@ -902,6 +932,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--jobs", type=int, default=6)
     s.add_argument("--mem-gb", type=float, default=30.0, help="the budget for all workers together")
     s.add_argument("--proc-gb", type=float, default=2.0, help="the memory assumed per worker")
+    _add_band(s, sweep=True)
     s.set_defaults(fn=_sweep_cmd)
     t = sub.add_parser("table", help="one line per finished study")
     t.add_argument("dirs", nargs="+")

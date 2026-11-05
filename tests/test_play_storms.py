@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+import struct
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -228,16 +229,61 @@ def test_the_strm_object_wraps_positions_and_keeps_tracks_unwrapped() -> None:
     assert len(last["track"]) <= storms.TRACK_POINTS and last["ext"] == [12.0, 8.0]
 
 
+def lattice(n: int, k: int = 0) -> list[tuple[tuple[int, int, int, int], int, float]]:
+    """``n`` 2x2 storms on an 8-wide lattice of cells 5 apart, drifting 1 cell east every 3 ticks and 1 south
+    every 2; the peaks rise with the index, so the highest peaks are the highest ids."""
+    return [
+        (((5 * (i // 8) + k // 3) % N, (5 * (i % 8) + k // 2) % N, 2, 2), i % 2, 0.3 + 0.01 * i + 0.001 * k)
+        for i in range(n)
+    ]
+
+
 def test_the_strm_object_is_capped_and_fits_its_record() -> None:
-    items = [(((4 * (k % 9)) % N, 4 * (k // 9) % N, 2, 2), k % 2, 0.1 + 0.02 * k) for k in range(40)]
-    # forty 2x2 storms on a 9x4 lattice of cells; the 32 with the highest peaks are listed, in id order
+    # seventy 2x2 storms; the 64 with the highest peaks are listed, in id order
     layer = StormLayer(P40, DC_REF, 25)
-    tick = layer.ingest(det(25, items))
+    tick = layer.ingest(det(25, lattice(70)))
     listed = [s["id"] for s in tick.strm["storms"]]
-    assert len(listed) == 32 and listed == sorted(listed)
-    assert set(listed) == set(range(9, 41)), "the lowest-peak storms (ids 1 to 8) are left out"
+    assert streamrec.MAX_STORMS == 64
+    assert len(listed) == 64 and listed == sorted(listed)
+    assert set(listed) == set(range(7, 71)), "the lowest-peak storms (ids 1 to 6) are left out"
     rec = streamrec.encode_strm(step=25, seq=0, tick=25, obj=tick.strm)
     assert len(rec) < 8 + 16 + 16 + streamrec.STRM_JSON_CAP + 3
+
+
+def test_sixty_four_storms_with_full_tracks_fit_the_record_by_shortening_them() -> None:
+    """The cap of 64 storms (I100): at 40 stored detections the 24-point JSON is about 43 KB, the 8-point one
+    about 25 KB, over the 24 KiB cap, and the 4-point one without ``pred`` about 17.5 KB: the fallback of
+    ``_strm`` ends there, and the record decodes."""
+    layer = StormLayer(P40, DC_REF, 25)
+    for k in range(1, 70):
+        tick = layer.ingest(det(25 * k, lattice(64, k)))
+    objs = tick.strm["storms"]
+    assert len(objs) == 64 and all(s["state"] == "active" for s in objs)
+    assert len(streamrec.json_bytes(tick.strm)) <= streamrec.STRM_JSON_CAP
+    assert all(len(s["track"]) <= 4 and s["pred"] == [] for s in objs), "the 4-point, no-forecast fallback"
+    rec = streamrec.encode_strm(step=tick.step, seq=0, tick=tick.step, obj=tick.strm)
+    data = streamrec.play_header_bytes(
+        streamrec.legacy_header(
+            dims=2, size=P40.L, height=0.0, n=64, bond_slots=4, radius=1.0, field_cell=4.0, fg=20, fz=1,
+            nch=3, step=tick.step, run=None, config_hash="0" * 64, source="preset",
+        ),
+        streamrec.header_play(
+            records=["STRM"], weather=streamrec.weather_block(enabled=True, dc_ref=DC_REF),
+            labels={"intent_version": 2, "arch": [""], "intent": [""]}, energy_cap=100,
+        ),
+    ) + rec  # fmt: skip
+    out = decode(data).records[0]
+    assert out.tag == "STRM" and out.f["n_storms"] == 64 and len(out.f["json"]["storms"]) == 64
+
+
+def test_encode_strm_takes_64_storms_and_refuses_65() -> None:
+    def obj(n: int) -> dict[str, Any]:
+        return {"detect_step": 25, "storms": [{"id": i} for i in range(n)], "ended": []}
+
+    rec = streamrec.encode_strm(step=25, seq=0, tick=25, obj=obj(64))
+    assert struct.unpack_from("<IIII", rec, 8 + 16)[2] == 64
+    with pytest.raises(streamrec.RecordError, match="cap is 64"):
+        streamrec.encode_strm(step=25, seq=0, tick=25, obj=obj(65))
 
 
 def test_ticks_without_storms_or_events_write_no_line() -> None:

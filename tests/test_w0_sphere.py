@@ -274,3 +274,89 @@ def test_the_sweep_runs_a_candidate_in_a_worker_process_and_skips_a_finished_one
     assert json.loads((out[0] / "summary.json").read_text())["weather"]["seed_rate"] == 0.01
     ws.sweep(spec, tmp_path, jobs=2, mem_gb=30.0, per_proc_gb=2.0)
     assert "skip c_s0" in capsys.readouterr().out
+
+
+# --- the count band (I100) ----------------------------------------------------------------------------------
+
+
+def test_the_count_band_flags_parse_with_the_2_to_6_default_on_run_and_sweep() -> None:
+    ap = ws.build_parser()
+    run = ap.parse_args(["run", "--preset", "tiny3s", "--out", "o"])
+    assert (run.count_lo, run.count_hi) == (2, 6)
+    run = ap.parse_args(["run", "--preset", "576k3s", "--out", "o", "--count-lo", "6", "--count-hi", "18"])
+    assert (run.count_lo, run.count_hi) == (6, 18)
+    sw = ap.parse_args(["sweep", "--spec", "s.json", "--out", "o", "--count-lo", "4", "--count-hi", "12"])
+    assert (sw.count_lo, sw.count_hi) == (4, 12)
+    assert ap.parse_args(["sweep", "--spec", "s.json", "--out", "o"]).count_lo is None
+
+
+def test_the_count_band_reaches_count_stats_and_summary_json(tmp_path, monkeypatch) -> None:
+    seen: list[tuple[int, int]] = []
+    real = ws.count_stats
+
+    def spy(n_named, n_all, lo=2, hi=6):
+        seen.append((lo, hi))
+        return real(n_named, n_all, lo, hi)
+
+    monkeypatch.setattr(ws, "count_stats", spy)
+    out = tmp_path / "o"
+    argv = ["run", "--preset", "tiny3s", "--overlay", "stormsph16", "--steps", "300", "--spinup", "100"]
+    argv += ["--tick", "50", "--count-lo", "3", "--count-hi", "8", "--out", str(out)]
+    assert ws.main(argv) == 0
+    assert seen == [(3, 8)]
+    rec = json.loads((out / "summary.json").read_text())
+    assert (
+        rec["count_band"] == [3, 8] and rec["settings"]["count_lo"] == 3 and rec["settings"]["count_hi"] == 8
+    )
+    assert "in3-8 both" in ws.one_line(rec)
+    # a summary from before the band still prints, as 2 to 6
+    old = {k: v for k, v in rec.items() if k != "count_band"}
+    assert "in2-6 both" in ws.one_line(old)
+    assert ws.main(["table", str(out)]) == 0
+
+
+def test_a_sweep_spec_and_the_command_line_carry_the_band_to_each_run(tmp_path, monkeypatch) -> None:
+    base = {"preset": "256k3s", "count_lo": 4, "count_hi": 12}
+    args = ws._cand_args(base, {"name": "c", "count_hi": 14}, 0, tmp_path)
+    assert args[args.index("--count-lo") + 1] == "4" and args[args.index("--count-hi") + 1] == "14"
+    plain = ws._cand_args({"preset": "tiny3s"}, {"name": "c"}, 0, tmp_path)
+    assert "--count-lo" not in plain and "--count-hi" not in plain
+    # the command line fills in the base of a spec that names no band, and the spec's own band wins
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps({"base": {"preset": "tiny3s", "count_hi": 9}, "candidates": []}))
+    seen: dict[str, object] = {}
+
+    def fake_sweep(spec_obj, out, jobs, mem_gb, per_proc_gb):
+        seen.update(spec_obj["base"])
+        return []
+
+    monkeypatch.setattr(ws, "sweep", fake_sweep)
+    argv = ["sweep", "--spec", str(spec), "--out", str(tmp_path / "o"), "--count-lo", "3", "--count-hi", "8"]
+    assert ws.main(argv) == 0
+    assert seen["count_lo"] == 3 and seen["count_hi"] == 9
+
+
+def test_criteria_takes_explicit_bounds_and_refuses_a_record_counted_with_another_band() -> None:
+    from sphere_storms import BANDS, criteria
+
+    assert BANDS["64k3s"] == BANDS["mini3s"] == BANDS["tiny3s"] == (2, 6)
+    assert (BANDS["128k3s"], BANDS["256k3s"], BANDS["576k3s"]) == ((3, 8), (4, 12), (6, 18))
+    hemi = {"mean": 5.0, "min": 3, "max": 9}
+    rec = {
+        "counts": {"named": {"north": hemi, "south": hemi, "in_range_both": 0.75}},
+        "lifetime": {
+            "named_hindsight": {
+                "pass": True, "median": 4000.0, "max_age": 5000.0, "median_reliable": True,
+                "thin_age": None, "share_detections_in_long_storms": 0.6,
+            }
+        },
+        "tracks": {"named": 7, "named_births_in_window": 3, "named_deaths_in_window": 2},
+        "climate_cv": {"ke": 0.1, "umax1": 0.1},
+    }  # fmt: skip
+    assert criteria(rec)["band"] == (2, 6), "no band recorded: a record from before I100 is 2 to 6"
+    banded = {**rec, "count_band": [4, 12]}
+    assert criteria(banded, 4, 12)["in_range_both"] == 0.75
+    with pytest.raises(ValueError, match="band"):
+        criteria(banded)
+    with pytest.raises(ValueError, match="band"):
+        criteria(banded, *BANDS["128k3s"])
