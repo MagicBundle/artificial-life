@@ -216,8 +216,11 @@ I96, §49.14)**: the first pilot (`runs/diel_pilot_2026-11-05`) gave no `G`: the
 world's dusk starvation crash, and `G` (survivor energy) does not see mortality. The second pilot uses
 `diel.oracle_schedule = 2` (round trips home before dusk and dawn) and the lineage-fitness rule `python -m
 alife.analysis.diel_pilot2 RUN...` (`rule_hash` `0f4b7da9…`; it reads the first pilot as STOP, `w` about -1 per day); driver
-`scripts/diel_pilot.py --warm-from runs/diel_pilot_2026-11-05 --out ROOT`. **Next:** the second pilot's decision, then D2
-(PR #95, the light input). Tests: `tests/test_diel.py`, `tests/test_diel_oracle.py`, `tests/test_diel_pilot.py`,
+`scripts/diel_pilot.py --warm-from runs/diel_pilot_2026-11-05 --out ROOT`. **The second pilot (`runs/diel_pilot2_2026-11-05`)
+decided STOP**: pooled `w` -0.68 per day (90% -0.83 to -0.53), every stratum negative; the floor arm (no day excursion)
+shows that the oracle's fixed costs alone (cap 1, hold lift) cost about -0.2 per day. Per §49.7 the box long runs are not
+spent. **Next (owner):** whether D2 (PR #95, the light input) still merges, and whether to try the exploratory
+no-cap-change or thrust oracle. Tests: `tests/test_diel.py`, `tests/test_diel_oracle.py`, `tests/test_diel_pilot.py`,
 `tests/test_diel_pilot2.py`.
 
 ## How to run

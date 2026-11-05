@@ -69,7 +69,8 @@ A day-night light cycle on the photic food band (diel vertical migration; spec `
 and I93): D1, the engine core behind `diel.period` (`src/alife/diel.py`, `ext/diel.py`, `--overlay diel`), is implemented, and so is D1b (the
 oracle pilot behind `diel.oracle`, `alife.diel_oracle`, row I94). The first pilot could not be read (the oracle lineages died out);
 D1c (row I96, §49.14) adds the round-trip schedule `diel.oracle_schedule = 2` and the lineage-fitness rule
-`alife.analysis.diel_pilot2` for the second pilot; its decision and D2 (the light input) are next.
+`alife.analysis.diel_pilot2` for the second pilot, which decided STOP (the box long runs are not spent; §49.14). D2 (the
+light input) is open as PR #95.
 
 ## Conventions
 
