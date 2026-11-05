@@ -151,7 +151,8 @@ def assign(s: Any, cfg: Config) -> Any:
     strat = stratum_of(height, cfg)
     pick = chosen(np.asarray(s.uid), cfg.diel.oracle)
     orc = np.where(alive, np.where(pick, strat, -strat), 0).astype(np.int8)
-    cap = np.where(alive & pick, np.float32(1.0), np.asarray(s.buoy_cap)).astype(np.float32)
+    raise_cap = alive & pick if cfg.diel.oracle_cap == "one" else np.zeros_like(alive)  # D1d: own keeps it
+    cap = np.where(raise_cap, np.float32(1.0), np.asarray(s.buoy_cap)).astype(np.float32)
     out = s._replace(diel_orc=mx.array(orc, dtype=_I8), buoy_cap=mx.array(cap, dtype=_F32))
     mx.eval(out)
     return out
@@ -172,8 +173,35 @@ class Plan(NamedTuple):
 
 
 def cap(s: Any, cfg: Config) -> mx.array:
-    """The oracle rows' cap is 1 (docs/DIEL.md §7.0); the others keep theirs."""
+    """The oracle rows' cap is 1 (docs/DIEL.md §7.0); the others keep theirs. With ``oracle_cap = own``
+    (D1d, §49.15) every row keeps its own."""
+    if cfg.diel.oracle_cap == "own":  # static: the no-cap-change oracle
+        return s.buoy_cap
     return mx.where(s.diel_orc > 0, mx.array(1.0, dtype=_F32), s.buoy_cap)
+
+
+def own_cap(
+    buoy_cap: mx.array, day: mx.array, home: mx.array, k: mx.array, sc: Schedule, cfg: Config
+) -> tuple[mx.array, mx.array, mx.array]:
+    """D1d (§49.15): schedule 2 per row for a row keeping its own cap ``c``.
+
+    ``v_rise(c) = clip((c·buoyancy_max - gravity)/drag, 0, v_max)``; the hold lift
+    ``min(1, gravity/(c·buoyancy_max))`` (1 where the cap cannot balance gravity); ``up``, ``down`` as
+    schedule 2 with ``trip(c) = 1/v_rise(c) + 1/v_sink``; a row that cannot rise makes no excursion.
+    Returns the target height, the hold lift and ``v_rise(c)``, (N,) f32."""
+    ph, c = cfg.physics, cfg.diel
+    lift = buoy_cap * ph.buoyancy_max
+    v_rise = mx.clip((lift - ph.gravity) / ph.drag, 0.0, ph.v_max)
+    can = (v_rise > 0) & (k > 0)
+    holds = lift > ph.gravity
+    hold = mx.where(holds, ph.gravity / mx.where(holds, lift, 1.0), 1.0)
+    trip = mx.where(can, 1.0 / mx.where(can, v_rise, 1.0), 0.0) + 1.0 / sc.v_sink
+    dz = photic_target(cfg) - home
+    up = mx.where(can & (dz > 0) & (dz * trip <= REACH * c.period * c.day_frac), dz, 0.0)
+    down = mx.where(
+        can, mx.maximum(mx.minimum(home - 1.0, REACH * c.period * (1.0 - c.day_frac) / trip), 0.0), 0.0
+    )
+    return mx.where(day, home + up, home - down), hold, v_rise
 
 
 def plan(s: Any, cfg: Config) -> Plan:
@@ -192,7 +220,10 @@ def plan(s: Any, cfg: Config) -> Plan:
     )
     hold = mx.array(sc.hold, dtype=_F32)
     if cfg.diel.oracle_schedule == 2:  # static: D1c's round trips (§49.14)
-        back = returning(s.step, s.diel_ctl[1], day, z, home, sc, cfg)
+        v_rise = None
+        if cfg.diel.oracle_cap == "own":  # static: D1d, the per-row schedule of the own cap (§49.15)
+            target, hold, v_rise = own_cap(s.buoy_cap, day, home, k, sc, cfg)
+        back = returning(s.step, s.diel_ctl[1], day, z, home, sc, cfg, v_rise)
         buoy = mx.where(
             day,
             mx.where(back, mx.where(z > home, 0.0, hold), mx.where(z < target, 1.0, hold)),
@@ -222,14 +253,27 @@ def time_left(step: mx.array, day_eff: mx.array, day: mx.array, cfg: Config) -> 
 
 
 def returning(
-    step: mx.array, day_eff: mx.array, day: mx.array, z: mx.array, home: mx.array, sc: Schedule, cfg: Config
+    step: mx.array,
+    day_eff: mx.array,
+    day: mx.array,
+    z: mx.array,
+    home: mx.array,
+    sc: Schedule,
+    cfg: Config,
+    v_rise: mx.array | None = None,
 ) -> mx.array:
     """(N,) bool, schedule 2: the row must head home now to be there ``(1 - REACH)/2`` of the half before it
     ends: the time left minus that margin is at most the time home (``(z - home)/v_sink`` by day,
-    ``(home - z)/v_rise`` by night)."""
+    ``(home - z)/v_rise`` by night). ``v_rise`` per row (D1d's own cap; a row that cannot rise has 0 time
+    home by night) or None for the schedule's cap-1 constant."""
     tau, half = time_left(step, day_eff, day, cfg)
     margin = 0.5 * (1.0 - REACH) * half
-    t_home = mx.where(day, (z - home) / sc.v_sink, (home - z) / sc.v_rise)
+    if v_rise is None:  # static: the cap-1 schedule
+        t_up = (home - z) / sc.v_rise
+    else:
+        can = v_rise > 0
+        t_up = mx.where(can, (home - z) / mx.where(can, v_rise, 1.0), 0.0)
+    t_home = mx.where(day, (z - home) / sc.v_sink, t_up)
     return tau - margin <= t_home
 
 

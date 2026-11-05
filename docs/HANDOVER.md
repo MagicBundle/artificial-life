@@ -207,8 +207,8 @@ factor `L` from the step (global mode: one clock; `terminator`, sphere only: a s
 profile becomes `min(1, B + L Pk)` with only the photic term modulated; full light selects the static profile bit for bit.
 `diel.control = mean` is the matched control (the day-mean table `V_bar`). The state gains `diel_ctl` (2,) float32 =
 (target, effective) day fraction, ramped by at most `1/(2P)` per step: Long Night (D5b) will write the target. No ledger
-term; no brain footprint yet. World: `--preset mini3d --overlay diel` (height 40, period 4,000; arm N today, since `sense` is
-refused until D2). `alife migrate RUN --enable diel [--set diel.period=...]`. `--director live` is refused on a diel world.
+term; the brain footprint is D2's `diel.sense` (below). World: `--preset mini3d --overlay diel` (height 40, period 4,000;
+arm N; D and K add `--set diel.sense=true`). `alife migrate RUN --enable diel [--set diel.period=...]` (adds the light row). `--director live` is refused on a diel world.
 Every `[diel]` key is CLI-only until D6 (no GUI levers). The CPU golden is pinned in `tests/test_diel.py`; the Metal digests
 are recorded in §49.11 for the owner's check. **D1b (row I94)**: the oracle pilot behind `diel.oracle` (§49.12): `alife run --init-from WARM
 --set diel.oracle=20` labels 20% of the living agents (by uid hash) with a scripted daily lift their stratum can reach, cap 1;
@@ -221,9 +221,14 @@ alife.analysis.diel_pilot2 RUN...` (`rule_hash` `0f4b7da9…`; it reads the firs
 `scripts/diel_pilot.py --warm-from runs/diel_pilot_2026-11-05 --out ROOT`. **The second pilot (`runs/diel_pilot2_2026-11-05`)
 decided STOP**: pooled `w` -0.68 per day (90% -0.83 to -0.53), every stratum negative; the floor arm (no day excursion)
 shows that the oracle's fixed costs alone (cap 1, hold lift) cost about -0.2 per day. Per §49.7 the box long runs are not
-spent. **Next (owner):** whether D2 (PR #95, the light input) still merges, and whether to try the exploratory
-no-cap-change or thrust oracle. Tests: `tests/test_diel.py`, `tests/test_diel_oracle.py`, `tests/test_diel_pilot.py`,
-`tests/test_diel_pilot2.py`.
+spent. **D2 (row I95)**, built as a dormant capability (owner, 2026-11-05):
+the sky-light input behind `diel.sense` (§49.13; token `diel1@1`, 3D `D_IN` 85, silent row); the claim arms D and K are
+`--overlay diel --set diel.sense=true` (K adds `--set diel.control=mean`); the mute fork is `alife run --init-from D --set
+diel.sense_control=mute`. **D1d (row I97, §49.15)**: the no-cap-change oracle (`diel.oracle_cap = own`); its exploratory
+pilot (`runs/diel_pilot3_2026-11-05`) reads SMALL by the rule, pooled `w` -0.08 per day (-0.13 to -0.03), floor -0.02, mid
+-0.16, top -0.43: raising the cap explained most of the loss, but no scripted schedule beats the evolved population.
+**Next (owner):** whether to try the thrust oracle. Tests: `tests/test_diel.py`, `tests/test_diel_oracle.py`,
+`tests/test_diel_pilot.py`, `tests/test_diel_pilot2.py`, `tests/test_diel_sense.py`.
 
 ## How to run
 

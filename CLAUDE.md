@@ -70,7 +70,7 @@ and I93): D1, the engine core behind `diel.period` (`src/alife/diel.py`, `ext/di
 oracle pilot behind `diel.oracle`, `alife.diel_oracle`, row I94). The first pilot could not be read (the oracle lineages died out);
 D1c (row I96, §49.14) adds the round-trip schedule `diel.oracle_schedule = 2` and the lineage-fitness rule
 `alife.analysis.diel_pilot2` for the second pilot, which decided STOP (the box long runs are not spent; §49.14). D2 (the
-light input) is open as PR #95.
+light input `diel.sense`, row I95) is built as a dormant capability (owner, 2026-11-05).
 
 ## Conventions
 
