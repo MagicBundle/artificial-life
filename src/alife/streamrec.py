@@ -86,7 +86,7 @@ RESERVED_SLOTS: Final = (SLOT_UNKNOWN, SLOT_OTHER, SLOT_NONE)
 MAX_TABLE: Final = 16  # rows of a cast table (houses, kin groups, colonies)
 
 MAX_EVENTS: Final = 64
-MAX_STORMS: Final = 32
+MAX_STORMS: Final = 64  # raised from 32 for the larger planets (I100)
 MAX_TEXT: Final = 120
 EVENT_FAMILIES: Final = ("kin", "house", "storm", "focus", "director", "system")
 EVENT_KINDS: Final = {
@@ -855,7 +855,7 @@ def encode_terr(
 
 
 def encode_strm(*, step: int, seq: int, tick: int, obj: Mapping[str, Any]) -> bytes:
-    """One ``STRM``: ``obj`` is ``{"detect_step", "storms": [...], "ended": [...]}``, at most 32 storms."""
+    """One ``STRM``: ``obj`` is ``{"detect_step", "storms": [...], "ended": [...]}``, at most 64 storms."""
     storms = obj.get("storms", ())
     if len(storms) > MAX_STORMS:
         raise RecordError(f"STRM lists {len(storms)} storms, the cap is {MAX_STORMS}")
