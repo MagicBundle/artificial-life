@@ -1,12 +1,12 @@
 """The declaration of the diel feature, the day-night light cycle on the photic food band (DESIGN §49): a
 registry row.
 
-D1: no brain footprint (``layout_on`` is false until D2 adds the ``light`` input), no counter, no stream tag;
-one conditional state field ``diel_ctl`` (2,) float32, the (target, effective) day fraction of the Long Night
-power (§49.8), and the config section ``[diel]``. D1b adds the oracle pilot (``diel.oracle > 0``): the
-per-agent int8 field ``diel_orc``, 24 harvest counters and the per-stratum energy rows
-(``alife.diel_oracle``). The light factor lives in ``alife.diel``; imports of it are made at call time because
-``config`` imports ``ext``.
+D1: no counter and no stream tag; one conditional state field ``diel_ctl`` (2,) float32, the (target,
+effective) day fraction of the Long Night power (§49.8), and the config section ``[diel]``. D1b adds the
+oracle pilot (``diel.oracle > 0``): the per-agent int8 field ``diel_orc``, 24 harvest counters and the per-
+stratum energy rows (``alife.diel_oracle``). D2 adds the brain footprint with ``diel.sense``: one silent
+input block ``light`` (token ``diel1@1``, ``alife.diel.sense_input``). The light factor lives in
+``alife.diel``; imports of it are made at call time because ``config`` imports ``ext``.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import Any
 
 import mlx.core as mx
 
-from alife.ext.base import ExtSpec, FieldSpec
+from alife.ext.base import Block, ExtCtx, ExtSpec, FieldSpec
 
 _KEYS = (
     "period",
@@ -162,14 +162,12 @@ def _validate(cfg: Any) -> None:
             bad.append(f"diel.oracle_schedule {c.oracle_schedule} must be one of {ORACLE_SCHEDULES}")
         elif c.oracle == 0 and c.oracle_schedule != dflt.oracle_schedule:
             bad.append("diel.oracle_schedule is inert while diel.oracle is 0: it must keep its default")
-        # the steps that have not landed: declared so their hash and file format are fixed, refused until
-        # built
-        if c.sense:
-            bad.append("diel.sense is refused until PR D2 (the light input) lands")
-        if c.extinction != dflt.extinction:
-            bad.append("diel.extinction acts on the light input only: refused until PR D2 lands")
-        if not c.silent_init:
-            bad.append("diel.silent_init acts on the light input only: refused until PR D2 lands")
+        # the light input's keys are inert without it (D2): a config never changes its hash without effect
+        if not c.sense:
+            if c.extinction != dflt.extinction:
+                bad.append("diel.extinction acts on the light input only: it needs diel.sense")
+            if c.silent_init != dflt.silent_init:
+                bad.append("diel.silent_init acts on the light input only: it needs diel.sense")
         if c.oracle > 0:  # the oracle pilot (D1b): one clock, and a lift that can rise and hold
             if c.mode != "global":
                 bad.append("diel.oracle needs diel.mode = global (the schedule reads one clock)")
@@ -203,11 +201,26 @@ def _validate(cfg: Any) -> None:
 
 def _enable(cfg: Any) -> Any:
     """``alife migrate --enable diel``: the config with the cycle on at the claim world's period (4,000 steps,
-    DESIGN §49.9) unless ``--set diel.period=...`` moved it; the light input stays off until D2."""
+    DESIGN §49.9) unless ``--set diel.period=...`` moved it, and the light input on (D2, §49.4: the migration
+    adds the silent block to an evolved source)."""
     import dataclasses
 
     period = cfg.diel.period or 4000
-    return dataclasses.replace(cfg, diel=dataclasses.replace(cfg.diel, period=period))
+    return dataclasses.replace(cfg, diel=dataclasses.replace(cfg.diel, period=period, sense=True))
+
+
+def _sense(cfg: Any) -> bool:
+    return cfg.diel.period > 0 and bool(cfg.diel.sense)
+
+
+def _in_blocks(cfg: Any, nd: int) -> tuple[Block, ...]:
+    return (Block("light", 1, bool(cfg.diel.silent_init)),)
+
+
+def _inputs(s: Any, cfg: Any, ctx: ExtCtx) -> Any:
+    from alife import diel
+
+    return (diel.sense_input(s, cfg, ctx),)
 
 
 def _check(arrays: Any, cfg: Any) -> list[str]:
@@ -228,6 +241,11 @@ def _check(arrays: Any, cfg: Any) -> list[str]:
 SPEC = ExtSpec(
     name="diel",
     enabled=_enabled,
+    layout_on=_sense,  # the light input (D2): one silent block "light"
+    token=lambda cfg: "diel1@1" if _sense(cfg) else "",
+    in_blocks=_in_blocks,
+    block_names=("light",),
+    inputs=_inputs,
     state_fields=_state_fields,
     counters=_counters,
     metric_prefix="diel_",

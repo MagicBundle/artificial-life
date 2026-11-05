@@ -45,6 +45,7 @@ def test_with_every_feature_off_every_function_is_the_identity() -> None:
             "FAR_BEARING",
             "FARM",
             "FARM_PUT",
+            "LIGHT",
         }
     )
     n_feature_keys = sum(len(v) for v in config.FEATURE_KEYS.values())

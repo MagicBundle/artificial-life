@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 import mlx.core as mx
 import numpy as np
 
-from alife import fields_sph, fieldtab, geom
+from alife import fields_sph, fieldtab, geom, sphere
 from alife.config import dims
 
 if TYPE_CHECKING:
@@ -160,3 +160,56 @@ def ramp(ctl: mx.array, cfg: Config) -> mx.array:
     lim = 1.0 / (2.0 * cfg.diel.period)
     eff = ctl[1] + mx.clip(ctl[0] - ctl[1], -lim, lim)
     return mx.stack([ctl[0], eff])
+
+
+# --- the sky-light input (D2, §49.4) -----------------------------------------------------------------
+
+SENSE_EPS = 1e-3  # e of the log scale: light = clip(1 + ln(I + e)/ln(1/e), 0, 1)
+
+
+def sense_scale(i: np.ndarray) -> np.ndarray:
+    """The host float64 log scale of a light ``I`` in [0, 1]: ``clip(1 + ln(I + e)/ln(1/e), 0, 1)``."""
+    return np.clip(
+        1.0 + np.log(np.asarray(i, dtype=np.float64) + SENSE_EPS) / math.log(1.0 / SENSE_EPS), 0.0, 1.0
+    )
+
+
+@functools.cache
+def l_bar_host(cfg: Config) -> np.ndarray:
+    """The day mean of the light, float64 over ``VBAR_PHASES`` phases at the configured ``day_frac``: a scalar
+    (shape ()) in global mode, (Npix,) per pixel in terminator mode. What the matched control and the mute
+    fork sense in place of the live light (§49.4)."""
+    acc = None
+    for j in range(VBAR_PHASES):
+        lt = smooth_light(sun_sine(2.0 * math.pi * j / VBAR_PHASES, cfg), cfg.diel.day_frac, cfg)
+        acc = lt if acc is None else acc + lt
+    return np.asarray(acc / VBAR_PHASES, dtype=np.float64)
+
+
+@functools.cache
+def l_bar(cfg: Config) -> mx.array:
+    return mx.array(l_bar_host(cfg), dtype=_F32)
+
+
+def sense_input(s: object, cfg: Config, ctx: object) -> mx.array:
+    """The ``light`` input, (N, 1) float32 (§49.4): ``I = L(t, c_agent)`` (sky light; with ``extinction > 0``
+    times ``exp(-depth/extinction)``, ``depth = H - z``) on the log scale. ``L`` is the step's own light at
+    the ramped day fraction (the one this step's food regrows under), or the day mean ``L_bar`` under
+    ``sense_control = "mute"`` or ``control = "mean"``. ``c_agent`` is the pixel of ``ctx.fcell`` in
+    terminator mode; the global light has no cell dependence."""
+    c = cfg.diel
+    pos = s.pos  # type: ignore[attr-defined]
+    n = pos.shape[0]
+    if c.sense_control == "mute" or c.control == "mean":  # static: the inert twin and the mute fork
+        lt = l_bar(cfg)
+    else:
+        lt, _ = light(s.step, ramp(s.diel_ctl, cfg)[1], cfg)  # type: ignore[attr-defined]
+    if c.mode == "terminator":  # static: the light of the agent's pixel
+        lt = mx.take(lt, ctx.fcell % sphere.geometry(cfg).npix)  # type: ignore[attr-defined]
+    else:
+        lt = mx.broadcast_to(lt, (n,))
+    if c.extinction > 0:  # static: the attenuated light of the exploratory arm S
+        geo = sphere.geometry(cfg)
+        lt = lt * mx.exp(-(geo.height_max - geo.height(pos)) / c.extinction)
+    x = mx.clip(1.0 + mx.log(lt + SENSE_EPS) / math.log(1.0 / SENSE_EPS), 0.0, 1.0)
+    return x.astype(_F32)[:, None]

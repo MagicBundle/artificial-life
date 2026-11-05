@@ -462,7 +462,7 @@ class DielConfig:  # the day-night light cycle on the photic food band (DESIGN ย
     twilight: float = 0.25  # tw, the width of the dawn and dusk ramp in units of the sun's sine, (0, 1]
     night_level: float = 0.0  # n, the photic multiplier at night, [0, 1)
     control: str = "none"  # none | mean (the day-mean table V_bar, the matched control, ยง49.5)
-    sense: bool = False  # the sky-light brain input (D2; refused until it lands)
+    sense: bool = False  # the sky-light brain input (D2): one silent input block, a layout change
     extinction: float = 0.0  # 0 = sky light; > 0 = e-folding depth of the sensed light (D2)
     sense_control: str = "none"  # none | mute (the sensed light replaced by its day mean; D2)
     oracle: int = 0  # pilot only: percent of the agents given the scripted schedule (D1b; refused until then)
