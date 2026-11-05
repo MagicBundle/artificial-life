@@ -15587,7 +15587,8 @@ thresholds are the owner's.
   another value while `oracle` is 0; box only, and validation needs a field layer wholly in the photic band). With
   `trip = 1/v_rise + 1/v_sink` (steps per unit of height there and back at cap 1):
   * **Targets.** By day, `z_ph`, the centre of the lowest field layer wholly in the photic band, `(ceil((H - 2
-    photic_lambda)/field_cell) + 1/2) field_cell` (26 on mini3d, inside the mid band and below the top band); `up_s = z_ph -
+    photic_lambda)/field_cell) + 1/2) field_cell`, layer 0's centre if the band is deeper than the column (26 on mini3d, inside the mid band and below the
+    top band); `up_s = z_ph -
     z_s` when `z_ph > z_s` and `up_s · trip <= 0.8 P day_frac`, else 0, and that stratum holds at home by day. By night,
     `down_s = min(z_s - 1, 0.8 P (1 - day_frac)/trip)`. On mini3d: up 0, 6, 0 (the floor's 21 units there and back would
     take 2,240 > 1,600 steps; the top's home is already photic) and down 4, 15, 15.
@@ -15624,7 +15625,7 @@ thresholds are the owner's.
 * **Driver**: `scripts/diel_pilot.py --schedule {1|2}` (default 2; it picks the rule) and `--warm-from DIR` (forks existing
   warm-ups; the second pilot forks the first pilot's, so both pilots start from the same states).
 * **Tests**: validation (the value, inert while the oracle is off, no photic layer); the schedule-2 constants on mini3d; the
-  plan against a float64 host reference at 15 phases; the kinematic round trips over two days (home a margin before dusk and
+  plan against a float64 host reference at 27 phases (day fractions 0.5 and 0.3); a band deeper than the column; the kinematic round trips over two days (home a margin before dusk and
   dawn, the mid stratum at the target at noon and 15 below home at midnight); the ledger test and the bench mirror for both
   schedules; the rule on synthetic runs (GO, STOP, null and one-stratum SMALL, the three censoring cases computed by hand, an
   extinction pattern as STOP, both INVALID paths, the window and a fork's start, a reproducible bootstrap, the pinned hash,
