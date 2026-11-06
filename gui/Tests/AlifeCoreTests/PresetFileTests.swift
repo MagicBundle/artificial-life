@@ -29,7 +29,7 @@ import Testing
         return cadence
     }
 
-    static let presetNames = ["tiny", "dev", "64k", "256k", "tiny3d", "64k3d", "mini3d", "fast", "storm", "storm160", "build", "bonds", "comm", "niche", "niche3d", "tiny3s", "mini3s", "64k3s", "128k3s", "256k3s", "576k3s", "stormsph", "stormsph16", "stormsph22", "stormsph22h", "calls", "diel"]
+    static let presetNames = ["tiny", "dev", "64k", "256k", "tiny3d", "64k3d", "mini3d", "fast", "storm", "storm160", "build", "bonds", "comm", "niche", "niche3d", "tiny3s", "mini3s", "64k3s", "128k3s", "256k3s", "576k3s", "stormsph", "stormsph16", "stormsph22", "stormsph22h", "stormsph128", "stormsph256", "stormsph576", "calls", "diel"]
 
     @Test(arguments: presetNames)
     func cadenceOfEveryPresetFileIsUnchanged(name: String) throws {

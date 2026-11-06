@@ -60,7 +60,8 @@ struct PresetGuideViewTests {
         for entry in content.entries {
             let rep = try draw(PresetCard(entry: entry, machine: content.machine) {}.padding(12).frame(width: 380).background(Color(nsColor: .windowBackgroundColor)),
                                width: 380, height: 520, dark: dark, name: "card-\(entry.preset.rawValue)")
-            #expect(colours(rep) > 30, "\(entry.preset.rawValue): the card is blank")
+            // A preset with no snapshot yet (`Preset.unmeasured`) draws the placeholder: the threshold of the no-snapshot test.
+            #expect(colours(rep) > (entry.snapshot == nil ? 10 : 30), "\(entry.preset.rawValue): the card is blank")
         }
     }
 

@@ -193,15 +193,25 @@ import Testing
     /// A planet of no preset's shape: nothing is calibrated for it.
     private static let odd = PlanetShape(radius: 60, height: 30, nside: 14, layers: 14)
 
-    /// The extra-large planets (DESIGN §46.9) have no calibrated weather: the launcher refuses the weather there with the same words as for any other shape.
-    @Test(arguments: [PlanetShape(radius: 128.6, height: 40, nside: 30, layers: 18), PlanetShape(radius: 180, height: 40, nside: 42, layers: 18),
-                      PlanetShape(radius: 270, height: 40, nside: 63, layers: 18)])
-    func anExtraLargePlanetHasNoCalibratedWeather(shape: PlanetShape) {
+    /// Each extra-large planet (DESIGN §46.9, I101) has its own overlay and spin-up and no obstacle.
+    @Test(arguments: [(PlanetShape(radius: 128.6, height: 40, nside: 30, layers: 18), "stormsph128", 32_000),
+                      (PlanetShape(radius: 180, height: 40, nside: 42, layers: 18), "stormsph256", 17_000),
+                      (PlanetShape(radius: 270, height: 40, nside: 63, layers: 18), "stormsph576", 35_000)])
+    func anExtraLargePlanetHasItsOwnOverlayAndSpinup(shape: PlanetShape, overlay: String, spinup: Int) {
+        #expect(PlanetSpec.overlay(forShape: shape) == overlay)
+        #expect(PlanetSpec.weatherOverlay(forGeometry: "sphere", shape: shape, worldSize: 2048) == overlay)
+        #expect(PlanetSpec.weatherObstacle(dims: 3, geometry: "sphere", shape: shape) == nil)
+        #expect(PlanetSpec.defaultSpinup(forGeometry: "sphere", shape: shape, worldSize: 2048) == spinup)
+    }
+
+    /// A shape of no preset (here a made-up one) still has the obstacle, and its caption lists every calibrated planet.
+    @Test func aShapeOfNoPresetHasTheObstacleListingEveryCalibratedPlanet() {
+        let shape = PlanetShape(radius: 300, height: 40, nside: 70, layers: 18)
         #expect(PlanetSpec.overlay(forShape: shape) == nil)
         #expect(PlanetSpec.weatherOverlay(forGeometry: "sphere", shape: shape, worldSize: 1024) == nil)
         let why = PlanetSpec.weatherObstacle(dims: 3, geometry: "sphere", shape: shape)
         #expect(why?.hasPrefix("No weather is calibrated yet for this planet size.") == true)
-        #expect(why?.contains("64k3s (radius 90), mini3s (radius 48) and tiny3s (radius 36)") == true)
+        #expect(why?.contains("576k3s (radius 270), 256k3s (radius 180), 128k3s (radius 128.6), 64k3s (radius 90), mini3s (radius 48) and tiny3s (radius 36)") == true)
     }
 
     @Test func theLauncherPicksTheWeatherOverlayByTheSourcesGeometryAndShape() {
