@@ -1,4 +1,5 @@
 import AlifeCore
+import AlifeTestSupport
 import AppKit
 import Foundation
 import Testing
@@ -198,7 +199,7 @@ final class PipelineRig {
               exit 0;;
             silent)
               mkdir -p "$out"
-              exec sleep 30;;
+              exec sleep \(Int(TestTime.limit(seconds: 30)));;
             long)
               mkworld "$out" running 12000
               i=0
@@ -252,9 +253,13 @@ final class PipelineRig {
 @MainActor
 func patiently(timeout: Duration = .seconds(120), _ condition: @MainActor () -> Bool) async -> Bool {
     TestProcess.unthrottled()
-    let deadline = ContinuousClock.now + timeout
+    var deadline = ContinuousClock.now + TestTime.limit(timeout)
+    var polled = ContinuousClock.now
     while !condition() {
-        if ContinuousClock.now > deadline { return false }
+        let now = ContinuousClock.now
+        if now - polled > heldMainActorGap { deadline += now - polled - .milliseconds(50) }  // (see `eventually`)
+        polled = now
+        if now > deadline { return false }
         try? await Task.sleep(for: .milliseconds(50))
     }
     return true

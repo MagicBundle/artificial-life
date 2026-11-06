@@ -19,6 +19,17 @@ import simd
 /// ignores the real mouse: nothing a person does can reach it.
 private let windowSize = CGSize(width: 1100, height: 700)
 
+/// The main display's size in points. CoreGraphics, not AppKit: a test's `.enabled(if:)` condition is evaluated off the main actor, and a host
+/// with no display at all reports an empty rectangle.
+private enum MainDisplay {
+    static var holdsTheWindow: Bool {
+        let size = CGDisplayBounds(CGMainDisplayID()).size
+        return size.width >= windowSize.width && size.height >= windowSize.height
+    }
+
+    static let need = "needs a main display of at least 1100 x 700 points, the size of the test window (the first CI run's was 1024 x 768, and a drag of the dock's divider moved nothing in a window wider than the screen)"
+}
+
 /// Lets the main run loop turn (CoreAnimation commits, SwiftUI updates) from a test.
 @MainActor private func spin(_ seconds: Double) { RunLoop.current.run(until: Date().addingTimeInterval(seconds)) }
 
@@ -78,6 +89,20 @@ private final class Rig {
             if let value = saved[key] ?? nil { UserDefaults.standard.set(value, forKey: key) } else { UserDefaults.standard.removeObject(forKey: key) }
         }
         scratch.cleanup()
+    }
+
+    /// What this host shows, for the message of a drag that moved nothing (a host that does not deliver synthesized events to SwiftUI's gestures
+    /// looks like that; the first CI run, DESIGN §22.0 I91, failed these three tests with a free width that stayed at its start).
+    var hostNote: String {
+        "screens \(NSScreen.screens.map { NSStringFromRect($0.frame) }), app active \(NSApp.isActive), window visible \(window.isVisible), "
+            + "occluded \(!window.occlusionState.contains(.visible)), key \(window.isKeyWindow), number \(window.windowNumber)"
+    }
+
+    /// Lets the window settle until the free rectangle is `width` wide (SwiftUI commits a changed dock extent when its update cycle turns, which
+    /// a slow host stretches: a fixed number of turns after a drag is a guess), within the scaled limit. The width it ended at.
+    func freeWidth(becoming width: CGFloat) async -> CGFloat {
+        _ = await eventually(timeout: .seconds(10)) { settle(1); return model.freeRect.width == width }
+        return model.freeRect.width
     }
 
     /// Lets SwiftUI lay out and commit what changed.
@@ -505,13 +530,15 @@ private final class Rig {
         }
     }
 
-    @Test func draggingTheDividerFromItsEdgeMovesItByTheDragAndNoMore() async throws {
+    @Test(.enabled(if: MainDisplay.holdsTheWindow, Comment(rawValue: MainDisplay.need)))
+    func draggingTheDividerFromItsEdgeMovesItByTheDragAndNoMore() async throws {
         let rig = try await Rig.make()
         defer { rig.finish() }
         let strip = rig.frames.divider
         let start = CGPoint(x: strip.minX + 1, y: 300)  // 2 points left of the centre
         rig.drag(from: start, to: CGPoint(x: start.x - 100, y: 300))
-        #expect(freeWidth(rig) == rig.frames.free.width - 100, "100 points to the left: \(freeWidth(rig))")
+        let moved = await rig.freeWidth(becoming: rig.frames.free.width - 100)
+        #expect(moved == rig.frames.free.width - 100, "100 points to the left: \(moved); \(rig.hostNote)")
         // the last step is kept when the throttle skipped it: a quick flick still ends where it ended
         let strip2 = CGRect(x: freeWidth(rig) - 3, y: 0, width: 6, height: 700)
         let from2 = CGPoint(x: strip2.midX, y: 300)
@@ -522,16 +549,19 @@ private final class Rig {
         rig.window.sendEvent(rig.mouse(.leftMouseUp, CGPoint(x: from2.x + 80, y: 300)))
         spin(0.1)
         rig.settle()
-        #expect(freeWidth(rig) == strip2.midX + 80, "the free rectangle ended under the pointer: \(freeWidth(rig))")
+        let ended = await rig.freeWidth(becoming: strip2.midX + 80)
+        #expect(ended == strip2.midX + 80, "the free rectangle ended under the pointer: \(ended); \(rig.hostNote)")
     }
 
-    @Test func theDockIsNeverNarrowerThanItsMinimumWhateverTheDrag() async throws {
+    @Test(.enabled(if: MainDisplay.holdsTheWindow, Comment(rawValue: MainDisplay.need)))
+    func theDockIsNeverNarrowerThanItsMinimumWhateverTheDrag() async throws {
         let rig = try await Rig.make()
         defer { rig.finish() }
         let strip = rig.frames.divider
         // dragged far to the right the dock is no narrower than its minimum
         rig.drag(from: CGPoint(x: strip.midX, y: 300), to: CGPoint(x: 1090, y: 300))
-        #expect(freeWidth(rig) == windowSize.width - DockLayout.minExtent)
+        let narrowest = await rig.freeWidth(becoming: windowSize.width - DockLayout.minExtent)
+        #expect(narrowest == windowSize.width - DockLayout.minExtent, "\(narrowest); \(rig.hostNote)")
     }
 }
 

@@ -1,4 +1,5 @@
 import AlifeCore
+import AlifeTestSupport
 import AppKit
 import Foundation
 import SwiftUI
@@ -772,7 +773,7 @@ struct SessionTests {
     }
 
     private func spinUntil(_ seconds: Double = 10, _ condition: () -> Bool) {
-        let until = Date().addingTimeInterval(seconds)
+        let until = Date().addingTimeInterval(TestTime.limit(seconds: seconds))
         while !condition(), Date() < until { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
     }
 

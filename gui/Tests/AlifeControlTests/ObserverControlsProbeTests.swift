@@ -1,4 +1,5 @@
 @testable import AlifeCore
+import AlifeTestSupport
 import AppKit
 import Combine
 import Foundation
@@ -39,14 +40,27 @@ extension MenuStabilityTests {
     }
 
     /// Waits until the bodies have stopped being evaluated (the library's scan, the reader's first read and the like settle a moment after the
-    /// page is built): what is counted afterwards is what the frames did.
+    /// page is built): what is counted afterwards is what the frames did. A quiet that is only a stalled main loop is not a quiet (the first CI
+    /// run, DESIGN §22.0 I91, held the loop for seconds, the late evaluations came during the frames, and 17 of them were counted): a wait that
+    /// took far longer than it asked for starts the count of quiet samples again, and `TestTime.scale` asks for that many quiet samples in a row
+    /// (one at the default scale, as before).
     private func observerSettle(_ counts: Counts) async throws {
         var last = -1
-        for _ in 0..<50 {
+        var quiet = 0
+        let needed = Int(TestTime.scale.rounded(.up))
+        let deadline = ContinuousClock.now + TestTime.limit(.seconds(20))  // (50 samples of 400 ms)
+        while ContinuousClock.now < deadline {
             let now = counts.byName.values.reduce(0, +)
-            if now == last { return }
+            if now == last {
+                quiet += 1
+                if quiet >= needed { return }
+            } else {
+                quiet = 0
+            }
             last = now
+            let began = ContinuousClock.now
             try await Task.sleep(for: .milliseconds(400))
+            if ContinuousClock.now - began > .milliseconds(1200) { quiet = 0 }  // (the loop was held up: what it did not do says nothing)
         }
     }
 
@@ -132,7 +146,7 @@ extension MenuStabilityTests {
         counts.reset()
         try await observerFrames(stream, 20)
         try await Task.sleep(for: .milliseconds(100))
-        #expect(counts.byName["ResearchWatchPage", default: 0] == 0, "the page's body ran \(counts.byName["ResearchWatchPage", default: 0]) times in 20 frames (the rule: 0)")
+        #expect(counts.byName["ResearchWatchPage", default: 0] == 0, "the page's body ran \(counts.byName["ResearchWatchPage", default: 0]) times in 20 frames (the rule: 0); all bodies: \(counts.byName)")
     }
 }
 
@@ -193,7 +207,7 @@ struct ViewerKeyRoutingTests {
         #expect(model.note == nil)
         let scratch = try Scratch()
         defer { scratch.cleanup() }
-        let script = try scratch.script("slow", "sleep 5")
+        let script = try scratch.script("slow", "sleep \(Int(TestTime.limit(seconds: 5)))")
         stream.start(StreamSource(run: "w", follow: true), executable: script, directory: scratch.url, arguments: [])
         defer { stream.stop() }
         model.perform(.slower)

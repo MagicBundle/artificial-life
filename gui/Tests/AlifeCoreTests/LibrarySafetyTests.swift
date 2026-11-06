@@ -1,3 +1,4 @@
+import AlifeTestSupport
 import Foundation
 import Testing
 
@@ -127,19 +128,19 @@ import Testing
             calls.add(name)
             if name == "hangs", hung.all.isEmpty {
                 hung.add(name)
-                _ = gate.wait(timeout: .now() + 5)
+                _ = gate.wait(timeout: .now() + TestTime.limit(seconds: 5))
             }
         }
         let started = Date()
         let second = scanner.scan(runsDirectory: runs)
-        #expect(Date().timeIntervalSince(started) < 2, "the deadline, not the hang")
+        #expect(Date().timeIntervalSince(started) < TestTime.limit(seconds: 2), "the deadline, not the hang")
         #expect(second.slow == ["hangs"] && second.records.map(\.name) == ["good", "hangs"], "the last known record stays")
         // still stuck: not asked again
         let third = scanner.scan(runsDirectory: runs)
         #expect(third.slow == ["hangs"])
         #expect(calls.all.filter { $0 == "hangs" }.count == 1, "one look is out; a second is not started on top of it")
         gate.signal()
-        Thread.sleep(forTimeInterval: 0.2)
+        Thread.sleep(forTimeInterval: TestTime.limit(seconds: 0.2))
         let fourth = scanner.scan(runsDirectory: runs)
         #expect(fourth.slow.isEmpty, "it answered")
         let state = LibraryState.resolve(second)
@@ -157,10 +158,10 @@ import Testing
         snapshot.held = ["stuck"]
         let started = Date()
         let probed = scanner.probe(snapshot, runsDirectory: runs) { url in
-            if url.lastPathComponent == "stuck" { Thread.sleep(forTimeInterval: 2) }
+            if url.lastPathComponent == "stuck" { Thread.sleep(forTimeInterval: TestTime.limit(seconds: 2)) }
             return false
         }
-        #expect(Date().timeIntervalSince(started) < 1.5)
+        #expect(Date().timeIntervalSince(started) < TestTime.limit(seconds: 1.5))
         #expect(probed.held == ["stuck"], "no answer in time: what was known stays; the world that answered is not held")
     }
 

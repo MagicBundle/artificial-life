@@ -1,4 +1,5 @@
 import AlifeCore
+import AlifeTestSupport
 import Foundation
 import Metal
 import Testing
@@ -103,7 +104,13 @@ enum BenchScene {
         let positions = (0..<rows).map { _ in SIMD3<Float>(next() * size, next() * size, next() * height) }
         var frame = TestFrames.frame(positions, step: step)
         frame.rgb = (0..<rows).map { WorldPalette.slots[$0 % WorldPalette.slots.count] }
-        frame.bonds = (0..<max(rows - 1, 0)).filter { $0 % 5 < 2 }.flatMap { [UInt32($0), UInt32($0 + 1)] }
+        // (spelled out with types: the one-line filter-flatMap chain exceeds the type checker's time limit on CI's Swift 6.3)
+        var bonds: [UInt32] = []
+        for i in 0..<max(rows - 1, 0) where i % 5 < 2 {
+            bonds.append(UInt32(i))
+            bonds.append(UInt32(i + 1))
+        }
+        frame.bonds = bonds
         return frame
     }
 }
@@ -220,7 +227,7 @@ struct WorldRenderBench {
 
     /// Waits for `count` completion handlers (they run on the GPU's thread).
     private func settled(_ collected: OSAllocatedUnfairLock<[DrawTiming]>, count: Int) async throws {
-        let deadline = ContinuousClock.now + .seconds(30)
+        let deadline = ContinuousClock.now + TestTime.limit(.seconds(30))
         while collected.withLock({ $0.count }) < count {
             #expect(ContinuousClock.now < deadline, "the GPU finished only \(collected.withLock { $0.count }) of \(count) draws")
             if ContinuousClock.now >= deadline { return }

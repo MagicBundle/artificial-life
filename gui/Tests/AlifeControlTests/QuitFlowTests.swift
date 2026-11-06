@@ -1,4 +1,5 @@
 import AlifeCore
+import AlifeTestSupport
 import AppKit
 import Foundation
 import SwiftUI
@@ -21,7 +22,7 @@ import Testing
     // MARK: The gate
 
     @Test func abandoningTheWaitRepliesAtOnceAndOnlyOnce() async {
-        let gate = TerminationGate(timeout: .seconds(30), poll: .milliseconds(10))
+        let gate = TerminationGate(timeout: TestTime.limit(.seconds(30)), poll: .milliseconds(10))
         let stub = Stub()
         let reply = gate.shouldTerminate(hasProcess: { stub.running }, stop: { stub.stops += 1 }, reply: { stub.replies += 1 })
         #expect(reply == .terminateLater && gate.isWaiting)
@@ -52,7 +53,7 @@ import Testing
     }
 
     @Test func theWaitReportsItsElapsedTimeUntilItEnds() async {
-        let gate = TerminationGate(timeout: .seconds(30), poll: .milliseconds(10))
+        let gate = TerminationGate(timeout: TestTime.limit(.seconds(30)), poll: .milliseconds(10))
         let stub = Stub()
         gate.onWaiting = { elapsed in stub.waits.append(elapsed) }
         _ = gate.shouldTerminate(hasProcess: { stub.running }, stop: {}, reply: { stub.replies += 1 })
@@ -80,7 +81,7 @@ import Testing
     @Test func aRunMakesTheDelegateAskFirstAndCancelKeepsEverything() throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
-        let repo = try fakeRepo(scratch, engine: "exec sleep 30")
+        let repo = try fakeRepo(scratch, engine: "exec sleep \(Int(TestTime.limit(seconds: 30)))")
         let run = controller(repo)
         run.settings.name = "quit-test-run"
         run.start()
@@ -141,7 +142,7 @@ import Testing
     @Test func aSetupOrCheckJobIsEndedByTheEscalationToo() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
-        let repo = try fakeRepo(scratch, engine: "exec sleep 30")
+        let repo = try fakeRepo(scratch, engine: "exec sleep \(Int(TestTime.limit(seconds: 30)))")
         let run = controller(repo)
         run.settings.mode = .resume
         run.refreshRuns()
@@ -235,7 +236,7 @@ import Testing
     @Test func aRunWaitsUpToTwoMinutesAndTheOthersFortySeconds() throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
-        let repo = try fakeRepo(scratch, engine: "exec sleep 30")
+        let repo = try fakeRepo(scratch, engine: "exec sleep \(Int(TestTime.limit(seconds: 30)))")
         let run = controller(repo)
         run.settings.name = "limit-run"
         run.start()
@@ -251,13 +252,13 @@ import Testing
     }
 
     @Test func theGateTakesItsLimitFromTheCallerAndAStaleWaitCannotEndANewOne() async {
-        let gate = TerminationGate(timeout: .seconds(30), poll: .milliseconds(10))
+        let gate = TerminationGate(timeout: TestTime.limit(.seconds(30)), poll: .milliseconds(10))
         gate.limit = { .milliseconds(120) }
         let stub = Stub()
         let began = ContinuousClock.now
         _ = gate.shouldTerminate(hasProcess: { stub.running }, stop: {}, reply: { stub.replies += 1 })
         #expect(await eventually { stub.replies == 1 })
-        #expect(ContinuousClock.now - began < .seconds(5), "the 120 ms limit, not the 30 s of init")
+        #expect(ContinuousClock.now - began < TestTime.limit(.seconds(5)), "the 120 ms limit, not the 30 s of init")
         // A wait abandoned and a new one begun at once: the old task must not reply for the new one.
         gate.limit = nil
         let again = Stub()
@@ -275,7 +276,7 @@ import Testing
         let scratch = try Scratch()
         defer { scratch.cleanup() }
         // A check that ends cleanly on SIGINT (as uv and `alife inspect` do).
-        let repo = try fakeRepo(scratch, engine: "trap 'exit 130' INT\ntouch \"$(dirname \"$0\")/ready\"\nwhile kill -0 $PPID 2>/dev/null && [ $SECONDS -lt 120 ]; do sleep 0.1; done")
+        let repo = try fakeRepo(scratch, engine: "trap 'exit 130' INT\ntouch \"$(dirname \"$0\")/ready\"\nwhile kill -0 $PPID 2>/dev/null && [ $SECONDS -lt \(Int(TestTime.limit(seconds: 120))) ]; do sleep 0.1; done")
         let run = controller(repo)
         run.settings.mode = .resume
         run.refreshRuns()
@@ -319,7 +320,7 @@ import Testing
     @Test func thePanelModelDecisions() throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
-        let repo = try fakeRepo(scratch, engine: "exec sleep 30")
+        let repo = try fakeRepo(scratch, engine: "exec sleep \(Int(TestTime.limit(seconds: 30)))")
         let world = repo.appendingPathComponent("runs/w1")
         try FileManager.default.createDirectory(at: world, withIntermediateDirectories: true)
         try """
@@ -346,7 +347,7 @@ import Testing
     @Test func aQuitAskedWhileTheQuestionIsUpIsTheFirstOnesBusiness() throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
-        let repo = try fakeRepo(scratch, engine: "exec sleep 30")
+        let repo = try fakeRepo(scratch, engine: "exec sleep \(Int(TestTime.limit(seconds: 30)))")
         let run = controller(repo)
         run.settings.name = "reentrant"
         run.start()
@@ -386,7 +387,7 @@ import Testing
     @Test func theQuitCommandEndsAttachedSheetsThenTerminates() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
-        let repo = try fakeRepo(scratch, engine: "exec sleep 30")
+        let repo = try fakeRepo(scratch, engine: "exec sleep \(Int(TestTime.limit(seconds: 30)))")
         let run = controller(repo)
         let delegate = makeDelegate(run, PlayController())
         var terminated = 0
@@ -403,7 +404,7 @@ import Testing
     @Test func cancelOnTheQuestionLeavesTheSheetsWhereTheyWere() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
-        let repo = try fakeRepo(scratch, engine: "exec sleep 30")
+        let repo = try fakeRepo(scratch, engine: "exec sleep \(Int(TestTime.limit(seconds: 30)))")
         let run = controller(repo)
         run.settings.name = "sheet-cancel"
         run.start()
@@ -500,7 +501,7 @@ import Testing
     }
 
     /// An engine that ignores SIGINT and says so (a file) once it does: signalling it earlier would kill it.
-    private static let stubborn = "trap '' INT\ntouch \"$(dirname \"$0\")/ready\"\nwhile kill -0 $PPID 2>/dev/null && [ $SECONDS -lt 120 ]; do sleep 0.2; done"
+    private static let stubborn = "trap '' INT\ntouch \"$(dirname \"$0\")/ready\"\nwhile kill -0 $PPID 2>/dev/null && [ $SECONDS -lt \(Int(TestTime.limit(seconds: 120))) ]; do sleep 0.2; done"
 
     /// `ignoresInterrupt` for a test that is not async: waits on the main run loop.
     private func await_ignoresInterruptSync(_ repo: URL) {
