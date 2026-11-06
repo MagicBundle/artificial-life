@@ -2,7 +2,7 @@ import Foundation
 
 /// The host's time scale, `ALIFE_TEST_TIME_SCALE` (a positive number; 1 when it is unset, not a number or not positive): **the one place a
 /// slower host is allowed for**, shared by both test targets. A hosted CI runner is a few shared cores with no GPU, and the full run there
-/// stalls the whole test process for tens of seconds at a time (DESIGN §22.0, I91). The waits and the wall-clock upper bounds of the tests
+/// stalls the whole test process for tens of seconds at a time (DESIGN §22.0, I91): its main thread lays out the SwiftUI views the tests leave alive. The waits and the wall-clock upper bounds of the tests
 /// multiply by this number, through `eventually` and `patiently` (the polling waits), `TestTime.limit(_:)` and `TestTime.limit(seconds:)`.
 ///
 /// At 1 (the default, and every run on a developer's Mac) nothing changes. The scale applies only to what a test *allows* a thing to take;

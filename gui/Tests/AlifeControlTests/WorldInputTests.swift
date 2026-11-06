@@ -19,6 +19,17 @@ import simd
 /// ignores the real mouse: nothing a person does can reach it.
 private let windowSize = CGSize(width: 1100, height: 700)
 
+/// The main display's size in points. CoreGraphics, not AppKit: a test's `.enabled(if:)` condition is evaluated off the main actor, and a host
+/// with no display at all reports an empty rectangle.
+private enum MainDisplay {
+    static var holdsTheWindow: Bool {
+        let size = CGDisplayBounds(CGMainDisplayID()).size
+        return size.width >= windowSize.width && size.height >= windowSize.height
+    }
+
+    static let need = "needs a main display of at least 1100 x 700 points, the size of the test window (the first CI run's was 1024 x 768, and a drag of the dock's divider moved nothing in a window wider than the screen)"
+}
+
 /// Lets the main run loop turn (CoreAnimation commits, SwiftUI updates) from a test.
 @MainActor private func spin(_ seconds: Double) { RunLoop.current.run(until: Date().addingTimeInterval(seconds)) }
 
@@ -519,7 +530,8 @@ private final class Rig {
         }
     }
 
-    @Test func draggingTheDividerFromItsEdgeMovesItByTheDragAndNoMore() async throws {
+    @Test(.enabled(if: MainDisplay.holdsTheWindow, Comment(rawValue: MainDisplay.need)))
+    func draggingTheDividerFromItsEdgeMovesItByTheDragAndNoMore() async throws {
         let rig = try await Rig.make()
         defer { rig.finish() }
         let strip = rig.frames.divider
@@ -541,7 +553,8 @@ private final class Rig {
         #expect(ended == strip2.midX + 80, "the free rectangle ended under the pointer: \(ended); \(rig.hostNote)")
     }
 
-    @Test func theDockIsNeverNarrowerThanItsMinimumWhateverTheDrag() async throws {
+    @Test(.enabled(if: MainDisplay.holdsTheWindow, Comment(rawValue: MainDisplay.need)))
+    func theDockIsNeverNarrowerThanItsMinimumWhateverTheDrag() async throws {
         let rig = try await Rig.make()
         defer { rig.finish() }
         let strip = rig.frames.divider
