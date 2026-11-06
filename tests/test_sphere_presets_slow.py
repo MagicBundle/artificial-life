@@ -18,7 +18,7 @@ import pytest
 import sphere_run
 from alife.config import dims, load_config
 from alife.state import LedgerIdx
-from sphere_storms import criteria, study
+from sphere_storms import BANDS, criteria, study
 
 FEATURES = ["build", "bonds", "comm", "niche3d"]
 CASES = {
@@ -76,10 +76,26 @@ def test_three_thousand_steps_of_a_preset_close_the_ledger_overflow_nothing_and_
 # ``64k3s``, 0 to 6 on ``mini3s`` (seed 0 is its quiet seed: 0 to 1, hence seed 1 here) and 5 to 11 on
 # ``tiny3s``), those of a frozen one do not, and a frozen weather passes the count and the lifetime (the
 # Kaplan-Meier curve never falls).
+#
+# The three extra-large planets (I101) are read as they were calibrated: the window after a 20 000-step
+# spin-up of 80 000 steps, a detection every 25, the band of ``BANDS`` (the same storm density as the 64k3s),
+# seed 0, and a lower in-band share: the five calibration seeds of the chosen overlays gave 0.92 / 0.60 /
+# 0.88 / 0.88 / 0.80 (128k3s), 1.000 on all (256k3s) and 0.77 / 0.76 / 0.95 / 0.82 / 0.70 (576k3s), so
+# ``in_band`` is a little under seed 0's value. These cases take about 20 minutes (128k3s) to an hour
+# (576k3s) each on the M5 Pro and under 10 GB.
 STORM_CASES = {
     "64k3s": dict(overlay="stormsph", steps=60_000, seeds=(0,), births=2),
     "mini3s": dict(overlay="stormsph22", steps=45_000, seeds=(1,), births=2),
     "tiny3s": dict(overlay="stormsph16", steps=45_000, seeds=(0, 1), births=2),
+    "128k3s": dict(
+        overlay="stormsph128", steps=80_000, seeds=(0,), births=2, spinup=20_000, tick=25, in_band=0.85
+    ),
+    "256k3s": dict(
+        overlay="stormsph256", steps=80_000, seeds=(0,), births=2, spinup=20_000, tick=25, in_band=0.95
+    ),
+    "576k3s": dict(
+        overlay="stormsph576", steps=80_000, seeds=(0,), births=2, spinup=20_000, tick=25, in_band=0.70
+    ),
 }
 SPINUP = 15_000  # the storms of every planet have formed by then (the measured spin-up is 10 000 to 14 000)
 
@@ -89,19 +105,28 @@ SPINUP = 15_000  # the storms of every planet have formed by then (the measured 
 def test_a_calibrated_planet_holds_two_to_six_named_storms_per_hemisphere_that_live_past_3000_steps(
     name: str,
 ) -> None:
-    """The criteria of STORMS_W0 on the sphere (S4c): 2 to 6 named storms in each hemisphere at 90 % of the
-    detection times of the window or more, and a named-storm lifetime (the Kaplan-Meier median, or the
+    """The criteria of STORMS_W0 on the sphere (S4c): 2 to 6 named storms in each hemisphere (the band of
+    ``BANDS`` on the extra-large planets) at 90 % of the detection times of the window or more (``in_band``
+    where a case sets it), and a named-storm lifetime (the Kaplan-Meier median, or the
     longest age while the curve stays above one half) of at least 3 000 steps, read where it can be read
     (``median_reliable``); and a living weather: storms born in the window, a kinetic energy and a largest
     wind that vary over it. The exact numbers of the calibration runs are in DESIGN §46.6; a weaker pool, a
     larger one, or a retuned coupling falls out of the band (a 28 x 18 pool on ``mini3s`` and a 20 x 14 one
     on ``tiny3s`` hold no storm at all), and a weather that does not evolve fails the last two."""
     case = STORM_CASES[name]
+    if "spinup" in case and mx.default_device().type != mx.gpu:
+        pytest.skip(
+            f"{name} is a Metal gate: 100 000 weather steps of the extra-large planet take hours on the CPU"
+        )
+    lo, hi = BANDS[name]
     cfg = load_config(preset=name, overlays=[case["overlay"]])
     for seed in case["seeds"]:
-        c = criteria(study(cfg, case["steps"], SPINUP, seed=seed, tick=50))
-        assert c["in_range_both"] >= 0.9, (seed, c)
-        assert 2.0 <= c["north_mean"] <= 6.0 and 2.0 <= c["south_mean"] <= 6.0, (seed, c)
+        rec = study(
+            cfg, case["steps"], case.get("spinup", SPINUP), seed=seed, tick=case.get("tick", 50), lo=lo, hi=hi
+        )
+        c = criteria(rec, lo, hi)
+        assert c["in_range_both"] >= case.get("in_band", 0.9), (seed, c)
+        assert lo <= c["north_mean"] <= hi and lo <= c["south_mean"] <= hi, (seed, c)
         assert c["lifetime_pass"] and c["lifetime"] >= 3000, (seed, c)
         # a short window cannot always read the median (few storms at risk where it falls): the lifetime is
         # then read on detections (more than half of them in storms that lived 3 000 steps or more)

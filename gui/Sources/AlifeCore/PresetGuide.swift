@@ -191,20 +191,20 @@ extension Preset {
             goodFor = "Long runs on a planet. An optional storm-weather extra, stormsph, is made for it (it is not part of this preset)."
             lead = "Heavy."
         case .k128_3s:
-            // 128k3s.toml: "64k3s scaled by floor area at equal density"; radius 128.6, n_max 131 072; "NOT CALIBRATED" (population); the stormsph128 overlay is made for it (I101).
+            // 128k3s.toml: "64k3s scaled by floor area at equal density"; radius 128.6, n_max 131 072; "NOT CALIBRATED" (population); the stormsph128 overlay is made for it (I101); engine bench DESIGN 46.9 (I102).
             what = "An extra-large planet: about twice the area of 64k3s, with room for twice as many organisms."
-            goodFor = "Not yet calibrated for its population or speed: a test of how large a planet your Mac can run. An optional storm-weather extra, stormsph128, is made for it (it is not part of this preset)."
-            lead = "Heavier than 64k3s. It has not been measured: a larger planet runs slower in proportion to the number of organisms it holds."
+            goodFor = "Not yet calibrated for its population: a test of how large a planet your Mac can run. An optional storm-weather extra, stormsph128, is made for it (it is not part of this preset)."
+            lead = "Heavier than 64k3s. Measured in the engine on an M5 Pro with the storm weather on: about 24 steps per second (42 ms a step, from the founders and with 85 000 organisms alive), a peak memory of 6 to 12 GB and a save of about 1.3 GB. That is close to the limit for playing at 1× (14.4 steps per second), since the app adds its own cost to the engine's."
         case .k256_3s:
-            // 256k3s.toml: "64k3s scaled by floor area at equal density"; radius 180, n_max 262 144; "NOT CALIBRATED" (population); the stormsph256 overlay is made for it (I101).
+            // 256k3s.toml: "64k3s scaled by floor area at equal density"; radius 180, n_max 262 144; "NOT CALIBRATED" (population); the stormsph256 overlay is made for it (I101); engine bench DESIGN 46.9 (I102).
             what = "A very large planet: four times the area of 64k3s, with room for four times as many organisms."
-            goodFor = "Not yet calibrated for its population or speed: a test of how large a planet your Mac can run. An optional storm-weather extra, stormsph256, is made for it (it is not part of this preset)."
-            lead = "Much heavier than 64k3s. It has not been measured: a larger planet runs slower in proportion to the number of organisms it holds."
+            goodFor = "Not yet calibrated for its population: a test of how large a planet your Mac can run. An optional storm-weather extra, stormsph256, is made for it (it is not part of this preset)."
+            lead = "Much heavier than 64k3s. Measured in the engine on an M5 Pro with the storm weather on: about 11 steps per second (90 to 98 ms a step, from the founders and with 166 000 organisms alive), a peak memory of 12 to 22 GB and a save of about 2.6 GB. That is slower than playing at 1× (14.4 steps per second)."
         case .k576_3s:
-            // 576k3s.toml: "64k3s scaled by floor area at equal density"; radius 270, n_max 589 824; "NOT CALIBRATED" (population); the stormsph576 overlay is made for it (I101).
+            // 576k3s.toml: "64k3s scaled by floor area at equal density"; radius 270, n_max 589 824; "NOT CALIBRATED" (population); the stormsph576 overlay is made for it (I101); engine bench DESIGN 46.9 (I102).
             what = "The largest planet: nine times the area of 64k3s, with room for nine times as many organisms."
-            goodFor = "Not yet calibrated for its population or speed: a test of how large a planet your Mac can run. An optional storm-weather extra, stormsph576, is made for it (it is not part of this preset)."
-            lead = "By far the heaviest planet. It has not been measured: a larger planet runs slower in proportion to the number of organisms it holds, and this one may be too large to play."
+            goodFor = "Not yet calibrated for its population: a test of how large a planet your Mac can run. An optional storm-weather extra, stormsph576, is made for it (it is not part of this preset)."
+            lead = "By far the heaviest planet. Measured in the engine on an M5 Pro with the storm weather on: about 4.3 steps per second (230 ms a step, from the founders and with 355 000 organisms alive), a peak memory of about 26 GB and a save of about 6 GB. It is too slow to play at 1× (14.4 steps per second): a planet to grow and then watch."
         }
         let sentences = Self.extremes.filter { $0.preset == self }.map(\.sentence) + Self.comparisons.filter { $0.preset == self }.map(\.sentence)
         return PresetGuide(what: what, goodFor: goodFor, cost: ([lead] + sentences).joined(separator: " "))

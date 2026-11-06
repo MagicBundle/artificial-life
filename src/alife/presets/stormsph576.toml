@@ -35,6 +35,16 @@
 # 64k3s and 128k3s; no agent met a hazardous wind in those 3 000 steps (storm exposure 0). `storm_p` and `storm_span` are
 # the box's.
 #
+# **The storm is a hazard (I102, the owner's choice of 2026-11-06: storms kill 3 to 10 % of what dies).** At 0.08 the
+# storm kills nothing, so `storm_u0` is lowered; it is read only by the hazard mask, the validators and the exposure
+# metric, never by the weather, whose statistics above are unchanged. Ladder (engine `alife run`, 3 000 steps from the
+# founders after the 35 000 spin-up, seed 0; storm deaths as a share of all deaths after step 1 000): `storm_u0` 0.030 /
+# 0.025 / 0.020 / **0.015** gave 0.89 / 1.81 / 3.44 / **6.09 %** (storm exposure 0.0040 / 0.0084 / 0.0158 / 0.0283;
+# population at step 3 000 131 200 / 128 500 / 125 800 / 119 900). Lower than 0.020 on 128k3s and 256k3s because the
+# winds the agents meet here are weaker (peak 0.078 against 0.09). The onset now lies well inside the agents' range of
+# air speed, so the hazard falls on the strongest winds wherever they blow, in a named storm or not. Measured on
+# founders: an evolved population may learn to avoid the wind (the calls pilot, DESIGN §47.6).
+#
 # `weather.cells` is the weather Nside Nw (not a grid side) and must be Nf times a power of two. A pool is
 # (x, y, sx, sy, amp, vx, vy) as in `stormsph`; `vx` -0.027 is the drift along the pool's own latitude circle per
 # unit of weather time. The pools are `alife.analysis.w0_sphere.make_pools(270.0, 9, 48, 24)`.
@@ -47,7 +57,7 @@ seed_rate = 0.8
 pools = [94.24778, 188.495559, 48.0, 24.0, 1.0, -0.027, 0.0, 282.743339, 188.495559, 48.0, 24.0, 1.0, -0.027, 0.0, 471.238898, 188.495559, 48.0, 24.0, 1.0, -0.027, 0.0, 659.734457, 188.495559, 48.0, 24.0, 1.0, -0.027, 0.0, 848.230016, 188.495559, 48.0, 24.0, 1.0, -0.027, 0.0, 1036.725576, 188.495559, 48.0, 24.0, 1.0, -0.027, 0.0, 1225.221135, 188.495559, 48.0, 24.0, 1.0, -0.027, 0.0, 1413.716694, 188.495559, 48.0, 24.0, 1.0, -0.027, 0.0, 1602.212253, 188.495559, 48.0, 24.0, 1.0, -0.027, 0.0, 0.0, -188.495559, 48.0, 24.0, 1.0, -0.027, 0.0, 188.495559, -188.495559, 48.0, 24.0, 1.0, -0.027, 0.0, 376.991118, -188.495559, 48.0, 24.0, 1.0, -0.027, 0.0, 565.486678, -188.495559, 48.0, 24.0, 1.0, -0.027, 0.0, 753.982237, -188.495559, 48.0, 24.0, 1.0, -0.027, 0.0, 942.477796, -188.495559, 48.0, 24.0, 1.0, -0.027, 0.0, 1130.973355, -188.495559, 48.0, 24.0, 1.0, -0.027, 0.0, 1319.468915, -188.495559, 48.0, 24.0, 1.0, -0.027, 0.0, 1507.964474, -188.495559, 48.0, 24.0, 1.0, -0.027, 0.0]
 rain_gain = 100000.0
 storm_p = 0.002
-storm_u0 = 0.08
+storm_u0 = 0.015  # I102 (hazard); 0.08 in I101
 storm_span = 0.03
 r1 = 0.0016
 r2 = 0.0008
