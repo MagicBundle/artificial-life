@@ -1,4 +1,5 @@
 import AlifeCore
+import AlifeTestSupport
 import Foundation
 import Testing
 
@@ -115,7 +116,7 @@ import Testing
         let scratch = try Scratch()
         defer { scratch.cleanup() }
         // Not a stream, and a process that would live for half a minute: the viewer ends it.
-        let script = try scratch.script("alife-garbage", "echo 'this is not a stream'\nexec sleep 30")
+        let script = try scratch.script("alife-garbage", "echo 'this is not a stream'\nexec sleep \(Int(TestTime.limit(seconds: 30)))")
         let (controller, _) = make()
         controller.start(source, executable: script, directory: scratch.url, arguments: [])
         #expect(await eventually(timeout: .seconds(10)) { !controller.hasProcess })
@@ -232,7 +233,7 @@ import Testing
         let scratch = try Scratch()
         defer { scratch.cleanup() }
         // Sends a header and then sleeps, ignoring stdin: only the SIGTERM after the grace period ends it.
-        let script = try scratch.script("alife-deaf", "cat \"$1\"\nexec sleep 30")
+        let script = try scratch.script("alife-deaf", "cat \"$1\"\nexec sleep \(Int(TestTime.limit(seconds: 30)))")
         let (controller, _) = make(grace: .milliseconds(200))
         controller.start(source, executable: script, directory: scratch.url,
                          arguments: [Repo.streamFixtureURL("3d").path])
@@ -350,7 +351,7 @@ import Testing
         let scratch = try Scratch()
         defer { scratch.cleanup() }
         // A process that ignores its quit and its stdin closing, and a long grace: only shutdown() can end it in time.
-        let deaf = try scratch.script("alife-deaf-long", "cat \"$1\"\nexec sleep 30")
+        let deaf = try scratch.script("alife-deaf-long", "cat \"$1\"\nexec sleep \(Int(TestTime.limit(seconds: 30)))")
         let (controller, _) = make(grace: .seconds(120))
         controller.start(source, executable: deaf, directory: scratch.url, arguments: [Repo.streamFixtureURL("3d").path])
         #expect(await eventually { controller.phase == .live })

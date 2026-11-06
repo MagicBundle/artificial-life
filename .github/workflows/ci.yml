@@ -46,6 +46,80 @@ jobs:
         # (tests/worker_cache.py, DESIGN §22.0). loadfile keeps a file's tests in order on one worker.
         run: uv run pytest -m "not slow" -q -n 4 --dist loadfile
 
+  swift:
+    if: github.event_name != 'schedule'
+    # The GUI's Swift tests (gui/, SwiftPM; DESIGN §22.0). Pinned to macos-26 (Apple silicon, Xcode 26.x, the image's default):
+    # the sources need the macOS 26 SDK (`ToolbarSpacer` behind `#available(macOS 26.0, *)`, and `UserDefaults` being `Sendable`
+    # in that SDK; on macos-15's Xcode 16.4 the build fails with "conformance to 'Sendable' must occur in the same source file",
+    # I91), and macos-latest moving to a newer image would change the compiler under the tests without a commit. The GPU tests stay off (ALIFE_GPU_TESTS is not set: the runner's virtualised GPU is not the
+    # Metal the shader tests were written against). The Python checks of the GUI (tests/test_gui_sync.py, tests/test_app_bundles.py)
+    # are text checks that run in the test job above, so they are not repeated here.
+    runs-on: macos-26
+    # On a Mac a cold build takes under a minute and the test run about three (a stall of 2.5 minutes was seen on one, I91); the
+    # package has no dependencies to fetch. A hosted runner is slower and has fewer cores, so 40 minutes is generous.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+      # What the tests run on (cores, memory, displays, and how long a fresh script takes to start: most of the tests that failed on the first
+      # run start a child process), because the log is all there is to read a runner by (DESIGN §22.0, I91).
+      - name: Host
+        run: |
+          sysctl -n hw.ncpu hw.memsize machdep.cpu.brand_string
+          system_profiler SPDisplaysDataType | head -40 || true
+          d=$(mktemp -d)
+          for i in 1 2 3 4 5 6; do
+            printf '#!/bin/bash\nexit 0\n' > "$d/s$i"; chmod +x "$d/s$i"
+            start=$(python3 -c 'import time; print(time.time())')
+            "$d/s$i"
+            python3 -c "import time; print('fresh script $i started and ended in %.3f s' % (time.time() - $start))"
+          done
+      - uses: actions/cache@v4
+        with:
+          path: gui/.build
+          key: ${{ runner.os }}-${{ runner.arch }}-swiftpm-${{ hashFiles('gui/Package.swift') }}-${{ hashFiles('gui/Sources/**', 'gui/Tests/**') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-swiftpm-${{ hashFiles('gui/Package.swift') }}-
+      - name: Build
+        working-directory: gui
+        run: swift build --build-tests
+      # `ALIFE_TEST_TIME_SCALE` multiplies every wait and every wall-clock upper bound of the tests (`gui/Tests/AlifeTestSupport`; DESIGN §22.0,
+      # I91): the full run here stalls the test process for tens of seconds at a time, which a person's Mac does not. 1 is the default
+      # and what a developer's run uses; nothing is skipped or made optional. While the tests run, a line every 30 s records the load and
+      # the test process; when the run prints nothing for 4 minutes (it does, for that long, while the main thread lays out the views the
+      # tests leave alive) the watchdog samples the process once, so that a hang can be read from the log. The step's own timeout ends a
+      # hang.
+      - name: Tests
+        working-directory: gui
+        timeout-minutes: 30
+        env:
+          ALIFE_TEST_TIME_SCALE: "4"
+        run: |
+          log="$RUNNER_TEMP/swift-test.log"
+          : > "$log"
+          (
+            last=-1; idle=0; sampled=0
+            while sleep 30; do
+              pid=$(pgrep -f swiftpm-testing-helper | head -1)
+              size=$(stat -f %z "$log")
+              if [ "$size" = "$last" ]; then idle=$((idle + 30)); else idle=0; last=$size; fi
+              echo "[heartbeat] $(date +%T) $(uptime | sed 's/.*load/load/') idle ${idle}s $(ps -o pid=,pcpu=,rss=,etime= -p "${pid:-0}" 2>/dev/null | tr -s ' ') threads $(ps -M -p "${pid:-0}" 2>/dev/null | wc -l | tr -d ' ')"
+              if [ "$idle" -ge 240 ] && [ "$sampled" = 0 ] && [ -n "$pid" ]; then
+                sampled=1
+                echo "[watchdog] no test output for ${idle} s: sampling process $pid"
+                sample "$pid" 5 -file "$RUNNER_TEMP/sample.txt" > /dev/null 2>&1 || true
+                sed -n '1,500p' "$RUNNER_TEMP/sample.txt" | cut -c1-200
+                ps -axo pid,ppid,pcpu,etime,command | grep -vE "grep|ps -axo" | cut -c1-160 | head -60
+              fi
+            done
+          ) &
+          watchdog=$!
+          swift test 2>&1 | tee -a "$log"
+          status=${PIPESTATUS[0]}
+          kill "$watchdog" 2>/dev/null || true
+          exit "$status"
   nightly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04  # pinned with the test job: the goldens depend on the image's g++

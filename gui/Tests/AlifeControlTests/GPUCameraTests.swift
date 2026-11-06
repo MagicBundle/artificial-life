@@ -217,7 +217,13 @@ struct GPUCameraTests {
                 return most
             }
             // The twelve edges of the box, a point every 1/400 of the way along each.
-            let corners: [SIMD3<Float>] = (0..<8).map { SIMD3(Float($0 & 1) * L, Float(($0 >> 1) & 1) * L, Float(($0 >> 2) & 1) * H) }
+            // (typed step by step: the one-line map exceeds the type checker's time limit on CI's Swift 6.3)
+            let corners: [SIMD3<Float>] = (0..<8).map { (k: Int) -> SIMD3<Float> in
+                let x: Float = Float(k & 1) * L
+                let y: Float = Float((k >> 1) & 1) * L
+                let z: Float = Float((k >> 2) & 1) * H
+                return SIMD3<Float>(x, y, z)
+            }
             var worst = 0, worstAt = SIMD3<Float>.zero
             for (i, a) in corners.enumerated() {
                 for (j, b) in corners.enumerated() where j > i && (i ^ j).nonzeroBitCount == 1 {

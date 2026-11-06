@@ -1,4 +1,5 @@
 import AlifeCore
+import AlifeTestSupport
 import AppKit
 import Foundation
 import Testing
@@ -75,7 +76,7 @@ struct SwitchAndDockTests {
     @Test func aWorldThatIsStillStartingIsNotStoppedBySheet() async throws {
         let rig = try SwitchRig()
         defer { rig.finish() }
-        let slow = try rig.scratch.script("slow", "sleep 5")
+        let slow = try rig.scratch.script("slow", "sleep \(Int(TestTime.limit(seconds: 5)))")
         rig.play.start(.resume(PlayResume(run: "a")), executable: slow, directory: rig.repo, arguments: [])
         #expect(rig.play.phase == .starting)
         #expect(!rig.switcher.ask(.play("b")) { rig.ran += 1 }, "the page says it is still starting; a sheet is for a live world")
@@ -528,7 +529,7 @@ struct SwitchAndDockTests {
         rig.looking = false
         #expect(await rig.create("planet-1").isEmpty)
         #expect(await rig.waitForState { if case .parked = $0 { return true } else { return false } })
-        let slow = try rig.scratch.script("slow", "sleep 20")
+        let slow = try rig.scratch.script("slow", "sleep \(Int(TestTime.limit(seconds: 20)))")
         try LibraryTestFolders.played(rig.runs, "mini3s_a")
         rig.play.start(.resume(PlayResume(run: "mini3s_a")), executable: slow, directory: rig.repo, arguments: [])
         #expect(rig.play.phase == .starting)

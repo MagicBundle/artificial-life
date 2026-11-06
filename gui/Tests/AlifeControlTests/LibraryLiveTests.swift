@@ -1,4 +1,5 @@
 import AlifeCore
+import AlifeTestSupport
 import AppKit
 import Foundation
 import SwiftUI
@@ -139,7 +140,7 @@ import Testing
         let gate = Gate()
         let library = WorldLibrary(runsDirectory: { runs }, observesApp: false, watchesFolder: false) { _ in
             gate.enter()
-            _ = gate.semaphore.wait(timeout: .now() + 2)
+            _ = gate.semaphore.wait(timeout: .now() + TestTime.limit(seconds: 2))
             return false
         }
         library.refresh()
@@ -169,7 +170,7 @@ import Testing
         let library = WorldLibrary(runsDirectory: { box.url }, observesApp: false, watchesFolder: false) { url in
             if url.deletingLastPathComponent().lastPathComponent == "runs_a" {
                 gate.enter()
-                _ = gate.semaphore.wait(timeout: .now() + 2)
+                _ = gate.semaphore.wait(timeout: .now() + TestTime.limit(seconds: 2))
             }
             return false
         }
