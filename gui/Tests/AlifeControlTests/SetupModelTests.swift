@@ -57,10 +57,10 @@ struct SetupModelTests {
         #expect(m.goalsAllowed == [.play, .research])
         m.choose(.preset(.k128_3s))   // calibrated storm weather (stormsph128, I101)
         #expect(m.goalsAllowed == [.play, .research])
-        for big in [Preset.k256_3s, .k576_3s] {   // the larger planets: no calibrated weather, so research only
-            m.choose(.preset(big))
-            #expect(m.goalsAllowed == [.research], "\(big.rawValue)")
-        }
+        m.choose(.preset(.k256_3s))   // calibrated storm weather (stormsph256, I101)
+        #expect(m.goalsAllowed == [.play, .research])
+        m.choose(.preset(.k576_3s))   // the largest planet: no calibrated weather, so research only
+        #expect(m.goalsAllowed == [.research], "\(Preset.k576_3s.rawValue)")
         m.choose(.preset(.tiny))   // a flat preset
         #expect(m.goalsAllowed == [.research])
         m.choose(.preset(.tiny3d))   // a 3D box: weather has its overlay

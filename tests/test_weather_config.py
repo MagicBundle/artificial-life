@@ -271,6 +271,7 @@ def test_overlay_names() -> None:
         "stormsph22",
         "stormsph22h",
         "stormsph128",
+        "stormsph256",
     )  # build..diel: features; niche3d: farming at the 3D cost; stormsph*: a sphere's weather
     assert ALL_OVERLAYS == (
         "fast",
@@ -288,6 +289,7 @@ def test_overlay_names() -> None:
         "stormsph22",
         "stormsph22h",
         "stormsph128",
+        "stormsph256",
     )
 
 
@@ -320,7 +322,7 @@ def test_the_storm_overlay_fails_on_a_world_that_cannot_hold_it() -> None:
 def test_unknown_overlays_name_all_of_them() -> None:
     with pytest.raises(
         ConfigError,
-        match=r"'stormsph', 'stormsph16', 'stormsph22', 'stormsph22h', 'stormsph128'\)",
+        match=r"'stormsph', 'stormsph16', 'stormsph22', 'stormsph22h', 'stormsph128', 'stormsph256'\)",
     ):
         load_config(overlays=["nope"])
     with pytest.raises(ConfigError, match="storm"):

@@ -196,9 +196,9 @@ extension Preset {
             goodFor = "Not yet calibrated for its population or speed: a test of how large a planet your Mac can run. An optional storm-weather extra, stormsph128, is made for it (it is not part of this preset)."
             lead = "Heavier than 64k3s. It has not been measured: a larger planet runs slower in proportion to the number of organisms it holds."
         case .k256_3s:
-            // 256k3s.toml: "64k3s scaled by floor area at equal density"; radius 180, n_max 262 144; "NOT CALIBRATED".
+            // 256k3s.toml: "64k3s scaled by floor area at equal density"; radius 180, n_max 262 144; "NOT CALIBRATED" (population); the stormsph256 overlay is made for it (I101).
             what = "A very large planet: four times the area of 64k3s, with room for four times as many organisms."
-            goodFor = "Not yet calibrated: a test of how large a planet your Mac can run. No storm weather is made for it, so it is for research."
+            goodFor = "Not yet calibrated for its population or speed: a test of how large a planet your Mac can run. An optional storm-weather extra, stormsph256, is made for it (it is not part of this preset)."
             lead = "Much heavier than 64k3s. It has not been measured: a larger planet runs slower in proportion to the number of organisms it holds."
         case .k576_3s:
             // 576k3s.toml: "64k3s scaled by floor area at equal density"; radius 270, n_max 589 824; "NOT CALIBRATED".
