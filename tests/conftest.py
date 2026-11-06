@@ -9,9 +9,11 @@ import mlx.core as mx
 import pytest
 
 import worker_cache
+from alife import cli
 from alife.config import Config, load_config
 
 _JIT: list[worker_cache.Session] = []
+CLI_REAL_DEFAULT = cli._with_default_saves  # (the module is imported before pytest_configure replaces it)
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -20,6 +22,13 @@ def pytest_configure(config: pytest.Config) -> None:
     # the command line's cache of spun-up weather states is off in the suite (a test of it switches it on in a
     # temporary cache directory): a hit would skip the chain a test means to run, and write under ~/.cache
     os.environ.setdefault("ALIFE_SPINUP_CACHE", "0")
+    # ``alife run`` writes ``run.saves = "single"`` into a new run (DESIGN I99, the owner's decision of
+    # 2026-11-05). Most tests need the older checkpoints of the runs they make (step 0, a fork's origin, a
+    # resume from an older step), and many build them in module-scoped fixtures, so in-process
+    # ``cli.main`` leaves ``run.saves`` at the library default ``all`` for the whole session.
+    # ``test_run_saves.py`` puts the real function back for its own tests (``cli_real_default``); a test
+    # that wants the new default elsewhere sets ``run.saves=single`` itself.
+    cli._with_default_saves = lambda a, overrides: overrides  # type: ignore[assignment]
     if worker_cache.cap_applies():
         worker_cache.limit_mlx_buffer_cache()
     if (session := worker_cache.isolate_for(config)) is not None:
@@ -29,6 +38,12 @@ def pytest_configure(config: pytest.Config) -> None:
 def pytest_unconfigure(config: pytest.Config) -> None:
     while _JIT:
         _JIT.pop().close()
+
+
+@pytest.fixture(scope="session")
+def real_default_saves():
+    """The real ``cli._with_default_saves`` (``pytest_configure`` replaced it for the suite)."""
+    return CLI_REAL_DEFAULT
 
 
 def pytest_report_header(config: pytest.Config) -> str:

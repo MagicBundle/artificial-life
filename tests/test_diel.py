@@ -46,8 +46,9 @@ def test_every_key_is_off_by_default_hashed_and_omitted_from_config_json() -> No
         0,
         True,
     )
+    assert d.oracle_schedule == 1 and d.oracle_cap == "one"  # D1c, D1d (§49.14, §49.15)
     keys = {("diel", f.name) for f in dataclasses.fields(DielConfig)}
-    assert keys == set(ext.lever_keys()["diel"]) == set(SPEC.lever_keys) and len(keys) == 11
+    assert keys == set(ext.lever_keys()["diel"]) == set(SPEC.lever_keys) and len(keys) == 13
     assert keys <= set(config.POST_V01_KEYS) and keys <= set(config.SERIAL_OMIT_KEYS)
     assert not keys & (set(config.UNHASHED_KEYS) | set(config.OBSERVER_KEYS))
     off, on = load(), load(ON)
@@ -97,9 +98,8 @@ def test_the_overlay_is_the_claim_world_without_the_sense() -> None:
         (["diel.period=400", "diel.day_frac=0.1"], "noon must reach full light"),
         (["diel.period=400", "diel.night_level=1"], "diel.night_level 1.0 must be in [0, 1)"),
         (["diel.period=400", "diel.control=half"], "diel.control 'half'"),
-        (["diel.period=400", "diel.sense=true"], "refused until PR D2"),
-        (["diel.period=400", "diel.extinction=35"], "refused until PR D2"),
-        (["diel.period=400", "diel.silent_init=false"], "refused until PR D2"),
+        (["diel.period=400", "diel.extinction=35"], "acts on the light input only: it needs diel.sense"),
+        (["diel.period=400", "diel.silent_init=false"], "acts on the light input only: it needs diel.sense"),
         (["diel.period=400", "diel.sense_control=mute"], "needs diel.sense"),
         (
             ["diel.period=400", "diel.oracle=20", "physics.buoyancy_max=0"],
@@ -454,10 +454,14 @@ def test_migrate_enable_diel_completes_the_field_to_rest(tmp_path: Path, capsys)
     run = RunDir.open(out)
     cfg = run.config()
     assert cfg.diel.period == 400 and run.meta()["migrated_from"]["added"] == ["diel"]
-    assert run.meta().get("layout_features", "") == ""  # no brain footprint
+    # D2: the migration also adds the silent light input (tests/test_diel_sense.py covers it in full)
+    assert cfg.diel.sense and run.meta()["layout_features"] == "diel1@1"
     s1 = load_checkpoint(run.checkpoints()[-1][1], cfg)
     np.testing.assert_array_equal(to_numpy(s1.diel_ctl), [0.5, 0.5])
-    np.testing.assert_array_equal(to_numpy(s1.W1), to_numpy(s.W1))  # no brain change
+    li = dims(cfg).lay.IN_LIGHT
+    w1 = to_numpy(s1.W1)
+    assert not w1[:, li].any()  # the new row is zero
+    np.testing.assert_array_equal(np.delete(w1, li, axis=1), to_numpy(s.W1))  # the old rows are unchanged
     s2, o2 = make_step(cfg)(s1)
     mx.eval(s2, o2)
     assert int(to_numpy(s2.diag)) == 0

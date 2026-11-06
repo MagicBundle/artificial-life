@@ -15,10 +15,17 @@ half until ``z_s - down``, and hold with the balancing lift ``gravity / buoyancy
 buoyancy due is paid by ``energy.pay_costs3`` as for any other row, so the ledger is untouched. The harvest
 of both groups is counted per stratum, photic band (height ``>= H - 2·photic_lambda``, docs/DIEL.md §5.1) and
 day or night (``count``, 24 counters).
+
+Two schedules (``diel.oracle_schedule``). 1 is D1b's (§49.12): the excursion's target is reached and held
+for the rest of the half. 2 is D1c's round trips (§49.14): by day the target is the centre of the lowest field
+layer wholly in the photic band (``photic_target``; a stratum that cannot get there and back in ``REACH`` of
+the lit half stays home), by night ``down`` below home; each excursion returns home a margin of
+``(1 - REACH)/2`` of its half before the half ends, so no oracle row is above its home height at dusk.
 """
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import mlx.core as mx
@@ -62,26 +69,53 @@ COUNTERS = counter_names()
 
 class Schedule(NamedTuple):
     """Per stratum (index 0 unused): the home height ``z_s``, the excursions ``up`` and ``down``, all in
-    world units; and the balancing lift ``hold``."""
+    world units; the balancing lift ``hold``; and the vertical speeds at cap 1 (world units per step), which
+    schedule 2 uses to time the way back."""
 
     home: tuple[float, ...]
     up: tuple[float, ...]
     down: tuple[float, ...]
     hold: float
+    v_rise: float
+    v_sink: float
+
+
+def photic_target(cfg: Config) -> float:
+    """Schedule 2's day target: the centre of the lowest field layer lying wholly in the photic band
+    (``z >= H - PHOTIC_DEPTH·photic_lambda``); layer ``k`` spans ``[k·fc, (k+1)·fc)``, ``fc = field_cell``. A
+    band deeper than the column makes it layer 0's centre."""
+    fc = cfg.world.field_cell
+    z_ph = sphere.geometry(cfg).height_max - PHOTIC_DEPTH * cfg.fields.photic_lambda
+    return (max(0, math.ceil(z_ph / fc - 1e-9)) + 0.5) * fc
 
 
 def schedule(cfg: Config) -> Schedule:
     """The reachable schedule of each stratum (docs/DIEL.md §7.0), with the oracle's cap 1:
     ``v_rise = (buoyancy_max - gravity)/drag`` and ``v_sink = gravity/drag`` (``physics`` integrates
-    ``v = F/γ`` along z, ``γ_z = drag``), both clipped at ``v_max``;
-    ``up = min(z_top - z_s, 0.8·v_rise·P·day_frac)`` and
-    ``down = min(z_s - 1, 0.8·v_sink·P·(1 - day_frac))`` with ``z_top`` the top band's centre."""
+    ``v = F/γ`` along z, ``γ_z = drag``), both clipped at ``v_max``.
+
+    Schedule 1: ``up = min(z_top - z_s, 0.8·v_rise·P·day_frac)`` and
+    ``down = min(z_s - 1, 0.8·v_sink·P·(1 - day_frac))`` with ``z_top`` the top band's centre.
+    Schedule 2 (round trips, ``trip = 1/v_rise + 1/v_sink`` steps per unit of height): ``up = z_ph - z_s``
+    where ``z_ph = photic_target`` is above home and ``up·trip <= 0.8·P·day_frac``, else 0; ``down =
+    min(z_s - 1, 0.8·P·(1 - day_frac)/trip)``."""
     h, ph, c = sphere.geometry(cfg).height_max, cfg.physics, cfg.diel
     band = h / N_BANDS
     home = (0.0, 0.5 * band, 2.0 * band, 3.5 * band)  # band 0's centre, bands 1-2's centre, band 3's centre
     z_top = home[3]
     v_rise = min((ph.buoyancy_max - ph.gravity) / ph.drag, ph.v_max)
     v_sink = min(ph.gravity / ph.drag, ph.v_max)
+    hold = min(1.0, max(0.0, ph.gravity / ph.buoyancy_max))
+    if c.oracle_schedule == 2:  # static: D1c's round trips (§49.14)
+        trip = 1.0 / v_rise + 1.0 / v_sink
+        z_ph = photic_target(cfg)
+        reach_day, reach_night = REACH * c.period * c.day_frac, REACH * c.period * (1.0 - c.day_frac)
+        up = tuple(
+            z_ph - home[k] if k > 0 and z_ph > home[k] and (z_ph - home[k]) * trip <= reach_day else 0.0
+            for k in range(4)
+        )
+        down = tuple(0.0 if k == 0 else max(0.0, min(home[k] - 1.0, reach_night / trip)) for k in range(4))
+        return Schedule(home, up, down, hold, v_rise, v_sink)
     up = tuple(
         0.0 if k == 0 else min(z_top - home[k], REACH * v_rise * c.period * c.day_frac) for k in range(4)
     )
@@ -89,8 +123,7 @@ def schedule(cfg: Config) -> Schedule:
         0.0 if k == 0 else max(0.0, min(home[k] - 1.0, REACH * v_sink * c.period * (1.0 - c.day_frac)))
         for k in range(4)
     )
-    hold = min(1.0, max(0.0, ph.gravity / ph.buoyancy_max))
-    return Schedule(home, up, down, hold)
+    return Schedule(home, up, down, hold, v_rise, v_sink)
 
 
 def stratum_of(height: np.ndarray, cfg: Config) -> np.ndarray:
@@ -118,7 +151,8 @@ def assign(s: Any, cfg: Config) -> Any:
     strat = stratum_of(height, cfg)
     pick = chosen(np.asarray(s.uid), cfg.diel.oracle)
     orc = np.where(alive, np.where(pick, strat, -strat), 0).astype(np.int8)
-    cap = np.where(alive & pick, np.float32(1.0), np.asarray(s.buoy_cap)).astype(np.float32)
+    raise_cap = alive & pick if cfg.diel.oracle_cap == "one" else np.zeros_like(alive)  # D1d: own keeps it
+    cap = np.where(raise_cap, np.float32(1.0), np.asarray(s.buoy_cap)).astype(np.float32)
     out = s._replace(diel_orc=mx.array(orc, dtype=_I8), buoy_cap=mx.array(cap, dtype=_F32))
     mx.eval(out)
     return out
@@ -139,8 +173,35 @@ class Plan(NamedTuple):
 
 
 def cap(s: Any, cfg: Config) -> mx.array:
-    """The oracle rows' cap is 1 (docs/DIEL.md §7.0); the others keep theirs."""
+    """The oracle rows' cap is 1 (docs/DIEL.md §7.0); the others keep theirs. With ``oracle_cap = own``
+    (D1d, §49.15) every row keeps its own."""
+    if cfg.diel.oracle_cap == "own":  # static: the no-cap-change oracle
+        return s.buoy_cap
     return mx.where(s.diel_orc > 0, mx.array(1.0, dtype=_F32), s.buoy_cap)
+
+
+def own_cap(
+    buoy_cap: mx.array, day: mx.array, home: mx.array, k: mx.array, sc: Schedule, cfg: Config
+) -> tuple[mx.array, mx.array, mx.array]:
+    """D1d (§49.15): schedule 2 per row for a row keeping its own cap ``c``.
+
+    ``v_rise(c) = clip((c·buoyancy_max - gravity)/drag, 0, v_max)``; the hold lift
+    ``min(1, gravity/(c·buoyancy_max))`` (1 where the cap cannot balance gravity); ``up``, ``down`` as
+    schedule 2 with ``trip(c) = 1/v_rise(c) + 1/v_sink``; a row that cannot rise makes no excursion.
+    Returns the target height, the hold lift and ``v_rise(c)``, (N,) f32."""
+    ph, c = cfg.physics, cfg.diel
+    lift = buoy_cap * ph.buoyancy_max
+    v_rise = mx.clip((lift - ph.gravity) / ph.drag, 0.0, ph.v_max)
+    can = (v_rise > 0) & (k > 0)
+    holds = lift > ph.gravity
+    hold = mx.where(holds, ph.gravity / mx.where(holds, lift, 1.0), 1.0)
+    trip = mx.where(can, 1.0 / mx.where(can, v_rise, 1.0), 0.0) + 1.0 / sc.v_sink
+    dz = photic_target(cfg) - home
+    up = mx.where(can & (dz > 0) & (dz * trip <= REACH * c.period * c.day_frac), dz, 0.0)
+    down = mx.where(
+        can, mx.maximum(mx.minimum(home - 1.0, REACH * c.period * (1.0 - c.day_frac) / trip), 0.0), 0.0
+    )
+    return mx.where(day, home + up, home - down), hold, v_rise
 
 
 def plan(s: Any, cfg: Config) -> Plan:
@@ -158,9 +219,62 @@ def plan(s: Any, cfg: Config) -> Plan:
         home - mx.take(mx.array(sc.down, dtype=_F32), k),
     )
     hold = mx.array(sc.hold, dtype=_F32)
-    buoy = mx.where(day, mx.where(z < target, 1.0, hold), mx.where(z > target, 0.0, hold))
+    if cfg.diel.oracle_schedule == 2:  # static: D1c's round trips (§49.14)
+        v_rise = None
+        if cfg.diel.oracle_cap == "own":  # static: D1d, the per-row schedule of the own cap (§49.15)
+            target, hold, v_rise = own_cap(s.buoy_cap, day, home, k, sc, cfg)
+        back = returning(s.step, s.diel_ctl[1], day, z, home, sc, cfg, v_rise)
+        buoy = mx.where(
+            day,
+            mx.where(back, mx.where(z > home, 0.0, hold), mx.where(z < target, 1.0, hold)),
+            mx.where(back, mx.where(z < home, 1.0, hold), mx.where(z > target, 0.0, hold)),
+        )
+    else:
+        buoy = mx.where(day, mx.where(z < target, 1.0, hold), mx.where(z > target, 0.0, hold))
     photic = z >= sphere.geometry(cfg).height_max - PHOTIC_DEPTH * cfg.fields.photic_lambda
     return Plan(s.diel_orc, photic, day, s.alive & (s.diel_orc > 0), buoy.astype(_F32))
+
+
+def time_left(step: mx.array, day_eff: mx.array, day: mx.array, cfg: Config) -> tuple[mx.array, mx.array]:
+    """The steps left in the current half of the day and that half's length (f32 scalars). Global mode:
+    noon at phase 0, the sun up (``S > 1/2``, i.e. ``cos th > cos(pi·f)``) for phases within ``f·P/2`` of
+    noon, ``f = day_eff``. Where the light's half and the phase disagree (the boundary step, float32), the
+    time left is 0, so the row heads home."""
+    per = cfg.diel.period
+    phase = (step % per).astype(_F32)
+    half_d = day_eff * per
+    t_dusk = 0.5 * half_d - phase
+    t_dusk = mx.where(t_dusk < 0, t_dusk + per, t_dusk)
+    t_dawn = (per - 0.5 * half_d) - phase
+    t_dawn = mx.where(t_dawn < 0, t_dawn + per, t_dawn)
+    half = mx.where(day, half_d, per - half_d)
+    tau = mx.where(day, t_dusk, t_dawn)
+    return mx.where(tau > half, 0.0, tau), half
+
+
+def returning(
+    step: mx.array,
+    day_eff: mx.array,
+    day: mx.array,
+    z: mx.array,
+    home: mx.array,
+    sc: Schedule,
+    cfg: Config,
+    v_rise: mx.array | None = None,
+) -> mx.array:
+    """(N,) bool, schedule 2: the row must head home now to be there ``(1 - REACH)/2`` of the half before it
+    ends: the time left minus that margin is at most the time home (``(z - home)/v_sink`` by day,
+    ``(home - z)/v_rise`` by night). ``v_rise`` per row (D1d's own cap; a row that cannot rise has 0 time
+    home by night) or None for the schedule's cap-1 constant."""
+    tau, half = time_left(step, day_eff, day, cfg)
+    margin = 0.5 * (1.0 - REACH) * half
+    if v_rise is None:  # static: the cap-1 schedule
+        t_up = (home - z) / sc.v_rise
+    else:
+        can = v_rise > 0
+        t_up = mx.where(can, (home - z) / mx.where(can, v_rise, 1.0), 0.0)
+    t_home = mx.where(day, (z - home) / sc.v_sink, t_up)
+    return tau - margin <= t_home
 
 
 def apply(mo: Any, p: Plan) -> Any:

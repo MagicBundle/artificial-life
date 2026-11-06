@@ -552,6 +552,37 @@ import Testing
         #expect(refused(patched(n70.bytes, at: frame70 + 36 + 8, last)) != nil)
     }
 
+    /// A `STRM` of `count` storms in the place of the fixture's (the writer's shape: `MAX_STORMS` is 64, I100).
+    private func stormsFixture(withStorms count: Int) throws -> [UInt8] {
+        let fixture = try PlayFixture(kind: "3d")
+        let at = try fixture.offset(of: "STRM")
+        let length = Int(fixture.le32(at: at + 4))
+        let storms = (1...max(count, 1)).prefix(count).map { id -> [String: Any] in
+            ["id": id, "name": "Storm\(id)", "named": true, "hemi": id % 2, "x": 10.5, "y": 20.25, "r": 3.5, "ext": [4.0, 4.0],
+             "zeta": 0.75, "zeta_now": 0.5, "wind": 0.1, "rain": 0.001, "age": 100, "parent": 0, "state": "active",
+             "track": [[100, 10.0, 20.0], [125, 10.5, 20.25]], "pred": [[250, 11.0, 20.5]]]
+        }
+        let object: [String: Any] = ["detect_step": 125, "storms": storms, "ended": []]
+        var json = [UInt8](try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
+        let jsonLength = json.count
+        while json.count % 4 != 0 { json.append(0) }
+        let head = Array(fixture.bytes[(at + 8)..<(at + 8 + 16)])
+        let payload = head + le32(jsonLength) + le32(125) + le32(count) + le32(0) + json
+        return Array(fixture.bytes[..<at]) + Array("STRM".utf8) + le32(payload.count) + payload
+            + Array(fixture.bytes[(at + 8 + length)...])
+    }
+
+    @Test func aStormRecordMayListSixtyFourStormsButNotSixtyFive() throws {
+        let ok = decode(try stormsFixture(withStorms: 64), chunk: 13)
+        #expect(ok.error == nil)
+        let counts = ok.events.compactMap { event -> Int? in
+            if case .record(.strm(let s)) = event { return s.storms.storms.count }
+            return nil
+        }
+        #expect(counts == [64])
+        #expect(isMalformed(refused(try stormsFixture(withStorms: 65)), "STRM", containing: "cap of 64"))
+    }
+
     @Test func recordsWhoseCountsAndJSONDisagreeAreRefused() throws {
         let fixture = try PlayFixture(kind: "3d")
         let evnt = try fixture.offset(of: "EVNT") + 8
@@ -559,7 +590,9 @@ import Testing
         #expect(isMalformed(refused(patched(fixture.bytes, at: evnt + 16, le32(65))), "EVNT", containing: "cap of 64"))
         let strm = try fixture.offset(of: "STRM") + 8
         #expect(isMalformed(refused(patched(fixture.bytes, at: strm + 24, le32(3))), "STRM", containing: "n_storms 3"))
-        #expect(isMalformed(refused(patched(fixture.bytes, at: strm + 24, le32(33))), "STRM", containing: "cap of 32"))
+        #expect(isMalformed(refused(patched(fixture.bytes, at: strm + 24, le32(65))), "STRM", containing: "cap of 64"))
+        // 64 is the cap itself: a count of 64 passes the cap check (it is then refused only as a count that disagrees with the JSON).
+        #expect(!isMalformed(refused(patched(fixture.bytes, at: strm + 24, le32(64))), "STRM", containing: "cap of"))
         let idnt = try fixture.offset(of: "IDNT") + 8
         #expect(isMalformed(refused(patched(fixture.bytes, at: idnt + 28, le32(1))), "IDNT", containing: "reserved"))
         #expect(isMalformed(refused(patched(fixture.bytes, at: idnt + 16, le32(65))), "IDNT", containing: "exceed N"))

@@ -93,10 +93,13 @@ FROZEN_OMITTED_DEFAULTS = {
     ("diel", "sense_control"): "none",
     ("diel", "oracle"): 0,
     ("diel", "silent_init"): True,
+    ("diel", "oracle_schedule"): 1,  # the oracle's schedule (DESIGN §49.14, PR D1c)
+    ("diel", "oracle_cap"): "one",  # the oracle rows' cap (DESIGN §49.15, PR D1d)
     (
         "arms",
         "dump_n",
     ): 4096,  # the observer PR (S2/A2): an observer key and the dump cadences of the run section
+    ("run", "saves"): "all",  # the research save mode (I99): "all" is the old behaviour
     ("run", "mat_every"): 0,
     ("run", "arms_every"): 0,
     ("run", "niche_every"): 0,

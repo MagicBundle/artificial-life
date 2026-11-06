@@ -398,7 +398,7 @@ def session(*args: str, lines: str = "", until: int) -> tuple[int, Decoded, str]
 
 def test_the_mode_survives_a_resume_and_the_flag_and_the_line_change_it(tmp_path: Path) -> None:
     out = tmp_path / "w"
-    code, d, err = session(*TINY, "--out", str(out), until=10)
+    code, d, err = session(*TINY, "--out", str(out), "--saves", "all", until=10)
     assert code == 0, err
     assert d.header["play"]["saves"] == {"mode": "all", "keep": 3}
     rd = RunDir.open(out)
@@ -525,7 +525,7 @@ def test_a_saves_newest_line_does_not_delete_an_adopted_runs_checkpoints(
 
 def test_a_play_world_still_takes_the_line(tmp_path: Path) -> None:
     out = tmp_path / "w"
-    code, d, err = session(*TINY, "--out", str(out), lines="saves newest\n", until=40)
+    code, d, err = session(*TINY, "--out", str(out), "--saves", "all", lines="saves newest\n", until=40)
     assert code == 0, err
     rd = RunDir.open(out)
     assert rd.read_play_json()["saves"] == "newest"  # type: ignore[index]

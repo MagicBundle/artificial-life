@@ -303,7 +303,13 @@ class RunConfig:  # excluded from config_hash; on resume only observer/cadence k
     steps: int = 100_000
     metrics_every: int = 100
     checkpoint_every: int = 10_000  # multiple of metrics_every
-    keep_checkpoints: int = 3  # plus the step-0 checkpoint, which is always kept
+    keep_checkpoints: int = 3  # plus the step-0 checkpoint, which is always kept (``saves = "all"``)
+    # The save mode of a research run (DESIGN §34.10, I99): all (the newest ``keep_checkpoints`` plus step 0
+    # and a fork's origin) | newest (the newest save and the origin) | single (only the newest save). A
+    # storage setting like ``keep_checkpoints``: never reaches the hash or a trajectory. The dataclass default
+    # is the old behaviour, so a config.json without the key resumes as before; ``alife run`` writes
+    # ``single`` into the config of a NEW run unless ``run.saves`` is set. ``alife play`` has its own mode.
+    saves: str = "all"
     compile: bool = True
     runtime_checks: str = "cheap"  # cheap | off
     heavy_metrics_every: int = 1000  # components + weight diversity; multiple of metrics_every
@@ -462,11 +468,15 @@ class DielConfig:  # the day-night light cycle on the photic food band (DESIGN �
     twilight: float = 0.25  # tw, the width of the dawn and dusk ramp in units of the sun's sine, (0, 1]
     night_level: float = 0.0  # n, the photic multiplier at night, [0, 1)
     control: str = "none"  # none | mean (the day-mean table V_bar, the matched control, §49.5)
-    sense: bool = False  # the sky-light brain input (D2; refused until it lands)
+    sense: bool = False  # the sky-light brain input (D2): one silent input block, a layout change
     extinction: float = 0.0  # 0 = sky light; > 0 = e-folding depth of the sensed light (D2)
     sense_control: str = "none"  # none | mute (the sensed light replaced by its day mean; D2)
     oracle: int = 0  # pilot only: percent of the agents given the scripted schedule (D1b; refused until then)
     silent_init: bool = True  # the light input's W1 row starts at zero (D2)
+    oracle_schedule: int = 1  # the oracle's schedule: 1 (D1b, §49.12) | 2 (round trips, D1c, §49.14)
+    oracle_cap: str = (
+        "one"  # the oracle rows' cap: one (raised to 1, D1b) | own (their heritable cap, D1d, §49.15)
+    )
 
 
 @dataclass(frozen=True)
@@ -568,9 +578,13 @@ PRESETS: tuple[str, ...] = (
     "tiny3s",
     "mini3s",
     "64k3s",
+    "128k3s",
+    "256k3s",
+    "576k3s",
 )
-# The planets (DESIGN §46.9), the sphere analogues of tiny3d, mini3d and 64k3d: a subset of ``PRESETS``.
-SPHERE_PRESETS: tuple[str, ...] = ("tiny3s", "mini3s", "64k3s")
+# The planets (DESIGN §46.9), the sphere analogues of tiny3d, mini3d and 64k3d, then the three uncalibrated
+# extra-large ones (``128k3s``, ``256k3s``, ``576k3s``: 64k3s scaled by area): a subset of ``PRESETS``.
+SPHERE_PRESETS: tuple[str, ...] = ("tiny3s", "mini3s", "64k3s", "128k3s", "256k3s", "576k3s")
 OVERLAYS: tuple[str, ...] = ("fast",)  # compose with every preset
 # Overlays that need a particular world (DESIGN §30): validated against whatever preset they land on, and not
 # part of ``OVERLAYS`` (which means "composes with every preset").
@@ -1071,6 +1085,7 @@ SERIAL_OMIT_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("world", "nside"),
     ("world", "layers"),
     ("physics", "ceiling_band"),
+    ("run", "saves"),  # the research save mode (DESIGN §34.10, I99): unhashed, "all" = the old behaviour
     ("run", "mat_every"),  # the feature dumps (DESIGN §38.9, §42.6): unhashed run cadences
     ("run", "arms_every"),
     ("run", "niche_every"),
@@ -1205,6 +1220,7 @@ DIRECTOR_MODES: Final = ("off", "live", "replay")  # the research modes (``--dir
 PLAYER_MODE: Final = "player"  # ``alife play``: applies the player's powers, decides nothing (DESIGN §26.8)
 RUN_DIRECTOR_MODES: Final = (*DIRECTOR_MODES, PLAYER_MODE)  # every value ``run.director`` takes
 RANDOM_PERSONA: Final = "random"  # arm R of DIRECTOR.md §9: yoked to another run's discretionary moves
+RUN_SAVE_MODES: Final = ("all", "newest", "single")  # run.saves (= runio.SAVE_MODE_NAMES, DESIGN §34.10)
 PERSONAS: Final = ("gardener", "trickster", "architect", RANDOM_PERSONA)
 
 
@@ -1498,6 +1514,7 @@ def validate(cfg: Config) -> None:
     req(fi.chem_max > 0, f"fields.chem_max must be > 0, got {fi.chem_max}")
     req(ru.metrics_every >= 1, f"run.metrics_every must be ≥ 1, got {ru.metrics_every}")
     req(ru.keep_checkpoints >= 1, f"run.keep_checkpoints must be ≥ 1, got {ru.keep_checkpoints}")
+    req(ru.saves in RUN_SAVE_MODES, f"run.saves {ru.saves!r} not in {RUN_SAVE_MODES}")
     req(ru.components_iters >= 1, f"run.components_iters must be ≥ 1, got {ru.components_iters}")
     req(ru.diversity_sample >= 2, f"run.diversity_sample must be ≥ 2, got {ru.diversity_sample}")
     req(ru.steps >= 0, f"run.steps must be ≥ 0, got {ru.steps}")

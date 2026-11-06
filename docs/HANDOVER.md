@@ -4,6 +4,8 @@ Status of the `alife` project as of 2026-10-23 (the storm world's engine couplin
 session (a local Claude Code session on the owner's MacBook Pro, M5 Pro, 48 GB). Read this, then `CLAUDE.md`, then the parts of
 `docs/DESIGN.md` you need.
 
+**Save default (owner, 2026-11-05, DESIGN I99):** a new `alife run` (fresh or fork) writes `run.saves = "single"` and keeps only its newest checkpoint, and a newly played world starts in save mode `single`; use `--set run.saves=all` (run) or `--saves all` (play) for the old behaviour. Existing worlds are unchanged. Measurement runs that need older saves (resim windows, `emergence record`, the W2 runs) must pass `--set run.saves=all`.
+
 ## What this is
 
 A neural artificial-life engine in Python on Apple MLX. It replicates the agent affordances from a Fraser Price
@@ -174,6 +176,10 @@ their helpers (eager; the compiled step is in `tests/test_sphere_features_compil
 
 **S7a (the larger planets, DESIGN §46.9, §46.10) makes the sphere scale**: `mini3s` (Rp 48, H 24) and `64k3s` (Rp 90, H 40) are presets (`config.SPHERE_PRESETS = ("tiny3s", "mini3s", "64k3s")`), calibrated on Metal with `regen_max` 2 400 and 1 340, `n_max` 20 480 and 65 536, `n_init` 4 096 and 16 384, `C` 32: the dry populations settle at 9 800 and 41 500 alive (the box analogues' level; boom 14 400 and 50 300 in the first 15 000 steps, a trough, a recovery), the maximum hash occupancy was 21 and 16. `--overlay stormsph22` is the `mini3s` weather and `--overlay stormsph` is validated on `64k3s` (a mean of 3.0 / 2.8 named storms per hemisphere in a 30 000-step preview of `mini3s`, seed 1; `stormsph` on `64k3s` gives 0 to 2 per hemisphere, typically one: the pools are S4c's to retune; both provisional). Performance (compiled, Metal): at 64k the sphere costs 1.15 to 1.29 times `64k3d` per step (1.08 to 1.20 per alive agent), 15.6 ms dry and 21.5 ms (46 steps/s) with the five features and the weather, 1.25 GB; the step cost is proportional to `n_max`. A 60 000-step `64k3s` run with the five features and the weather kept the ledger exact and the invariants (`inspect --check`), had storms in every row, hit the row cap in its first boom (the features' farming raises the level; 12 000 steps at the cap) and settled at 32 700. **The row cap**: the live cap is `n_max − max_births_per_step` = 64 512; births beyond it are lottery-blocked and counted, no energy path is involved (the ledger stays exact) and `farm_blocked_alarm` fires; the pin is seed-dependent (seed 0 pins, seed 7 peaks at 57 700, the box with the same features at 53 600); **analyse a source run from the trough, about step 30 000**. Farming returns 8.0 (`mini3s`) and 4.47 (`64k3s`) times its cost against 5.67 at the design point, no warning. Two false positives of the sphere's host invariants (the device's heading wrap, an unclamped landing near a bound) showed only at 65 536 agents and were fixed. **To start a `64k3s` source run with all features** (the planet launcher then forks it with the weather): `uv run alife run --preset 64k3s --overlay build --overlay bonds --overlay comm --overlay niche3d --set arms.enabled=true --steps 500000 --seed 0 --out runs/64k3s_s0` (about 3.5 h at 40 to 60 steps/s; `mini3s` is a tenth of that); the Storm Worlds launcher lists the three sphere sizes and picks `stormsph16`, `stormsph22` or `stormsph` by the source's shape. Next: `docs/RESULTS_SPHERE.md` (the first long runs, S7b), S4c, the S4b Courant-0.40 merge.
 
+**Storm cap 64 and count bands (I100)**: the `STRM` record lists up to 64 storms (was 32; JSON cap 24 KiB unchanged, tracks shorten to 8 points above about 36 storms and lose forecasts above about 62) and `w0_sphere` takes `--count-lo/--count-hi` (bands by planet in `tests/sphere_storms.BANDS`) for the calibration of the extra-large planets.
+
+**Extra-large planets (I98, DESIGN §46.9)**: `128k3s`, `256k3s` and `576k3s` are `64k3s` scaled by area (x2.04, x4, x9) at equal density, in the GUI's preset list. **Not calibrated and never run**: population level, boom, hash occupancy, speed and memory are untested, no weather is calibrated for them (research only), and they have no snapshot or speed band (`Preset.unmeasured`). The next step is a measured ladder on the Mac (`alife bench`, then a short run) to find the largest playable size.
+
 **S4c (the calibration of the weather, DESIGN §46.6) makes the storms of a planet meet the criteria of STORMS_W0**: `python -m alife.analysis.w0_sphere run|sweep|table` is the W0-style study of the sphere's weather alone (named-storm counts per hemisphere, Kaplan-Meier lifetimes, tracks, spin-up lengths, the exposure of the storms to the grid's vertices, seams and poles; `sweep` runs a JSON list of candidates in parallel workers, the GPU being the limit) and `alife.analysis.w0_sphere_wind` the wind-coupling experiment. **The overlays are calibrated** (named storms 2 to 6 per hemisphere at 90 % of the ticks or more, lifetime above 3 000; the numbers are in §46.6): `stormsph` three `40 x 20` pools per hemisphere with `seed_rate` 0.05 (living storms: 0.9 to 1.8 deaths per 10 000 steps; 0.02 was a frozen world), `stormsph22` the 24 x 16 pools with `seed_rate` 0.04, `stormsph16` `18 x 12` pools with `seed_rate` 0.0032; `rain_gain` 52 000 / 26 000 / 4 400 and `storm_u0` 0.09 / 0.095 / 0.06 are set against the box's early weather. The window of the small planets is narrow (the slow gates in `test_sphere_presets_slow.py` guard it). **The agents' wind is `α·dt·u`** (S4b had `α·u`: the drift of a free agent on a weather sphere is 21 % smaller at `Nw` 42; the CPU and Metal digests of `tiny3s` with the weather were re-pinned); **the launcher's spin-up is per planet** (`weather_spinup.SPHERE_SPINUP` and `PlanetSpec.sphereSpinups`: 15 000, 10 000, 8 000 steps) and a repeated launch reads a cached spun-up state (`~/.cache/alife/weather_spinup/`, off with `ALIFE_SPINUP_CACHE=0`). To reproduce a calibration run: `uv run python -m alife.analysis.w0_sphere run --preset 64k3s --overlay stormsph --steps 100000 --spinup 20000 --seed 0 --out /tmp/k3s_s0` (about 6 minutes on a quiet GPU; `--pools '{"per_hemisphere":3,"sx":40,"sy":20}'` replaces the overlay's pools, `--set weather.seed_rate=0.04` any key). Next: `docs/RESULTS_SPHERE.md` (the first long runs, S7b), the owner's look at the storms of a planet (the hazard values are the early-run calibration), the stability bound re-run if a damping key is ever touched.
 
 ## Event-triggered calls (DESIGN §47, row I79; K1, K2 and the K5 pilot built, M1 run, negative)
@@ -205,15 +211,28 @@ factor `L` from the step (global mode: one clock; `terminator`, sphere only: a s
 profile becomes `min(1, B + L Pk)` with only the photic term modulated; full light selects the static profile bit for bit.
 `diel.control = mean` is the matched control (the day-mean table `V_bar`). The state gains `diel_ctl` (2,) float32 =
 (target, effective) day fraction, ramped by at most `1/(2P)` per step: Long Night (D5b) will write the target. No ledger
-term; no brain footprint yet. World: `--preset mini3d --overlay diel` (height 40, period 4,000; arm N today, since `sense` is
-refused until D2). `alife migrate RUN --enable diel [--set diel.period=...]`. `--director live` is refused on a diel world.
+term; the brain footprint is D2's `diel.sense` (below). World: `--preset mini3d --overlay diel` (height 40, period 4,000;
+arm N; D and K add `--set diel.sense=true`). `alife migrate RUN --enable diel [--set diel.period=...]` (adds the light row). `--director live` is refused on a diel world.
 Every `[diel]` key is CLI-only until D6 (no GUI levers). The CPU golden is pinned in `tests/test_diel.py`; the Metal digests
 are recorded in §49.11 for the owner's check. **D1b (row I94)**: the oracle pilot behind `diel.oracle` (§49.12): `alife run --init-from WARM
 --set diel.oracle=20` labels 20% of the living agents (by uid hash) with a scripted daily lift their stratum can reach, cap 1;
 the rest is the comparison group; 24 harvest counters and per-stratum energy rows; the decision rule is
-`python -m alife.analysis.diel_pilot RUN...` (`rule_hash` pinned) and the driver `scripts/diel_pilot.py --dry-run`. **Next:** the
-D4 oracle pilot (about 1.1 GPU hours on the box, DIEL §8; needs the owner's thresholds confirmed), then D2 (the light input).
-Tests: `tests/test_diel.py`, `tests/test_diel_oracle.py`, `tests/test_diel_pilot.py`.
+`python -m alife.analysis.diel_pilot RUN...` (`rule_hash` pinned) and the driver `scripts/diel_pilot.py --dry-run`. **D1c (row
+I96, §49.14)**: the first pilot (`runs/diel_pilot_2026-11-05`) gave no `G`: the oracle lineages died out by day 2 to 7 in the
+world's dusk starvation crash, and `G` (survivor energy) does not see mortality. The second pilot uses
+`diel.oracle_schedule = 2` (round trips home before dusk and dawn) and the lineage-fitness rule `python -m
+alife.analysis.diel_pilot2 RUN...` (`rule_hash` `0f4b7da9…`; it reads the first pilot as STOP, `w` about -1 per day); driver
+`scripts/diel_pilot.py --warm-from runs/diel_pilot_2026-11-05 --out ROOT`. **The second pilot (`runs/diel_pilot2_2026-11-05`)
+decided STOP**: pooled `w` -0.68 per day (90% -0.83 to -0.53), every stratum negative; the floor arm (no day excursion)
+shows that the oracle's fixed costs alone (cap 1, hold lift) cost about -0.2 per day. Per §49.7 the box long runs are not
+spent. **D2 (row I95)**, built as a dormant capability (owner, 2026-11-05):
+the sky-light input behind `diel.sense` (§49.13; token `diel1@1`, 3D `D_IN` 85, silent row); the claim arms D and K are
+`--overlay diel --set diel.sense=true` (K adds `--set diel.control=mean`); the mute fork is `alife run --init-from D --set
+diel.sense_control=mute`. **D1d (row I97, §49.15)**: the no-cap-change oracle (`diel.oracle_cap = own`); its exploratory
+pilot (`runs/diel_pilot3_2026-11-05`) reads SMALL by the rule, pooled `w` -0.08 per day (-0.13 to -0.03), floor -0.02, mid
+-0.16, top -0.43: raising the cap explained most of the loss, but no scripted schedule beats the evolved population.
+**Next (owner):** whether to try the thrust oracle. Tests: `tests/test_diel.py`, `tests/test_diel_oracle.py`,
+`tests/test_diel_pilot.py`, `tests/test_diel_pilot2.py`, `tests/test_diel_sense.py`.
 
 ## How to run
 
@@ -594,7 +613,7 @@ and resumed once. There is one run per condition apart from the seed pair.
 - **Not done (W2b; needs the owner's go, about 10.7 GPU hours and 119 GB):** the occupancy gate G0 (before the calibration; remedy `cell_capacity` 64 is hashed),
   the calibration of `rain_gain`, `storm_*`, `seed_gain`, `shade_gain` (`presets/storm.toml` still holds W1's provisional values), the 14 runs (arms A, N, S, WB, A1, E on
   s0 and s1, A and N on s2, 100,000 steps), the held-out label windows and `LABEL_VERDICTS` rows, `docs/RESULTS_W2.md`. The commands need
-  `--set game.observe=true --set game.tracers=16384 --set run.eco_every=250 --set run.wx_every=500 --set run.keep_checkpoints=5` (DESIGN §32.12).
+  `--set game.observe=true --set game.tracers=16384 --set run.eco_every=250 --set run.wx_every=500 --set run.keep_checkpoints=5 --set run.saves=all` (DESIGN §32.12).
 - **Open for the owner** (the eight decisions of the W2 spec were taken as recommended by the coordinator, to revisit; DESIGN §32.12): which seeds (s2 added for A and N),
   the eddy hazard, `RULES_V3` as the default for every world, run length, the arms (WB and E added), the PR split and the GPU go, **seeding is density-driven**
   (crowds seed whatever their genes: STORMS §4's "sub-threshold emission alone does not trigger rain-out" is not met; P1c reports the paid share and a hinge is a later variant), and the bond break is not calibrated.

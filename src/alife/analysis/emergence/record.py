@@ -12,7 +12,8 @@ members of the largest bodies every ``fine_tau``), and writes ``frames_<T0>_<T1>
   the run are assumed (the §14.2 determinism contract).
 * **Needs the start save** (E22). A run that kept only its newest save (``saves single``/``newest``, or
   ``run.keep_checkpoints`` too small) cannot be measured: ``record_window`` refuses with the saves it found.
-  Measurement runs use saves ``all`` with ``keep_checkpoints`` covering every window start.
+  Measurement runs use saves ``all`` (``--set run.saves=all``: a new run keeps only its newest save by
+  default, DESIGN I99) with ``keep_checkpoints`` covering every window start.
 * **Observer only.** The state that is stepped is never written; the run directory is read only.
 * **Idempotent.** A finished file with the same parameters is not rewritten.
 
@@ -71,7 +72,8 @@ def start_checkpoint(rd: RunDir, t0: int, max_lead: int = MAX_LEAD) -> tuple[int
             f"{rd.path}: measurement needs a save at or before step {t0}, but the saves kept are "
             f"{[st for st, _ in kept]} (a run saved with `saves single` or `newest`, or with "
             f"run.keep_checkpoints too small, drops older saves). Measurement runs must use saves `all` "
-            f"with keep_checkpoints covering every window start."
+            f"with keep_checkpoints covering every window start (`alife run --set run.saves=all`; a new "
+            f"run keeps only its newest save by default)."
         )
     st, p = before[-1]
     if t0 - st > max_lead:

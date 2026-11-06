@@ -2639,7 +2639,8 @@ class RunConfig:                       # excluded from config_hash; on resume on
     steps: int = 100_000
     metrics_every: int = 100
     checkpoint_every: int = 10_000     # multiple of metrics_every
-    keep_checkpoints: int = 3          # plus the step-0 checkpoint, which is always kept
+    keep_checkpoints: int = 3          # plus the step-0 checkpoint, which is always kept (saves = "all")
+    saves: str = "all"                 # all | newest | single (§34.10): the research run's save mode; unhashed; I99
     compile: bool = True
     runtime_checks: str = "cheap"      # cheap | off
     heavy_metrics_every: int = 1000    # components + weight diversity; multiple of metrics_every
@@ -2821,8 +2822,16 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
   under a director-enabled config start with inert env. `env_*` shapes and dtypes are checked like every field.
 - **Atomic writes.** Each checkpoint is written to `*.tmp` and moved into place with `os.replace`. Only then is
   `LATEST` rewritten, also atomically. A crash never corrupts the newest complete checkpoint.
-- **Retention.** The newest `keep_checkpoints` are kept, plus `step_0000000000` and, for a fork, the origin checkpoint
-  at `meta.json` `start_step` (its founders: `phylo.load_tree`, `alife activity` and the recap builders read it; G3a, I51).
+- **Retention.** `run.saves` (I99) says what a run keeps: `all` (the dataclass default, and what every `config.json`
+  without the key means): the newest `keep_checkpoints` are kept, plus `step_0000000000` and, for a fork, the origin checkpoint
+  at `meta.json` `start_step` (its founders: `phylo.load_tree`, `alife activity` and the recap builders read it; G3a, I51);
+  `newest`: the newest save and the origin; `single`: only the newest save (§34.10; `RunDir.set_save_mode`, applied by
+  `runner.run` when no pacer is given, so at the start of a run, a fork and a resume). **A new `alife run` (fresh or
+  `--init-from`) writes `run.saves = "single"` into its `config.json`** unless `--set run.saves=...` or the `--config`
+  file sets it (the owner, 2026-11-05: multi-GB runs must not fill the disk); a resume keeps what `config.json` says and
+  may change it (`run.saves` is in `RESUME_KEYS`). A measurement that needs older saves (resim windows, a fork from an
+  older step, `emergence record`) runs with `--set run.saves=all` and a `keep_checkpoints` that covers them. `alife play`
+  has its own mode and ignores `run.saves` (§34.10).
   An observer sidecar lives exactly as
   long as its checkpoint: pruning removes every sidecar whose step has no remaining checkpoint (§28.6).
 - **Cadence.** Scheduled checkpoints happen only at metrics boundaries. Event records are read to the host at every
@@ -6653,7 +6662,7 @@ An informed choice of preset in the Lab's *New run* mode, for all ten presets of
 
 | piece | where | what |
 |---|---|---|
-| `PresetGuide`, `Preset.guide`, `PresetGroup` | `AlifeCore/PresetGuide.swift` | per preset a plain-language description (what the world is, what it is good for, what it costs), written for someone who does not know the engine: no "overlay" (the optional storm weather is called an extra and said not to be part of the preset), no "buoyancy" (organisms "float up against gravity"), no "per-organism rules". The switch over `Preset` is exhaustive. Groups for the sheet: *Flat worlds* (`tiny dev 64k 256k`), *3D box worlds* (`tiny3d mini3d 64k3d`), *Planets* (`tiny3s mini3s 64k3s`) |
+| `PresetGuide`, `Preset.guide`, `PresetGroup` | `AlifeCore/PresetGuide.swift` | per preset a plain-language description (what the world is, what it is good for, what it costs), written for someone who does not know the engine: no "overlay" (the optional storm weather is called an extra and said not to be part of the preset), no "buoyancy" (organisms "float up against gravity"), no "per-organism rules". The switch over `Preset` is exhaustive. Groups for the sheet: *Flat worlds* (`tiny dev 64k 256k`), *3D box worlds* (`tiny3d mini3d 64k3d`), *Planets* (`tiny3s mini3s 64k3s 128k3s 256k3s 576k3s`) |
 | `PresetComparison`, `PresetExtreme` | same | every sentence about speed or memory ("Several times faster than 64k.") is data: the two presets, the metric and the band the ratio must lie in; the cost text is the lead plus those sentences |
 | `PresetFacts` | same | the shape (flat, 3D box, planet), the world size, the height (a box's height, a planet's shell) and radius, `n_max`, `n_init`, **read from the preset file through `PresetFile`**, the engine default (`WorldConfig`, `PopulationConfig`: size 1 024, `n_max` 65 536, `n_init` 16 384, flat) where the file sets none (the `64k` file is empty). No number of the world is typed in a description. A name like "64k" is explained ("room for 65 536 organisms (64 x 1 024)") from the file's `n_max`, and only when it equals that |
 | `PresetSnapshotManifest` | same | `gui/PresetSnapshots/manifest.json`: machine, whether the tree was dirty and, per preset, `seed`, `step`, `population` (the whole world's), `window_population` (a window's own count), `view` (what the picture shows), `steps_per_s`, `peak_memory_bytes`, `git_rev` (the engine of the run), `engine_changed_since_run`, `date`; `gui/PresetSnapshots/<preset>.jpg`. Both are read from the repository at run time (as the presets are), so `make-app.sh` is unchanged. A missing or broken manifest or image gives a neutral placeholder and no snapshot caption. The image cache is keyed by path and modification date |
@@ -10363,7 +10372,7 @@ Head(16) + `u32 json_len`, `u32 tick`, `u32 n_storms`, `u32 reserved` + JSON:
 tracker's own extrapolation (`Tracker._predict`, made public as `Tracker.predict(track, t)`): "the baseline to beat" of STORMS STORMS §6.3, drawn as a
 faint cone only if the user enables it (W3 owns forecasts). `named` is peak `zeta >= 0.5` (C11); only named storms get a name (the
 house-name generator on `splitmix64(id, STORM_NAME_SALT)`, unique among live storms); others are shown as "disturbance N". Source: `Tracker.active()` and
-`Track.dets[-1]`. Measured: 5.0 KB JSON for 6 storms with 40-point tracks; with 24 points and `pred` about 3.5 KB. Cap 32 storms.
+`Track.dets[-1]`. Measured: 5.0 KB JSON for 6 storms with 40-point tracks; with 24 points and `pred` about 3.5 KB. Cap 64 storms (32 until I100).
 
 #### 33.1.7 `MAP1`: weather maps (version 1; every tick, weather worlds)
 
@@ -10457,7 +10466,7 @@ A pipe reader that stalls blocks the step loop (as `stream` does); the Swift rea
 - `src/alife/streamrec.py` (numpy only, no `mlx` import; in `test_lint`'s subscript-assignment scan) holds the encoders,
   `Sequencer` (the per-tag `seq`), `legacy_header` / `header_play` / `weather_block` / `play_header_bytes` and the
   quantisers (`quantise_map1`, `dequantise_p`). Encoders raise `RecordError` for what the format cannot carry (a bond into a
-  dead row, a slot outside its table, more than 16 table rows, more than 64 events or 32 storms, an event of the wrong shape or a
+  dead row, a slot outside its table, more than 16 table rows, more than 64 events or 64 storms, an event of the wrong shape or a
   text over 120 characters, NaN in JSON, a JSON over the caps `IDNT` 16 KiB, `EVNT` 32 KiB, `STRM` 24 KiB, `ENVS` 8 KiB,
   `TERR` 1 KiB). `encode_frma` takes the `N`-row arrays and the alive mask and lists the alive rows; bonds are given as row
   pairs and written as listed-row indices.
@@ -10724,7 +10733,7 @@ device. The tick is `WeatherParams.detect_every` (25, calibrated with `miss_grac
 - **Events** (the chronicle's input, §33.2.3), in this order per tick, each group by id: `born`/`split` (a new track; `split` when the tracker gave it a
   parent), `named`, `merged` (into the survivor), `dissolved` (a track that missed more than `miss_grace` ticks; its `age` is first to last detection).
   Born and split events carry no name (the storm was a disturbance then); `other_name` is the survivor's or parent's.
-- **`STRM` object** (§33.1.6): the active tracks (at most 32, the highest peaks, in id order) with the notes the 40 stored detections cannot give (`age`
+- **`STRM` object** (§33.1.6): the active tracks (at most 64, the highest peaks, in id order; 32 until I100) with the notes the 40 stored detections cannot give (`age`
   from the first detection, `zeta` the peak, `ext` the footprint extent). Positions rounded to 2 decimals, `track` the last 24 `[t, ux, uy]`, `pred` the tracker's
   `predict` at leads 250, 500, 1000 wrapped into the box (empty for a track of one detection), `state` `active` or `coasting`. If the JSON would exceed
   the 24 KB cap the tracks are shortened to 8, then 4 points without `pred`, then 2.
@@ -10759,7 +10768,7 @@ and of the three file rules were each caught.
 
 | file | content | rule |
 |---|---|---|
-| `play.json` | `{play_version: 1, base_rate, cadence: {metrics_every, heavy_metrics_every, checkpoint_every, keep_checkpoints}, tick, weather: {dc_ref} \| null, planet: {source, step, weather_spinup, houses: "exact" \| "clade" \| "none", made_at_step} \| null, saves?: "newest"}` (`saves` only when the player keeps the newest save only, §34.10; absent is `all`) (`RunDir.read_play_json`, `write_play_json`) | written **last**: by the pacer's `on_ready` callback, after the spin-up and the first checkpoint exist and the cloud-depth scale is known, before the header, and rewritten at every open. A directory without one is an unfinished build (it carries the `play_build` mark below) or not a play world, and `play RUN` refuses it. `dc_ref` is computed once, from the spun-up weather, and read back by every later session, so the map scale is the same in all of them. `base_rate` is a play setting (`--base-rate` overrides it) |
+| `play.json` | `{play_version: 1, base_rate, cadence: {metrics_every, heavy_metrics_every, checkpoint_every, keep_checkpoints}, tick, weather: {dc_ref} \| null, planet: {source, step, weather_spinup, houses: "exact" \| "clade" \| "none", made_at_step} \| null, saves?: "newest" \| "single"}` (`saves` only when the world does not keep the last `keep_checkpoints` saves, §34.10; absent is `all`; a world made from I99 on starts in `single`) (`RunDir.read_play_json`, `write_play_json`) | written **last**: by the pacer's `on_ready` callback, after the spin-up and the first checkpoint exist and the cloud-depth scale is known, before the header, and rewritten at every open. A directory without one is an unfinished build (it carries the `play_build` mark below) or not a play world, and `play RUN` refuses it. `dc_ref` is computed once, from the spun-up weather, and read back by every later session, so the map scale is the same in all of them. `base_rate` is a play setting (`--base-rate` overrides it) |
 | `meta.json` `play_build` | `"planet"` (`--init-from`) or `"preset"` (`--preset`): the mark of a world `alife play` builds, written in the **first** `meta.json` (`RunDir.create(extra_meta=)`, reached through `_prepare_fork` and `_prepare_run`), so that every point at which a build can stop after the directory exists (the weather spin-up interrupted, failed or killed; the first checkpoint saved and `play.json` not yet) leaves a directory that is told from a research run by this key alone. It stays after the build finishes (provenance). A build killed after it took `play.lock` and before the directory was created leaves a directory whose only content is `play.lock` (any normal exit removes it). A build begun before the mark existed carries none and is not recognised | `alife run`, `run --init-from` and `resume` never write it; `RunDir.create` refuses an `extra_meta` key that the meta already has |
 | `play.lock` | the pid of the process playing the directory, under an advisory `flock` (`runio.PlayLock`) | taken **before anything else is written to the directory** (for a new world on the new `--out`, in `before_create`, after the checks) and released, the file removed, at the end of the process, after the quit checkpoint: a world that is still saving is busy. A second `play` is refused (exit 2) and so is `alife resume` (`cli._refuse_if_played`; the Lab's Start and Resume follow in the app). `RunDir.create` ignores a lock file in an otherwise empty directory |
 
@@ -11946,6 +11955,8 @@ Python suite, the bit-identity of the trajectory with the player channel unused 
 The owner, on his first play of the World window: the window should monitor live the size of a run on disk if it is being recorded, and the player should be able to switch recording off from the side panel. A played world records no video. About 99% of its disk is the **saves** (one 686 MB checkpoint at every chapter end, every 6,000 steps, and on quit; the last three and the origin are kept, so a world plateaus near 3 GB; a 4,000-step session left `runs/planet_a` at 2.6 GB with four saves: the origin 500,000, 500,001, 504,000 and the quit save 504,001) and the rest is **logs** (event chunks about 0.6 KB a step, the observers' files, metrics, alerts, reports, `director.jsonl` with the player's powers, `commands.jsonl`), a few MB a chapter, which the reports and the replays read. **Decision (the owner): switching recording off means keep only the newest save, plus the origin, which is always kept. Saves still happen at chapter ends and on quit, each replacing the previous one; the logs are still written.** The design note of the build is this section; nothing else changed in the engine.
 
 **The save mode** is a storage setting of the played world, `all` (the default: `run.keep_checkpoints`, 3, and the origin) or `newest` (the newest save and the origin).
+
+**Default of a new world (I99, the owner, 2026-11-05).** A world made now by `alife play` (a preset or `--init-from`, which is also what the app's New world and its grow-then-play pipeline run) starts in `single` unless `--saves` says otherwise, and `play.json` records it (`saves: "single"`). A world that exists keeps its own mode: a `play.json` without `saves` is `all`, as is `alife play RUN --adopt` of a research run (whose checkpoints a play save mode must not delete, above), whatever its `run.saves` says. `single` is §34.11's mode: the origin and step 0 go at the first periodic save. A research run (`alife run`) has the same default through `run.saves` (§18, Retention).
 
 - *Grammar.* `saves all` / `saves newest` (§33.2.6, §34.6.1): `play.parse_play_command` returns `PlayCommand("saves", "all" | "newest")`, anything else is a `ControlError` (the line is ignored with a note). `PlayCommand.saves(SaveMode)` writes it; `tests/data/play_command_lines.txt` lists both lines and `test_gui_sync` parses them.
 - *Where it acts.* `RunDir.keep_newest` (an attribute of the object, not a config key, so it is not in the config hash and no `POST_V01_KEYS` entry is needed): `save_checkpoint` prunes down to `keep = 1` when it is set, else to `run.keep_checkpoints`. `_prune` already protects step 0, `meta.start_step` (the fork's origin) and whatever `LATEST` names, and removes the observer sidecars and play-state files of the checkpoints it removes, so the origin and the newest save are never deleted in either mode, and a sidecar lives as long as its save. The pruning comes after the new save is written and named in `LATEST`, so a complete save exists at every instant (a full disk fails the write of the new file and leaves the old one). In `newest` mode the one older save is the only fallback, so before it goes `save_checkpoint` makes sure of the new one: it flushes it past the drive's cache (`runio._full_sync`: `F_FULLFSYNC`; `os.fsync` on macOS stops at the drive, which a power cut can still empty; `os.fsync` where the call is refused; one flush a save, in this mode only), then reads its header and length back (`runio.state_file_is_complete`: the header names the step, the file is at least as long as its last tensor ends) and prunes only if that passes; failing, the prune is the `all` one, so the older saves stay, and stderr says so ("does not read back whole; the older saves are kept"). `_prune` also removes the temporary files of a save that a kill interrupted (a state file's is up to 686 MB): `step_<t>.safetensors.tmp` and `LATEST.tmp` in `checkpoints/`, a sidecar's `step_<t>.npz.tmp` and a play-state file's `<name>_<t>.json.tmp` in `observers/` (`runio._SAVE_TMP_RE`). The one process that saves a run writes these names only in `save_checkpoint` and the play loop's `before_checkpoint`, which are done when it prunes, so every such file is debris; any other `*.tmp` (a houses file that `alife houses` may be writing) is left alone.
@@ -14322,7 +14333,7 @@ clips its norm to `u_max` (direction kept), adds `w_shell` along the local up an
 
 **S4c: the calibration of the storms, the couplings, the agents' wind, the spin-up and the seams** (PR S4c, `engine/sphere-s4c`; the study is reproduced by `python -m alife.analysis.w0_sphere`; its outputs of the build are in the session's scratchpad, `sphere/s4c_build/`, not in the repository).
 
-**The study driver** (`src/alife/analysis/w0_sphere.py`; `run`, `sweep`, `table`; the wind experiment is `alife.analysis.w0_sphere_wind`). The W0 study on the sphere: the engine's own weather alone (`weather_spinup.chain_step`/`advance_chain` from the rest state, the key chain of `init_keys(seed)[STATE_KEY]`, so the weather is the one a run of that seed would see; the step is compiled once), the storm tracker of `storms_sph` ticked every `detect_every` = 25 steps as `alife play` ticks it (`StormBook`: the tracker without the layer's compaction, a track named at the first detection whose peak so far reaches `NAME_ZETA` = 0.5 f0), and per hemisphere over the window after a spin-up: the **named-storm count** at every tick (the mean, the range, the share of ticks inside 2 to 6, and the share with both hemispheres inside), the same for every active track and the W0 criterion's own D5 count (`w0.storm_counts`: qualifying tracks of 3 detections or more alive between their first and last detection); the **lifetimes** (`w0.lifetime_stats`, the Kaplan-Meier median with left truncation at the end of the spin-up, 3 000 steps: of the named storms with the peak over the whole track (the ruling C11), of the storms named in real time with the age counted from the naming, and of every qualifying track); the **tracks** (`tracks.csv`: first and last step, lifetime, peak, great-circle length, mean latitude, parent); the climate series (`series.csv`) and **the spin-up lengths**; and the **exposure** of the named storms to the grid. `sweep` runs a JSON list of candidates (the keywords of `make_pools` for the pools, `--set` overrides, seeds) as worker processes within a memory budget (a worker holds 0.25 GB, so the memory bounds nothing: **the GPU bounds the throughput**, and ten workers of a `64k3s` study run at the speed of two; 100 000 steps of `64k3s` are 3 minutes of GPU). `tests/test_w0_sphere.py` pins its pieces (the pool builder, the vertices, the seam and pole cells, the exposure against its null, the counts, the plateau time, the storm book against the storm layer of `alife play` on synthetic vortices, a short study end to end, a sweep).
+**The study driver** (`src/alife/analysis/w0_sphere.py`; `run`, `sweep`, `table`; the wind experiment is `alife.analysis.w0_sphere_wind`). The W0 study on the sphere: the engine's own weather alone (`weather_spinup.chain_step`/`advance_chain` from the rest state, the key chain of `init_keys(seed)[STATE_KEY]`, so the weather is the one a run of that seed would see; the step is compiled once), the storm tracker of `storms_sph` ticked every `detect_every` = 25 steps as `alife play` ticks it (`StormBook`: the tracker without the layer's compaction, a track named at the first detection whose peak so far reaches `NAME_ZETA` = 0.5 f0), and per hemisphere over the window after a spin-up: the **named-storm count** at every tick (the mean, the range, the share of ticks inside the band, 2 to 6 by default (`--count-lo` / `--count-hi` on `run` and `sweep`, or `count_lo` / `count_hi` in a sweep spec's base or candidate, which the command line fills in only where the spec names none; `StudySettings.count_lo/count_hi`, recorded in `summary.json` as `settings` and `count_band`, which `table` prints as `inLO-HI`; the D5 count uses the same band; a summary without `count_band` is 2 to 6; a sweep skips a directory that has a `summary.json`, so a changed band needs a new output directory), and the share with both hemispheres inside), the same for every active track and the W0 criterion's own D5 count (`w0.storm_counts`: qualifying tracks of 3 detections or more alive between their first and last detection); the **lifetimes** (`w0.lifetime_stats`, the Kaplan-Meier median with left truncation at the end of the spin-up, 3 000 steps: of the named storms with the peak over the whole track (the ruling C11), of the storms named in real time with the age counted from the naming, and of every qualifying track); the **tracks** (`tracks.csv`: first and last step, lifetime, peak, great-circle length, mean latitude, parent); the climate series (`series.csv`) and **the spin-up lengths**; and the **exposure** of the named storms to the grid. `sweep` runs a JSON list of candidates (the keywords of `make_pools` for the pools, `--set` overrides, seeds) as worker processes within a memory budget (a worker holds 0.25 GB, so the memory bounds nothing: **the GPU bounds the throughput**, and ten workers of a `64k3s` study run at the speed of two; 100 000 steps of `64k3s` are 3 minutes of GPU). `tests/sphere_storms.criteria(rec, lo, hi)` takes the band (default 2, 6) and refuses a record counted with another; `sphere_storms.BANDS` lists it by planet (same storm density as the `64k3s`, whose pools per hemisphere are 3: `64k3s`, `mini3s`, `tiny3s` 2 to 6; `128k3s` 3 to 8; `256k3s` 4 to 12; `576k3s` 6 to 18, pools 4, 6, 9; I100). `tests/test_w0_sphere.py` pins its pieces (the pool builder, the vertices, the seam and pole cells, the exposure against its null, the counts, the plateau time, the storm book against the storm layer of `alife play` on synthetic vortices, a short study end to end, a sweep).
 
 **How the criteria are read.** STORMS_W0 counts storms in two ways and the sphere reports both: criterion 1 (D5) counts every qualifying track alive at each detection time, criterion 2 (C11) takes the Kaplan-Meier median lifetime of the named storms. The target of the calibration is the stricter reading, **the storms the game names**: the named storms, in real time, **2 to 6 in each hemisphere at 90 % of the detection times of the window or more, in both hemispheres at once** ("most of the time": the box's chosen set had 100 % on D5 and 88 to 99 % on the named count in real time, STORMS_W0 §2.1), the window being the steps after a spin-up of 20 000, and a **named-storm lifetime of at least 3 000 steps** (the median, or the longest age while the curve stays above one half). The levers used: the pools (count, `sx`, `sy`, amplitude), `seed_rate` and `seed_sigma`, `q_pool` (one trial) and the couplings; **`r1`, `r2`, `c_d`, `tau_rad`, `a4` and the Courant number were not changed** (S4b M1), so the power-iteration bound of `tests/sphere_weather_stab.py`, which depends on `Nw`, `C`, `f0`, `r1`, `r2` and `tau_rad` alone (the tool zeroes the forcing, so the pools do not enter it), is what it was.
 
@@ -14526,6 +14537,7 @@ the flat azimuthal chart for the close-up (the camera simply descends), a sphere
 
   **Farming at the sphere's `regen_max`** (review M4): the gross return of a farmed unit over its cost is `farm_bonus_frac·regen_max·65 536/(farm_cap·decay)/farm_cost`, **8.0 on `mini3s` and 4.47 on `64k3s` against 5.67 at the design point** (`regen_max` 1 700, `farm_cost` 150). Farming is profitable on both and neither free nor a trap; `validate` warns only above `ROI_WARN` = 12 (`ext/niche.py`) and no warning fires for the four feature overlays on either preset, with or without the weather. A per-planet cost that holds 5.67 (about 212 for `mini3s`, 106 for `64k3s`) is an option for S7b, not made here.
 
+* **The extra-large planets (I98)**: `128k3s`, `256k3s` and `576k3s` are `64k3s` scaled by floor area at the same density, to find how large a planet stays playable on a Mac. Radius 128.6 / 180 / 270 (area 2.04 / 4 / 9 times `64k3s`'s 101 788), `nside` 30 / 42 / 63 (the HEALPix pixel area stays 19.23 units², so the food per unit of area is the same), field cells 194 400 / 381 024 / 857 304 (limit 2^20), `n_max` 131 072 / 262 144 / 589 824, `n_init` a quarter of it, `max_births_per_step` `n_max/64`, `n_patches` 16 / 32 / 72, `world.size` 1 024 / 1 024 / 2 048 (above 4 (radius + height)); everything else (height 40, 18 layers, physics, economy, `regen_max` 1 340, `patch_sigma`, `cell_capacity` 32) is `64k3s`'s. **`576k3s` refuses the `build` overlay** (and so the five-feature source world): `structures.cap` 4 096 x 857 304 field cells overflows the int32 `MAT_TOTAL` counter (`validate`), so structures need a smaller `structures.cap` there, a decision left to the owner. **They are not calibrated**: `regen_max` and the hash capacity were measured on Metal for radius 90 only, so the population level, the founders' boom and the hash occupancy at these sizes are untested, and no speed or memory is measured. They are in `config.PRESETS` and `SPHERE_PRESETS` (now six names, the three calibrated ones first); no weather is calibrated for them (the `stormsph` overlays are refused there by the Courant and pool rules; `weather_spinup.SPHERE_SPINUP` and `PlanetSpec.weatherOverlays` keep their three rows), so the GUI offers them for research only through the existing "No weather is calibrated yet for this planet size" path. `Preset` gains `k128_3s`, `k256_3s`, `k576_3s`; `Preset.unmeasured` names them: they have no snapshot, no `PresetComparison` and no speed band (a band would be invented), the guide says in words that a larger planet runs slower in proportion to the number of organisms, and the manifest tests hold the other ten presets only. Tests: `test_sphere_presets` (table rows, scaling at equal density, weather refused), `test_gui_sync`, `PresetGuideTests`, `PresetFileTests`, `SphereLeverTests`, `SetupModelTests`.
 * **`Dims`** gains `sph, radius, nside, npix, nside_h, npix_h, r_lo, r_hi` with box-neutral defaults (False, 0, ...). On a sphere `fg = g_hash = 0`, `cell_hash = inf` (so a raw lattice read fails
   loudly), `fz = layers`, `n_cells = FZ·Npix`, `field_shape = (FZ, Npix)`, `q = 125·C`, `g_hash_z`/`cell_hash_z` the radial hash layers, `r_lo = f32(Rp + z_lo)`, `r_hi = f32(Rp + z_hi)`; `d3` stays true.
 * **Run metadata and the CLI** (S2): `meta.json` and the state files' metadata record `geometry` (absent = box); `load_checkpoint` refuses a file whose geometry differs from the config
@@ -15161,7 +15173,7 @@ not tested. The sphere's mirror is not tested (the box's is row 3); the weather,
 (`docs/brainstorming-Fable-November.md` §1 "Not to do"), the compiled step (the eager step is the object compared; the
 compiled step is tied to it by `test_determinism`), Metal (see Method).
 
-## 49. Diel vertical migration (a day-night light cycle on the photic food band; the diel series, PRs D0 to D6; **D1 and D1b built**, rows I93 and I94)
+## 49. Diel vertical migration (a day-night light cycle on the photic food band; the diel series, PRs D0 to D6; **D1, D1b, D2, D1c and D1d built**, rows I93 to I97)
 
 Normative text of the diel extension. The specification with the reasoning, the evidence (`file:line`), the review findings and
 the owner decisions is `docs/DIEL.md` (Revision 2, approved by the owner on 2026-11-04); this section states what the engine
@@ -15173,7 +15185,11 @@ this section from "will" to "does" in the same change.** The section number 49 i
 light factor, matched control, `V_bar`, the `diel_ctl` state and its ramp, the probes, the bench mirror, the `diel`
 overlay); 49.11 records what D1 does where it differs from the text above. `sense`, `extinction`, `sense_control`,
 `silent_init` (D2) are declared and refused at non-default values. **After D1b (row I94)** the oracle pilot is built
-(`diel.oracle`, 49.7; what D1b does where it differs from 49.7 is in 49.12).
+(`diel.oracle`, 49.7; what D1b does where it differs from 49.7 is in 49.12). **After D2 (row I95)** the sky-light input
+`diel.sense` is built (49.4; as built: 49.13), with `extinction`, `sense_control` and `silent_init`. **After D1c (row
+I96)** the first pilot's result, the round-trip schedule (`diel.oracle_schedule = 2`) and the lineage-fitness rule that
+replaced 49.7's measure for the second pilot are in 49.14; the no-cap-change oracle (`diel.oracle_cap = own`, D1d,
+row I97) is in 49.15.
 
 ### 49.1 What it is
 
@@ -15211,7 +15227,7 @@ existing config hashes and files are unchanged and `config.json` omits the secti
   <= 1`; `0 <= night_level < 1`; `control == "mean"`, `sense`, `sense_control`, `oracle` need `period > 0`; `sense_control ==
   "mute"` needs `sense`; `oracle` in [0, 100] and needs `control == "none"`; `extinction >= 0`.
 * `season_period == 0` or `season_period >= 8 * period`.
-* **`sense = true` is refused by `validate` until D2 lands** (D1 adds the key, not the layout block).
+* `sense = true` was refused by `validate` until D2 landed (D1 added the key, not the layout block); D2 allows it (49.13).
 * `alife run --director live` refuses a diel world until a diel exemption of the rule tier's fall criterion exists (§26.5;
   the exemption is deferred); `off`, `replay` and the player mode are allowed. The first claim runs with seasons, weather and
   director off.
@@ -15355,7 +15371,9 @@ hashed before the pilot; Holm adjustment over the three strata): **GO** if the p
 bound >= 0.05; **STOP** if the pooled upper 90% bound < 0.02 and every stratum's upper bound < 0.02 (the box long runs are not
 spent; the claim is refuted for this economy, not for the idea); any other outcome is read as SMALL's stage 1 only, never GO.
 A GO followed by a negative C1 refutes "evolves under this sense and period in this world", not the possibility. The
-thresholds are the delegated reviewer's, not yet seen by the owner. DIEL 7.0.
+thresholds are the delegated reviewer's, not yet seen by the owner. DIEL 7.0. **Superseded for the second pilot**: the first
+pilot could not be read under this rule (the oracle lineages died out before day 10, and `G` does not see mortality); the
+schedule and the rule of the second pilot are in 49.14.
 
 ### 49.8 The player power: Long Night
 
@@ -15481,7 +15499,7 @@ the text above does not say, or says differently:
 * **`control = "mean"`** returns `V_bar` at every step (the cycle's clock and the ramp still run; `V_bar` is built at the
   configured `day_frac`, not the effective one, so Long Night does not move the control's food). `V_bar` is accumulated over
   the 720 phases in float64 one phase at a time (a (720, FZ, Npix) array is 550 MB on `64k3s`), cached per config.
-* **Validation**, beyond 49.2: `extinction != 0` and `silent_init = false` are refused until D2 as well as `sense` (both act
+* **Validation**, beyond 49.2 (in D1; D2 replaced it, 49.13): `extinction != 0` and `silent_init = false` were refused until D2 as well as `sense` (both act
   on the light input only, so a non-default value would change the hash with no effect), `oracle > 0` until D1b; the
   rows-per-day bound is checked as `period // metrics_every >= 12`. `--director live` is refused through `run.director ==
   "live"` in the row's `validate`, which `alife run`, `resume` and `fork` reach.
@@ -15494,7 +15512,7 @@ the text above does not say, or says differently:
 * **The geometry lint** allowlists the box half of `diel.split` (`world.field_cell` 1, `lattice` 1, reason "box branch";
   `diel.py` in `NOT_IN_SPEC_AUDIT`).
 * **The overlay** `diel` is the claim world's cycle (`world.height = 40`, `period = 4000`, `day_frac 0.5`, `twilight 0.25`,
-  `night_level 0`, `global`) without `sense` (refused until D2): today it gives arm N; D and K add `sense` after D2.
+  `night_level 0`, `global`) without `sense`: it gives arm N; D and K add `--set diel.sense=true` (D2, 49.13).
 * **Tests** (`tests/test_diel.py`, 60 cases): defaults, hash and `config.json`; the registry row (index 6, no footprint, the
   tail position after `niche`); a validation table (25 refusals, 4 acceptances); full light bit-identical; device light
   against the float64 reference (2e-6); terminator geometry (subsolar pixel at longitude `-th`, daily swing `cos(lat)`,
@@ -15569,6 +15587,152 @@ the override), `metrics.py` (the interval keys), `state.init_state` and `cli._pr
   the bench mirror bit-equal with the oracle; the pilot fork assigning from the source's rows, a continuing fork keeping the
   labels, resume bitwise; a run writing the 24 interval keys; the analysis on planted synthetic rows (GO, SMALL, STOP, nulls,
   reproducible bootstrap, photic share, the pinned hash, the driver's dry run).
+
+### 49.13 D2 as built (row I95)
+
+Files: `src/alife/diel.py` (`sense_input`, `sense_scale`, `l_bar`), the `diel` registry row (`ext/diel.py`: `layout_on`,
+the token `diel1@1`, the block `light`, the `inputs` hook, validation, `enable`), `tests/test_diel_sense.py`.
+
+* **Layout** as 49.4: `layout_on = period > 0 and sense`, one `Block("light", 1, silent = silent_init)`, mask bit 6, genome
+  layout version `base + 4*64` (258 in 3D), 3D `D_IN` 84 -> 85 (`IN_LIGHT` 84), `D_OUT` unchanged.
+* **The input**: `clip(1 + ln(I + e)/ln(1/e), 0, 1)`, `e = 1e-3`, with `I` the step's own light at the **ramped** day fraction
+  (`ramp(diel_ctl)[1]`, the value this step's food regrows under, so cue and food agree while Long Night ramps), the pixel's
+  in terminator mode (`ctx.fcell % Npix`), times `exp(-(H - z)/extinction)` when `extinction > 0`; under `control = "mean"` or
+  `sense_control = "mute"` the day mean `L_bar` (host float64 over the 720 phases at the configured `day_frac`: a scalar in
+  global mode, per pixel in terminator mode). The goldens of 49.4 hold to 1e-3 (`f(4.5e-5)` is 0.00638, which 49.4 rounds to
+  0.0065).
+* **Validation**: `extinction != 0` and `silent_init = false` need `sense` (inert otherwise); `sense_control = "mute"` needs
+  `sense` (49.2).
+* **Deviations.** (1) `sense_control` is changed by a **fork** of a lineage (the mute fork of E5 is a copy of a D lineage),
+  not by a resume: a resume admits only unhashed keys and `sense_control` changes the trajectory. (2) `alife migrate --enable
+  diel` adds the cycle **and** the light row to a diel-off evolved source (`enable` now sets `sense = true`); a diel world
+  without the sense cannot gain it by migration (an enabled feature never changes its layout, §43.8), so arm N (no sense) is a
+  fresh run.
+* **Tests**: the layout; validation; the goldens; the device input against the float64 reference over the day (box and
+  sphere), per pixel in terminator mode, and with depth under `extinction = 35`; `L_bar` under the control and the mute
+  setting; the per-pixel day mean; the silent row of founders and immigrants and the ledger over two days with the sense on;
+  the migration adding a zero row and behaving exactly as a fork with the cycle and no sense (no births in the window); a mute
+  fork sensing `L_bar`; the bench mirror bit-equal with the input.
+
+### 49.14 The first oracle pilot; D1c, the round-trip schedule and the lineage-fitness rule (row I96)
+
+**The first pilot** (D4's go/no-go; run 2026-11-05 on main `cc0056f`, `runs/diel_pilot_2026-11-05`; seeds 21, 22, 23; a
+40,000-step warm-up `mini3d --overlay diel`, then the fork `--set diel.oracle=20` for 160,000 steps; ledger error 0). The rule
+of 49.7 and 49.12 gave no estimate: every `G_s` and the pooled `G` are undefined, so the printed decision, SMALL, came from its
+"any other outcome" branch and carries no information. **The oracle lineages died out** in every stratum and seed by pilot
+day 2 to 7, before the window of days 10 to 40. The world has a daily boom and bust: the population grows to about 7,900 in
+the lit half and falls to about 4,850 within 600 steps after dusk (phase `P/4`), by starvation (the deaths by starvation
+triple, and the top band's share of the population falls from 31% to 2%). Schedule 1 sends every stratum towards the top
+band's centre in the lit half and starts sinking only at dusk (`v_sink` = 0.015 per step), so in the first crash the oracle
+rows lost 40%, 92% and 95% (floor, mid, top) against about 0%, 33% and 86% of their comparison groups. The survivors aged 300
+to 500 had `G_s` between -0.15 and +0.10 while both groups were numerous: **`G` is conditioned on survival and does not see
+mortality.** Read under the rule below (exploratory, since that rule was set after this result): `w` = -0.97, -1.07 and
+-1.28 per day, pooled -1.03 (90% -1.16 to -0.86), STOP. Schedule 1 is strongly selected against in this economy. That is a
+finding about the schedule, which keeps its rows in the band that starves at dusk, not about migration timed to the food.
+
+**The owner's decision (2026-11-05)**: redesign and rerun, with schedule 2 and the rule below, both approved before the
+second pilot ran. This is post hoc: the first pilot's analysis had been blinded and was seen when the owner ran it. The
+thresholds are the owner's.
+
+* **Schedule 2** (`diel.oracle_schedule`, default 1 = D1b's, so the first pilot's runs reproduce; inert and refused at
+  another value while `oracle` is 0; box only, and validation needs a field layer wholly in the photic band). With
+  `trip = 1/v_rise + 1/v_sink` (steps per unit of height there and back at cap 1):
+  * **Targets.** By day, `z_ph`, the centre of the lowest field layer wholly in the photic band, `(ceil((H - 2
+    photic_lambda)/field_cell) + 1/2) field_cell`, layer 0's centre if the band is deeper than the column (26 on mini3d, inside the mid band and below the
+    top band); `up_s = z_ph -
+    z_s` when `z_ph > z_s` and `up_s · trip <= 0.8 P day_frac`, else 0, and that stratum holds at home by day. By night,
+    `down_s = min(z_s - 1, 0.8 P (1 - day_frac)/trip)`. On mini3d: up 0, 6, 0 (the floor's 21 units there and back would
+    take 2,240 > 1,600 steps; the top's home is already photic) and down 4, 15, 15.
+  * **Round trips.** In each half the row goes out (full lift by day, no lift by night) to the target and holds there; it
+    heads home when the time left in the half, less the margin `0.1 × half` (the unused fifth of the budget, split), is
+    at most its time home (`(z - z_s)/v_sink` by day, `(z_s - z)/v_rise` by night), and holds at home. The time left comes
+    from the phase `step mod P` (noon at 0, the lit half within `f P/2` of noon, `f` the effective day fraction
+    `diel_ctl[1]`); at the boundary step, where the light's half (`S > 1/2`) and the phase disagree in float32, it is 0.
+    On mini3d (the kinematic test): the mid stratum is at 26 from phase 3,240 to 400 and home by 800 (dusk at 1,000, less
+    200); by night it is down at 5 by 2,000 and home by 2,800. No oracle row is above its home height at dusk.
+  * The floor stratum, which holds at home by day, is the control of the cap's cost: cap 1 and up to 8 quanta per step of
+    upkeep over a comparison row (whose evolved cap had a median of 0.56).
+  * As schedule 1 otherwise: cap 1 at the start of the step, the override of the decoded `mo.buoy` before the costs, **no
+    ledger term**, the same counters and rows; step and bench mirror share `diel_oracle.plan`.
+* **The rule** (`alife.analysis.diel_pilot2`, frozen by `rule_hash()` =
+  `0f4b7da91a64ab4f135ee21fbd7acbc70537671f1ddb24244d24653ae3d7fd9e` at B 2000 and days 0 to 40; D1b's rule and hash are
+  unchanged and stay the record of the first pilot). The measure is **lineage fitness**, not survivor energy:
+  * Per run, stratum and day, `N_O` and `N_C` are the day's mean `diel_orc_pop` (alive rows, all ages). The data are the
+    daily increments of `ln(N_O/N_C)` over days 0 to 39; day 0's increment holds the schedule's first application.
+  * **Censoring**: an increment counts only while both groups hold at least 10 agents on its first day. When one group
+    falls below 10 on the next day and the other does not, that last increment counts with the fallen group's count raised
+    to 10 (an understatement of the loss), and the stratum's later increments in that run do not count. When both fall
+    below 10 together, nothing further counts.
+  * `w_s` is the mean of the counted increments over the runs (per day); the pooled `w` is weighted by the stratum's mean
+    `N_O + N_C`. Day-block bootstrap within each run (the same days for the strata), B = 2000, 90% percentile bounds.
+  * **Decision**: INVALID if a run's first metrics row has fewer than 50 oracle rows in a stratum, or a stratum has no
+    counted increment in any run; else GO if the pooled lower bound >= +0.01 per day (about 1.5 times the relative
+    frequency over 40 days); else STOP if the pooled upper bound < 0 and every stratum's upper bound < +0.005; else SMALL
+    (stage 1 only). `G` and the photic harvest shares are reported, not decisive.
+  * As first approved, the measure floored an extinct group at half an agent and used days 1 to 39. Tested on the first
+    pilot it gave SMALL (pooled `w` -0.05, 90% -0.13 to +0.02) despite 9 of 9 oracle extinctions: a stratum whose comparison
+    group also died out returned to a ratio of 1, and the absorbed days diluted the mean. The censoring and the start at
+    day 0 replaced it (the owner, 2026-11-05) before the second pilot.
+* **The geometry lint** allowlists the box-only read of `world.field_cell` in `diel_oracle.photic_target` (1, reason "box
+  branch"; `diel_oracle.py` in `NOT_IN_SPEC_AUDIT`); the validation compares with `sphere.geometry(cfg).height_max`.
+* **The second pilot: STOP** (run 2026-11-05 on `engine/diel-d1c` at `4b6638d`, `runs/diel_pilot2_2026-11-05`; the
+  first pilot's warm-ups forked with `--set diel.oracle=20 --set diel.oracle_schedule=2`, 160,000 steps; the rule above,
+  hash `0f4b7da9…`). `w` per day: floor -0.23 (90% -0.36 to -0.11), mid -0.76 (-0.93 to -0.59), top -0.61 (-1.08 to
+  -0.18), pooled -0.68 (-0.83 to -0.53). The oracle lineages died out on days 10 to 21 (floor), 4 to 8 (mid) and 2 to 5
+  (top). `G` of the survivors was -0.005, +0.03 and +0.04 (not decisive). The mid oracle did reach the food: a photic
+  share of its day harvest of 0.76 against 0.28 for its comparison group. Reading:
+  * The floor arm, which holds at home by day, shows that the oracle's fixed costs alone (cap 1, the hold lift and the
+    night dip) are selected against at about -0.2 per day.
+  * The mid stratum's day excursion costs about another -0.5 per day on top of that, although it harvests in the photic
+    band. In the first dusk crash its oracle rows lost about 60%, against about 35% for the comparison (schedule 1:
+    about 90%).
+  * The top stratum's home is in the band that starves at dusk, so it still meets the crash (about 95% against about
+    87%).
+  * Per 49.7, the box long runs are not spent. The claim "a scripted vertical schedule pays in this economy" is refuted
+    for the buoyancy oracle at cap 1. It is not refuted for migration in general: a no-cap-change oracle and a thrust
+    oracle, exploratory in 49.7, were not run.
+* **Driver**: `scripts/diel_pilot.py --schedule {1|2}` (default 2; it picks the rule) and `--warm-from DIR` (forks existing
+  warm-ups; the second pilot forks the first pilot's, so both pilots start from the same states).
+* **Tests**: validation (the value, inert while the oracle is off, no photic layer); the schedule-2 constants on mini3d; the
+  plan against a float64 host reference at 27 phases (day fractions 0.5 and 0.3); a band deeper than the column; the kinematic round trips over two days (home a margin before dusk and
+  dawn, the mid stratum at the target at noon and 15 below home at midnight); the ledger test and the bench mirror for both
+  schedules; the rule on synthetic runs (GO, STOP, null and one-stratum SMALL, the three censoring cases computed by hand, an
+  extinction pattern as STOP, both INVALID paths, the window and a fork's start, a reproducible bootstrap, the pinned hash,
+  the CLI); the driver's dry runs.
+
+### 49.15 D1d, the no-cap-change oracle (row I97)
+
+The second pilot's floor arm (49.14) lost about -0.2 per day without a day excursion, so the oracle's own costs (the cap
+raised to 1, its upkeep and the hold lift) may explain much of the STOP. 49.7 lists a no-cap-change oracle as exploratory;
+the owner asked for it on 2026-11-05.
+
+* **`diel.oracle_cap`** (`one` = D1b's, the default; `own`; CLI only; inert and refused at another value while `oracle` is 0;
+  `own` needs `oracle_schedule = 2`). With `own` the assignment and the step leave every cap as it is (heritable and
+  mutating as for any row), and schedule 2 is computed per row from the row's cap `c` (49.7's original wording):
+  `v_rise(c) = clip((c buoyancy_max - gravity)/drag, 0, v_max)`, the hold lift `min(1, gravity/(c buoyancy_max))`, and
+  `up`, `down` as in 49.14 with `trip(c) = 1/v_rise(c) + 1/v_sink`. A row whose cap cannot balance gravity
+  (`c <= gravity/buoyancy_max`, 0.375 on mini3d) makes no excursion and gets the lift clipped at 1: it sinks at its least
+  rate whatever it does, since its own brain cannot exceed full lift either. By night its time home is 0.
+* At cap 1 the plan equals schedule 2's (test). At the evolved median cap 0.56 on mini3d the mid stratum still reaches the
+  photic target (rising at 0.0074 per step) and dips about 6 below home at night; every stratum is home a margin before
+  dusk and dawn (kinematic test).
+* Same rule, `alife.analysis.diel_pilot2` (hash `0f4b7da9…`), read as exploratory (49.7). Driver `--cap own`. No ledger term.
+* **The third pilot** (exploratory; run 2026-11-05 on `engine/diel-d1d` at `c13bb04`, `runs/diel_pilot3_2026-11-05`; the
+  first pilot's warm-ups forked with `--set diel.oracle=20 --set diel.oracle_schedule=2 --set diel.oracle_cap=own`, 160,000
+  steps): the rule prints **SMALL**, `w` per day floor -0.02 (90% -0.08 to +0.04), mid -0.16 (-0.24 to -0.08), top -0.43
+  (-0.64 to -0.13), pooled -0.08 (-0.13 to -0.03). It falls short of STOP only through the floor's upper bound; no stratum
+  is positive. Oracle extinctions: the floor in 2 of 3 seeds (days 29 and 37), the mid in all 3 (days 11 to 37), the top on
+  days 2 to 5. Photic share of the day harvest: mid 0.43 against 0.32 for the comparison. Reading, against the second pilot
+  (cap 1: floor -0.23, mid -0.76, top -0.61):
+  * Raising the cap to 1 accounts for all of the floor arm's loss and most of the mid stratum's.
+  * The scripted day trip to the photic layer is still selected against at the evolved caps (mid -0.16).
+  * The top stratum, whose home is in the band that starves at dusk, still loses.
+  * In this economy no buoyancy-scripted vertical schedule tried (three variants, nine runs) beats what the evolved
+    population already does. The box long runs stay unspent (49.7); the thrust oracle remains untried.
+* **Tests**: validation; the caps kept by the assignment and the step; the plan against a float64 per-row reference at 10
+  phases with caps from 0 to 1; equality with schedule 2 at cap 1; the round trips at cap 0.56; the ledger and the bench
+  mirror for the variant.
+
 ## Review log
 
 Each critic issue was verified against the text and, where it made a numeric claim, re-run in
@@ -15702,6 +15866,12 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I92 | docs: DESIGN §49, the diel vertical migration extension (the normative text of `docs/DIEL.md` Revision 2, approved by the owner 2026-11-04; PR D0 of the diel series D0 to D6). **Docs only; no engine change** (no file under `src/`, `tests/` or `gui/`, no config key, default, layout, digest or golden changes; nothing in §49 is built until D1). §49 states the `[diel]` keys with defaults (all off) and validation, the light factor on the photic term only (`V = min(1, B + L Pk)`, `L = 1` bit-identical to the static profile) and why no ledger term is needed (the food source stays `INJECT_REGEN = sum(inc)`), the sky-light input (`sense`, D_IN 84 -> 85, silent, four hand-computed goldens), the matched control (`V_bar`, `L_bar`), the host-side observers and chronicle events (kinds 22 and 23), the oracle pilot and its GO/SMALL/STOP rule, the Long Night power (`diel_ctl`, no ledger term), the claim world (height 40, day 4,000, amendment A1) with the fallback ladder (P = 8,000 and H = 80, then STOP), the pre-committed sphere repeat and the build plan D0 to D6 with each PR's tests. One change from DIEL.md when condensing, now made in DIEL.md too (the same commit series): the first harmonic of the migration statistic uses the bin-centre hour angle `H_b = 2 pi (b + 1/2)/8 - pi`, because DIEL 5.1's bins put local noon in bin 4 while the old `cos(2 pi (b + 1/2)/8)` peaked at midnight; D3's test fixes it with a planted noon peak. Six further inconsistencies of `docs/DIEL.md` are fixed there: the status line and §9 now say approved on 2026-11-04; one GPU total, summed from the §8 table (about 27 h core, 38 h everything; §0, §8, §12 and §49.10 agree); the dead "§1.2" reference is §1.1 and "section 52" is 49; the report clause of §5.3 speaks of the photic-band share; `diel.oracle` is one definition (the start assignment with inheritance, §7.0 and the config table); the Long Night lower bound is `max(0.2, acos(1 - tw/2)/pi)` in DIEL 6 and §49.8. |
 | I93 | feat: diel D1, the engine core of DESIGN §49 behind `diel.period` (default 0, off): `DielConfig` (11 keys, all in `POST_V01_KEYS` and `SERIAL_OMIT_KEYS` through the registry), the registry row `diel` (extension index 6, no brain footprint, `TAIL_ORDER` slot after `niche`), validation (`sense`, `extinction`, `silent_init` refused until D2, `oracle` until D1b, `--director live` refused), `alife.diel` (the light factor in global and terminator modes, the split profile with full light selecting the static profile bit for bit, `V_bar` over 720 phases, the `diel_ctl` ramp), the `diel=` keyword through the fields code, `niche.update`, the step, the bench mirror and the metrics probes, the conditional state field `diel_ctl` (2,) float32, the `diel` overlay. **Off: bit-identical** (identity matrix 0 DIFF against `2ec1f9b`; no file, hash, layout, counter or digest changes). On: the ledger closes over two days on `tiny3d` and `tiny3s`; per-platform golden pinned for the CPU. Deviations recorded in §49.11: the bit-identity by `where(S >= 1)`, the ramp before the light, no `DielLevers.swift` until D6 (every key CLI-only), the regeneration reference exact against the probe and within one quantum per cell of float64; a fork resets `diel_ctl` to the new config's rest (a review finding, fixed). |
 | I94 | feat: diel D1b, the depth-aware oracle pilot of DESIGN §49.7 behind `diel.oracle` (default 0; CLI only): `alife.diel_oracle` (assignment by uid hash at a fork's start or a fresh run's founders, strata from the four z bands, the reachable schedule, the cap-1 override and the scripted `mo.buoy` before the costs, no ledger term), the conditional per-agent int8 field `diel_orc` (inherited, immigrants 0), 24 harvest counters (oracle and comparison, per stratum, photic band and half of the day; 49.7 says 12), the per-stratum energy rows, `alife.analysis.diel_pilot` (G per stratum and pooled, day-block bootstrap, Holm, GO/SMALL/STOP, `rule_hash`) and `scripts/diel_pilot.py`. **Off: bit-identical** (identity matrix 0 DIFF; `oracle = 0` traces nothing new). Recorded in §49.12: global mode only, the counters for both groups, the analysis' judgment calls; a fork that changes a non-zero oracle is refused (review finding). Also fixes D1's omission of the `diel` preset from the GUI test list `PresetFileTests.presetNames` (found by the first full Swift CI run, I91). |
+| I95 | feat: diel D2, the sky-light brain input of DESIGN §49.4 behind `diel.sense` (default false): the `light` block (token `diel1@1`, mask bit 6, genome layout version base + 4*64, 3D `D_IN` 85, silent at founders and immigrants), `diel.sense_input` (log-scaled sky light of the step at the ramped day fraction, per pixel in terminator mode, the `extinction` arm, `L_bar` under the matched control and the mute setting), validation, `alife migrate --enable diel` adding the silent row. **Off: bit-identical** (identity matrix 0 DIFF). Deviations in §49.13: the mute setting by a fork, not a resume; the migration only from a diel-off source. |
+| I96 | feat: diel D1c, the first oracle pilot's result and the redesign for the second (§49.14): the first pilot (D1b's schedule, 3 seeds) gave no `G` (the oracle lineages died out by day 2 to 7 in the dusk starvation crash; `G` does not see mortality), so its printed SMALL carries no information. `diel.oracle_schedule` (default 1, D1b's; CLI only; post v0.1): schedule 2, round trips that leave the oracle rows at home a margin before dusk and dawn, by day to the lowest wholly photic field layer where reachable. `alife.analysis.diel_pilot2`: the lineage-fitness rule (censored daily increments of `ln(N_O/N_C)`, GO / SMALL / STOP / INVALID, `rule_hash` `0f4b7da9…`), set post hoc and approved by the owner before the second pilot; under it the first pilot reads STOP (`w` about -1 per day). **The second pilot (schedule 2, 3 seeds): STOP**, pooled `w` -0.68 per day (90% -0.83 to -0.53), every stratum negative; the box long runs are not spent. Driver `--schedule`, `--warm-from`. **Off and schedule 1: unchanged** (identity matrix 0 DIFF). |
+| I97 | feat: diel D1d, the no-cap-change oracle (§49.15): `diel.oracle_cap` (`one` default = D1b's; `own`, CLI only, needs `oracle_schedule = 2`) keeps the oracle rows' heritable cap and computes schedule 2 per row from it (rise speed, hold lift, reachable excursions; a cap that cannot balance gravity makes no excursion and gets full lift). Exploratory under the rule of §49.14; driver `--cap own`. **Off, `one`: unchanged** (identity matrix 0 DIFF). The third pilot (3 seeds): SMALL by the rule (pooled `w` -0.08 per day, 90% -0.13 to -0.03; floor -0.02, mid -0.16, top -0.43); the cap raised to 1 explained most of the second pilot's loss, and no stratum is positive. |
+| I98 | feat: three uncalibrated extra-large planet presets, `128k3s`, `256k3s` and `576k3s` (§46.9): `64k3s` scaled by floor area (x2.04, x4, x9) at equal density and equal HEALPix pixel area, to find how large a planet stays playable on the owner's Mac. Added to `config.PRESETS` and `SPHERE_PRESETS`, the GUI `Preset` enum and the preset guide (planets group, plain-language entries, no speed band: `Preset.unmeasured`, no snapshot); no weather is calibrated for them, so the launcher's existing "No weather is calibrated yet for this planet size" path applies and the planet is research-only. Not run on the GPU: population level, boom, hash occupancy, speed and memory are untested. |
+| I99 | feat: new worlds keep only their newest save (**the owner's decision of 2026-11-05**). `run.saves` (`all`, `newest` or `single`, default `all`, unhashed: in `SERIAL_OMIT_KEYS`, not in `POST_V01_KEYS`, since the `run` section is outside `config_hash`; in `RESUME_KEYS`) is applied by `runner.run` through `RunDir.set_save_mode` when it has no pacer; `alife run` (fresh and `--init-from`) writes `run.saves = "single"` into a new run's `config.json` unless `--set run.saves` or the `--config` file sets it; `alife play` of a new world defaults to `single` (`--saves` overrides; `play.json` records it). **Existing worlds are unchanged**: a `config.json` without the key is `all` (same hash, same pruning), a `play.json` without `saves` is `all`, `--adopt` stays `all`. No new pruning code; no trajectory, hash or digest change. `emergence record`'s refusal names `--set run.saves=all`. Tests: `tests/test_run_saves.py` (the new defaults, the opt-outs, an old config and its hash, a resume, a new played world, an existing `play.json`, `--adopt`); the rest of the suite leaves `cli._with_default_saves` as the identity (`conftest.pytest_configure`) so the runs it makes keep their older checkpoints, and passes `--saves all` where it plays a new world and looks at the origin. `runner.run` applies `run.saves` only when it is not `all`, so a test that sets `RunDir.keep_newest` by hand is not overridden. |
+| I100 | feat: the stream carries up to 64 storms, and per-planet storm-count bands for the calibration tools (owner decision 2026-11-05, for the `128k3s`, `256k3s` and `576k3s`, whose storm counts scale with the area). (1) `streamrec.MAX_STORMS` 32 to 64 and the Swift mirror `RecordDecoder.maxStorms` (`PlayRecords.swift`); `storms._strm` sends the 64 highest peaks. **`STRM_JSON_CAP` stays 24 KiB**: a synthetic tick of 64 named, active storms with full 40-detection tracks (names of 8 characters on average, `tests/test_play_storms.py` lattice, measured on the CPU) encodes to 43 094 bytes JSON at 24 track points with `pred`, 25 118 at 8 with `pred` (just over the cap), 17 550 at 4 points without `pred` and 15 278 at 2; `_strm`'s fallback therefore ends at 4 points and no forecasts for a full house of 64 (29% under the cap), a record with 24 points and `pred` fits up to about 36 storms and one with 8 points and `pred` up to about 62. Swift checks only the count (cap 64) and its general 1 MiB JSON bound, not 24 KiB. No protocol or record version change: the layout is unchanged and the count is a limit, not a field; a client of 32 would call a 33-storm record malformed, so the GUI and the engine ship together (the record version was left alone because a bump would make an old client silently skip all `STRM` records). (2) `w0_sphere` takes `--count-lo` / `--count-hi` (default 2, 6) on `run` and `sweep` and `count_lo` / `count_hi` in a sweep spec; they reach `count_stats` and the D5 count and are recorded in `summary.json`; `tests/sphere_storms.criteria` takes the bounds and `BANDS` lists them by planet (§46.6). No slow-gate case for the new planets (no overlays calibrated). Tests: `test_play_storms.py` (64 listed of 70, the full-track fallback, 64 accepted and 65 refused by `encode_strm`, decode by the independent decoder), `PlayRecordsTests` (64 accepted, 65 refused, a decoded 64-storm record), `test_w0_sphere.py` (flags, band to `count_stats` and `summary.json`, sweep spec, `criteria`). No golden digest changes. | 
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

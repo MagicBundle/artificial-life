@@ -288,6 +288,8 @@ def test_a_planet_links_its_source_save_only_when_the_state_is_the_sources(
             "--out",
             str(tmp_path / "p0"),
             "--no-control",
+            "--saves",
+            "all",  # the origin is what is looked at: the new default (single) drops it
             "--rate",
             "max",
             "--until",
@@ -312,6 +314,8 @@ def test_a_planet_links_its_source_save_only_when_the_state_is_the_sources(
             "--out",
             str(tmp_path / "p5"),
             "--no-control",
+            "--saves",
+            "all",  # the origin is what is looked at: the new default (single) drops it
             "--rate",
             "max",
             "--until",

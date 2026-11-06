@@ -161,6 +161,7 @@ NOT_IN_SPEC_AUDIT = frozenset(
         "calls.py",  # K2: the reflex_near oracle's horizontal part in a 3D box (guarded by dims.d3)
         "calltab.py",  # K2: the host table of the column voice grid; its box half reads the lattice
         "diel.py",  # D1: the box half of the split vertical profile reads the layer count and the cell size
+        "diel_oracle.py",  # D1c: schedule 2's day target is a layer of the box's field (box only, validation)
         "analysis/emergence/braid.py",
         "analysis/emergence/modes.py",
         "analysis/emergence/winding.py",
@@ -222,6 +223,7 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("calls.py", "xy_slice", 1, "box branch"),
     Allow("diel.py", "world.field_cell", 1, "box branch"),
     Allow("diel.py", "lattice", 1, "box branch"),
+    Allow("diel_oracle.py", "world.field_cell", 1, "box branch"),
     Allow("calltab.py", "wrap", 2, "box branch"),
     Allow("calltab.py", "world.size", 2, "box branch"),
     Allow("calltab.py", "world.field_cell", 1, "box branch"),
