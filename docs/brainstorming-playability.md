@@ -1,4 +1,4 @@
-# Playability brainstorm: planets side by side, a sun, meteors (2026-11-06)
+# Playability brainstorm: planets side by side, a sun, meteors, online play (2026-11-06)
 
 Owner's prompt (2026-11-06, while away): "Brainstorm on additional configurations or new designs that emphasize
 playability. Some ideas in my mind: planets side by side, a visible sun around which one or several planets orbit with
@@ -23,6 +23,11 @@ weather (§46.6) and the bench of 2026-11-06.
   have no offline advance (§4). Meteors that carry organisms between planets (panspermia) are what make it a system
   rather than tabs.
 - Recommended order: the visible sun, then meteors, then orbit and seasons, then twin planets, then the system (§6).
+- **Online** (owner's second prompt, §8): a planet archive, a shared solar system across players, comparisons,
+  annotations and chat. The engine's determinism is the foundation: a world is fully described by its recipe (config,
+  seed, power log), a few kilobytes against a save of 1 to 6 GB. Anyone can replay a recipe, and the digest proves that a
+  posted world is genuine. The most interesting form is probably **shared seeds**: many players start from the same
+  world, and the comparison shows what each player's choices did.
 
 ---
 
@@ -236,3 +241,115 @@ step 6 needs, in a smaller form.
 5. **Panspermia** (organisms crossing between planets): in or out?
 6. **The orrery:** stylised (recommended) or to scale?
 7. **Checks 1 to 3 of §5:** run them now (measurement only, a few GPU hours), or wait?
+8. **Online, the first step:** the archive with postcards and annotations (O1, O2), or straight to a shared seed (O3)?
+   *Recommended: O1 and O2 first; they are useful offline too.*
+9. **Online, hosting:** a static archive on GitHub (no accounts, no chat), a small hosted service, or a third-party
+   platform? This is a technology choice with lasting costs (moderation, privacy, running cost); it needs the owner.
+10. **Chat:** in the app, or left to an existing tool (a Discord server) with deep links into worlds? *Recommended:
+    deep links first; in-app annotations are the part that only alife can do.*
+
+---
+
+## 8. Online: a shared solar system, a planet archive, annotations and chat (owner's second prompt)
+
+Owner's prompt (2026-11-06): "online multiplayer mode, where players can view each other's planets remotely as part of
+a simulated 'solar system'. Similarly: an online 'planet archive' for players to post their evolved worlds. What would
+make this maximally interesting for players? What could be compared? I suggest an annotation and chat system as well."
+
+### 8.1 The foundation alife already has: determinism
+
+- **A world is its recipe.** A played world replays bitwise from its config, seed and `director.jsonl` (powers are
+  logged entries, rule P). That makes three ways to share a world, at very different costs:
+
+  | Form | Size | What the receiver can do |
+  |---|---|---|
+  | Recipe (config, seed, power log, digest) | kilobytes | replay it exactly and verify the digest; this costs the receiver GPU time (100k steps of 64k3s is about 36 min) |
+  | Postcard (report, chronicle, statistics, globe renders, a short time-lapse, annotations) | a few MB | read, compare and browse with no simulation |
+  | Save point (checkpoint) | 1.3 GB (128k3s) to 5.8 GiB (576k3s); about 0.7 GB for 64k3s, less for mini3s | fork it and keep playing from there |
+
+- **Verification without trust.** A digest at step N, recomputed from the recipe, proves a posted world was not
+  edited. Leaderboards and challenges are therefore fair. One caveat: bitwise replay holds on the same MLX version and
+  device class (the goldens and `VERIFIED_MLX` exist for this reason), so a recipe must pin its versions, and a world
+  from an older version is verified on that version or kept as a save point.
+- **Saves are safe to exchange.** Saves are safetensors (no code), and configs are validated. An import must still
+  refuse unknown keys and stay inside the validated bounds.
+
+### 8.2 What would make it interesting for players
+
+In rough order of pull:
+1. **Same start, different hands (shared seeds).** A weekly seed: everyone starts from the same planet and save point
+   (the roguelike "daily seed"). Because the world is deterministic, every difference between two players' planets is
+   the result of their choices. The comparison is fair and the stories differ: "you struck the Vell house at chapter 3
+   and the Settlers took the north; I fed them and they collapsed." This is the most original form alife can offer:
+   few games can prove that two outcomes started from the identical world.
+2. **The untouched twin.** Each seed also has a world nobody touched (the yoked control of the director evaluation, as
+   a public baseline). Players see what their hand added or destroyed. Two simple scores fall out of it: biodiversity
+   against the twin, and survival through the storms against the twin.
+3. **Organisms as things you can give away.** Export a lineage (a genome packet, a few kB) and send it to a friend's
+   planet, where it arrives by meteor (panspermia, §3 M3, §4.2): invasive species, rescue missions, and a "zoo" or
+   "museum" in the archive with famous organisms (the largest body, the oldest house, the best storm survivor).
+4. **Visiting.** Your planet appears in your friends' orreries. Clicking it flies to its latest postcard, or, for small
+   planets, to a live replay rebuilt from their power log ("deterministic spectating": only the log crosses the
+   network, and the visitor's GPU re-simulates; it is affordable for mini3s-sized planets).
+5. **Stories, not only numbers.** The chronicle and the World Report (template-written, verified sentences, §31) are
+   already shareable text. A postcard is a short history of a planet: its named storms, houses that rose and fell,
+   the meteors.
+6. **Collections and milestones.** First colony, first 10-body organism, a house surviving 100k steps, a storm named
+   after you: badges checked by replay, so they cannot be faked.
+
+### 8.3 What could be compared
+
+All of these are computed today or are close to it (the observers, the labels, the World Report, `metrics.jsonl`):
+- **Life:** population over time, births and deaths by cause (starved, killed, storm, catastrophe), the deepest
+  generation.
+- **Diversity:** number of houses and kin groups, the share of the largest, archetype mix (the ten labels: Settler,
+  Nomad, Drifter and so on), colonies and territory owners.
+- **Complexity:** largest body, bonds per organism, roles (forager and guard), calls if the planet has them.
+- **Evolved traits:** body size, buoyancy, speed, sense radii; drawn as distributions side by side ("your Settlers are
+  twice as heavy as mine").
+- **Resilience:** recovery time after a fall of 15 % or more, survival through named storms and meteors, against the
+  untouched twin.
+- **The player's hand:** powers used, influence spent, and their effect against the twin.
+- **Lineage:** a river chart of houses over time (November §5's "lineage rivers"), aligned by step across players on a
+  shared seed.
+- **Across the archive:** the same seed's outcomes as a spread ("90 % of players' planets lost the Vell house by
+  chapter 5; yours kept it").
+
+A caution: comparisons only mean something on the same preset, rules version (`INTENT_VERSION`) and engine version; the
+archive must group by them and say so.
+
+### 8.4 Annotations and chat
+
+- **Annotations pinned in space and time.** A note attached to a place on the planet (latitude and longitude) and to a
+  step range: "here the colony formed", "this storm broke the Vell house". In replay or in a postcard, it appears where
+  and when it happened, like a comment on a video at a timestamp, but on a globe. This is the piece only alife can do,
+  and it is useful offline (a player's own notebook) before any network exists.
+- **Automatic annotations.** The chronicle's events (storm named, house founded, population fall) become annotations
+  the player can keep, edit or hide. A shared seed's postcards line up by step, so players see each other's notes on
+  the same moment of the same world.
+- **Annotation threads.** A reply to an annotation is a small, anchored chat thread. Most of the conversation about a
+  world is then about a specific place and time, which keeps it on topic.
+- **Chat.** General chat is a commodity. The cheap route is an existing tool (a Discord server) plus deep links that
+  open a world at a place and step (`alife://world/<id>?step=…&lat=…&lon=…`). In-app chat means accounts,
+  moderation, abuse reports and running cost; it should come last, if at all.
+- **Presentation only.** Annotations and chat never change a trajectory; the purity tests already guard that rule.
+
+### 8.5 Architecture sketch
+
+- **Local first.** Every planet is simulated on its owner's Mac; the network carries recipes, postcards, annotations,
+  and genome packets, never a live simulation state.
+- **A shared system is asynchronous.** Each player's planet advances on their own time; a planet's postcard is
+  refreshed at its chapter ends. Exchanges between planets (panspermia) are opt-in and land in the receiver's
+  `director.jsonl` as logged imports, so the receiver's world still replays.
+- **Steps:**
+  - O1, a postcard format and a local archive page in the app (browse, compare two planets, the untouched twin);
+  - O2, annotations, with automatic ones from the chronicle;
+  - O3, shared seeds with replay-verified results;
+  - O4, the online archive and friends' planets in the orrery;
+  - O5, genome exchange between players' planets;
+  - O6, live deterministic spectating and chat.
+  O1 and O2 need no server.
+- **Risks.** User content means moderation (planet, house and annotation names, chat), privacy (accounts, what a
+  postcard reveals), and a running service with its costs. Version drift breaks bitwise replay across MLX upgrades, so
+  the archive must pin versions. A large save cannot be shared cheaply (§8.1), so the archive leans on recipes and
+  postcards.
