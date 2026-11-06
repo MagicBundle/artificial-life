@@ -64,6 +64,12 @@ jobs:
         run: |
           xcodebuild -version
           swift --version
+      # What the tests run on (cores, memory, the displays): the first run failed 36 tests of the runner's environment, and the log is
+      # all there is to read them by (DESIGN §22.0, I91).
+      - name: Host
+        run: |
+          sysctl -n hw.ncpu hw.memsize machdep.cpu.brand_string
+          system_profiler SPDisplaysDataType | head -40
       - uses: actions/cache@v4
         with:
           path: gui/.build
@@ -72,9 +78,22 @@ jobs:
       - name: Build
         working-directory: gui
         run: swift build --build-tests
+      # `ALIFE_TEST_TIME_SCALE` multiplies every wait and every wall-clock upper bound of the tests (`gui/Tests/AlifeTestSupport`; DESIGN §22.0,
+      # I91): the full run here stalls the test process for tens of seconds at a time, which a person's Mac does not. 1 is the default
+      # and what a developer's run uses; nothing is skipped or made optional. While the tests run, a line every 30 s
+      # records the load and the test process's threads, so that a stall can be read afterwards.
       - name: Tests
         working-directory: gui
-        run: swift test
+        env:
+          ALIFE_TEST_TIME_SCALE: "4"
+        run: |
+          ( while sleep 30; do
+              echo "[heartbeat] $(date +%T) $(uptime | sed 's/.*load/load/') test-process threads: $(ps -M -p "$(pgrep -f PackageTests | head -1)" 2>/dev/null | wc -l)"
+            done ) &
+          heartbeat=$!
+          swift test && status=0 || status=$?
+          kill "$heartbeat" 2>/dev/null || true
+          exit "$status"
 
   nightly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

@@ -385,6 +385,8 @@ whose `config.json` is what the engine writes (`tests/data/gui_config_*.json`). 
 engine's suite) checks that every `--set` key and preset name in the Swift sources exists in the engine's `Config`, and
 that those three files are still what `load_config` gives.
 
+`ALIFE_TEST_TIME_SCALE` (a positive number, default 1) multiplies the waits and the wall-clock upper bounds of the tests (`gui/Tests/AlifeTestSupport/TestTime.swift`, DESIGN §22.0); CI's `swift` job sets 4 because a hosted runner stalls the test process for tens of seconds. Leave it unset on a Mac.
+
 The GPU tests are opt in, because they create a Metal device, compile the shaders and render the stream fixtures
 offscreen and compare the pixels around the agents with a CPU port of the sphere shader (PNGs go to a temporary
 directory, printed, or `$ALIFE_GPU_TESTS_OUT`):

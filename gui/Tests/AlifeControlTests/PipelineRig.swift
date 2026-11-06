@@ -1,4 +1,5 @@
 import AlifeCore
+import AlifeTestSupport
 import AppKit
 import Foundation
 import Testing
@@ -252,7 +253,7 @@ final class PipelineRig {
 @MainActor
 func patiently(timeout: Duration = .seconds(120), _ condition: @MainActor () -> Bool) async -> Bool {
     TestProcess.unthrottled()
-    let deadline = ContinuousClock.now + timeout
+    let deadline = ContinuousClock.now + TestTime.limit(timeout)
     while !condition() {
         if ContinuousClock.now > deadline { return false }
         try? await Task.sleep(for: .milliseconds(50))

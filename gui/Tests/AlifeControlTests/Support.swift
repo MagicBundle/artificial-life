@@ -1,3 +1,4 @@
+import AlifeTestSupport
 import Foundation
 
 @testable import AlifeControl
@@ -55,11 +56,11 @@ struct Scratch {
     }
 }
 
-/// Polls `condition` on the main actor until it holds or `timeout` passes. True if it held.
+/// Polls `condition` on the main actor until it holds or `timeout` (times `TestTime.scale`) passes. True if it held.
 @MainActor
 func eventually(timeout: Duration = .seconds(20), _ condition: @MainActor () -> Bool) async -> Bool {
     TestProcess.unthrottled()
-    let deadline = ContinuousClock.now + timeout
+    let deadline = ContinuousClock.now + TestTime.limit(timeout)
     while !condition() {
         if ContinuousClock.now > deadline {
             // A stall (the main actor held for seconds by a drawing suite) can use up the whole wait while the work the condition waits for sits

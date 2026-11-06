@@ -1,4 +1,5 @@
 import AlifeCore
+import AlifeTestSupport
 import Foundation
 import Metal
 import Testing
@@ -226,7 +227,7 @@ struct WorldRenderBench {
 
     /// Waits for `count` completion handlers (they run on the GPU's thread).
     private func settled(_ collected: OSAllocatedUnfairLock<[DrawTiming]>, count: Int) async throws {
-        let deadline = ContinuousClock.now + .seconds(30)
+        let deadline = ContinuousClock.now + TestTime.limit(.seconds(30))
         while collected.withLock({ $0.count }) < count {
             #expect(ContinuousClock.now < deadline, "the GPU finished only \(collected.withLock { $0.count }) of \(count) draws")
             if ContinuousClock.now >= deadline { return }

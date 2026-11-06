@@ -1,4 +1,5 @@
 import AlifeCore
+import AlifeTestSupport
 import AppKit
 import Foundation
 import SwiftUI
@@ -251,13 +252,13 @@ import Testing
     }
 
     @Test func theGateTakesItsLimitFromTheCallerAndAStaleWaitCannotEndANewOne() async {
-        let gate = TerminationGate(timeout: .seconds(30), poll: .milliseconds(10))
+        let gate = TerminationGate(timeout: TestTime.limit(.seconds(30)), poll: .milliseconds(10))
         gate.limit = { .milliseconds(120) }
         let stub = Stub()
         let began = ContinuousClock.now
         _ = gate.shouldTerminate(hasProcess: { stub.running }, stop: {}, reply: { stub.replies += 1 })
         #expect(await eventually { stub.replies == 1 })
-        #expect(ContinuousClock.now - began < .seconds(5), "the 120 ms limit, not the 30 s of init")
+        #expect(ContinuousClock.now - began < TestTime.limit(.seconds(5)), "the 120 ms limit, not the 30 s of init")
         // A wait abandoned and a new one begun at once: the old task must not reply for the new one.
         gate.limit = nil
         let again = Stub()

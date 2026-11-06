@@ -1,4 +1,5 @@
 @testable import AlifeCore
+import AlifeTestSupport
 import Foundation
 import Testing
 
@@ -341,7 +342,7 @@ struct WelcomeTests {
         let started = Date()
         guard case .failed(let late) = await EngineHealth.check(executable: slow, directory: scratch.url, deadline: 0.4) else { Issue.record("passed"); return }
         let took = Date().timeIntervalSince(started)
-        #expect(late.summary.contains("did not answer") && took < 10, "took \(took) s")
+        #expect(late.summary.contains("did not answer") && took < TestTime.limit(seconds: 10), "took \(took) s")
         let missing = scratch.url.appendingPathComponent("nothing-here")
         guard case .failed(let none) = await EngineHealth.check(executable: missing, directory: scratch.url) else { Issue.record("passed"); return }
         #expect(none.summary.contains("could not be started"))

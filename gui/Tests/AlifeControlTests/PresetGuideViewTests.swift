@@ -60,7 +60,10 @@ struct PresetGuideViewTests {
         for entry in content.entries {
             let rep = try draw(PresetCard(entry: entry, machine: content.machine) {}.padding(12).frame(width: 380).background(Color(nsColor: .windowBackgroundColor)),
                                width: 380, height: 520, dark: dark, name: "card-\(entry.preset.rawValue)")
-            #expect(colours(rep) > 30, "\(entry.preset.rawValue): the card is blank")
+            // (An uncalibrated extra-large planet has no snapshot, so its card is the placeholder and the words, as in the test below: I98 added
+            // three of them and left this bound at the snapshot's.)
+            let needed = Preset.unmeasured.contains(entry.preset) ? 10 : 30
+            #expect(colours(rep) > needed, "\(entry.preset.rawValue): the card is blank")
         }
     }
 

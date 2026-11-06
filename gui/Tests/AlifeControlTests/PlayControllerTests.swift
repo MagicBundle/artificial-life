@@ -1,4 +1,5 @@
 import AlifeCore
+import AlifeTestSupport
 import Foundation
 import Testing
 
@@ -290,7 +291,7 @@ import Testing
     @Test func aWorldThatIgnoresSIGINTToGetsSIGTERMAtTheEnd() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
-        let stubborn = try scratch.script("alife-stubborn", "trap '' INT\ncat \"$1\"\nexec sleep 30")
+        let stubborn = try scratch.script("alife-stubborn", "trap '' INT\ncat \"$1\"\nexec sleep \(Int(TestTime.limit(seconds: 30)))")
         let (controller, _) = make()
         defer { controller.shutdown() }
         controller.start(request, executable: stubborn, directory: scratch.url, arguments: [Repo.playFixtureURL("3d").path])
@@ -301,7 +302,7 @@ import Testing
         #expect(ContinuousClock.now - began >= .milliseconds(500), "the ladder waited for each rung")
         // The ladder is 0.6 s; the stand-in sleeps 30 s, so anything under that means the escalation ended it. The wall time includes the
         // main actor being busy with the other suites (hundreds of main-actor tests run beside this one): 8 s was too tight for a full run.
-        #expect(ContinuousClock.now - began < .seconds(25))
+        #expect(ContinuousClock.now - began < TestTime.limit(.seconds(25)))
     }
 
     @Test func aWorldThatQuitsOnItsOwnNeverGetsASignal() async throws {
