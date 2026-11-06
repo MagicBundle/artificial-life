@@ -8,9 +8,9 @@
 #
 # NOT CALIBRATED. 64k3s's regen_max 1 340 and hash capacity were measured on Metal for radius 90 (DESIGN 46.9); they were
 # not measured here. The population level, the founders' boom and the hash occupancy at this size are untested, and no
-# speed or memory has been measured. No storm weather is calibrated for it: the `stormsph` overlays are made for 64k3s,
-# mini3s and tiny3s, and the engine refuses them on another shape. One key per line: the GUI reads the scalars of this
-# file.
+# speed or memory has been measured. Only its storm weather is calibrated: the `stormsph576` overlay (row I101) is made
+# for it; the other `stormsph` overlays are made for 64k3s, mini3s, tiny3s, 128k3s and 256k3s, and the engine refuses them
+# on another shape. One key per line: the GUI reads the scalars of this file.
 [population]
 n_max = 589824
 n_init = 147456

@@ -125,11 +125,14 @@ package struct PlanetSpec: Equatable, Sendable {
 
     /// The weather overlay of each planet shape that has one, `(shape, overlay)`. Calibrated in S4c (DESIGN §46.6, one study per planet):
     /// `stormsph` is made for the `64k3s` planet (radius 90, height 40, field Nside 21, 18 layers), `stormsph16` for `tiny3s` (36, 16, 8, 8)
-    /// and `stormsph22` for `mini3s` (48, 24, 11, 12). `tests/test_gui_sync.py` checks the shapes against the engine's presets.
+    /// `stormsph22` for `mini3s` (48, 24, 11, 12) and `stormsph128` for `128k3s` (128.6, 40, 30, 18) and `stormsph256` for `256k3s` (180, 40, 42, 18) and `stormsph576` for `576k3s` (270, 40, 63, 18; I101), so every sphere preset has one. `tests/test_gui_sync.py` checks the shapes against the engine's presets.
     package static let weatherOverlays: [(shape: PlanetShape, overlay: String)] = [
         (PlanetShape(radius: 90, height: 40, nside: 21, layers: 18), "stormsph"),
         (PlanetShape(radius: 36, height: 16, nside: 8, layers: 8), "stormsph16"),
         (PlanetShape(radius: 48, height: 24, nside: 11, layers: 12), "stormsph22"),
+        (PlanetShape(radius: 128.6, height: 40, nside: 30, layers: 18), "stormsph128"),
+        (PlanetShape(radius: 180, height: 40, nside: 42, layers: 18), "stormsph256"),
+        (PlanetShape(radius: 270, height: 40, nside: 63, layers: 18), "stormsph576"),
     ]
 
     /// The weather overlay of a planet of this shape; nil when none is calibrated for it (or the shape is unknown).
@@ -152,7 +155,7 @@ package struct PlanetSpec: Equatable, Sendable {
     package static func weatherObstacle(dims: Int?, geometry: String? = nil, shape: PlanetShape? = nil, weatherOn: Bool = false) -> String? {
         if dims == 2 { return "The weather runs only in a 3D world: this source is 2D. Turn the weather off, or choose a 3D source." }
         if geometry == "sphere", !weatherOn, overlay(forShape: shape) == nil {
-            return "No weather is calibrated yet for this planet size. It is calibrated for the 64k3s (radius 90), mini3s (radius 48) and tiny3s (radius 36) planets."
+            return "No weather is calibrated yet for this planet size. It is calibrated for the 576k3s (radius 270), 256k3s (radius 180), 128k3s (radius 128.6), 64k3s (radius 90), mini3s (radius 48) and tiny3s (radius 36) planets."
         }
         return nil
     }
@@ -165,6 +168,9 @@ package struct PlanetSpec: Equatable, Sendable {
         (PlanetShape(radius: 90, height: 40, nside: 21, layers: 18), 15_000),
         (PlanetShape(radius: 36, height: 16, nside: 8, layers: 8), 10_000),
         (PlanetShape(radius: 48, height: 24, nside: 11, layers: 12), 8_000),
+        (PlanetShape(radius: 128.6, height: 40, nside: 30, layers: 18), 32_000),
+        (PlanetShape(radius: 180, height: 40, nside: 42, layers: 18), 17_000),
+        (PlanetShape(radius: 270, height: 40, nside: 63, layers: 18), 35_000),
     ]
 
     /// The spin-up of a sphere whose shape has no row (it has no calibrated overlay either, so it cannot be launched): the long one.
