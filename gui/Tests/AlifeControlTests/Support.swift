@@ -56,13 +56,25 @@ struct Scratch {
     }
 }
 
-/// Polls `condition` on the main actor until it holds or `timeout` (times `TestTime.scale`) passes. True if it held.
+/// How long a poll may be late before the lateness is taken to be the main actor held by someone else (a drawing suite that runs for seconds
+/// beside this test) and not the work being waited for. Every wait of a test that needs the main actor to make progress loses to such a hold: the
+/// work it waits for is queued behind it. On a hosted CI runner (three slow cores, no GPU) the holds last tens of seconds
+/// (DESIGN §22.0, I91), and on this Mac too, rarely, while another job loads it; a wait that counted them would fail with the work done.
+let heldMainActorGap: Duration = .seconds(1)
+
+/// Polls `condition` on the main actor until it holds or `timeout` (times `TestTime.scale`) passes. True if it held. The time a poll was late
+/// by more than `heldMainActorGap` is not counted against the timeout: the timeout is what the work may take, not what the other suites take.
 @MainActor
 func eventually(timeout: Duration = .seconds(20), _ condition: @MainActor () -> Bool) async -> Bool {
     TestProcess.unthrottled()
-    let deadline = ContinuousClock.now + TestTime.limit(timeout)
+    var deadline = ContinuousClock.now + TestTime.limit(timeout)
+    var polled = ContinuousClock.now
     while !condition() {
-        if ContinuousClock.now > deadline {
+        let now = ContinuousClock.now
+        let gap = now - polled
+        if gap > heldMainActorGap { deadline += gap - .milliseconds(10) }
+        polled = now
+        if now > deadline {
             // A stall (the main actor held for seconds by a drawing suite) can use up the whole wait while the work the condition waits for sits
             // queued behind it: look once more after letting it run.
             await Task.yield()

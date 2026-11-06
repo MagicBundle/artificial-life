@@ -253,9 +253,13 @@ final class PipelineRig {
 @MainActor
 func patiently(timeout: Duration = .seconds(120), _ condition: @MainActor () -> Bool) async -> Bool {
     TestProcess.unthrottled()
-    let deadline = ContinuousClock.now + TestTime.limit(timeout)
+    var deadline = ContinuousClock.now + TestTime.limit(timeout)
+    var polled = ContinuousClock.now
     while !condition() {
-        if ContinuousClock.now > deadline { return false }
+        let now = ContinuousClock.now
+        if now - polled > heldMainActorGap { deadline += now - polled - .milliseconds(50) }  // (see `eventually`)
+        polled = now
+        if now > deadline { return false }
         try? await Task.sleep(for: .milliseconds(50))
     }
     return true
