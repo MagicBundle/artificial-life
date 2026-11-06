@@ -212,37 +212,40 @@ CALIBRATED = {
         storm_span=0.03,
     ),
     # 128k3s (I101): the storm density of 64k3s (pools by circumference 3 -> 4, seed rate by area 0.05 ->
-    # 0.102), rain_gain from the early-weather procedure, friction 2.5 times the default (stability gate)
+    # 0.102), rain_gain from the early-weather procedure, friction 2.5 times the default (stability gate);
+    # storm_u0 0.02, the hazard of I102 (storms 5.75 % of deaths from the founders)
     "stormsph128": dict(
         pools=(4, 40.0, 20.0, 1.0),
         seed_rate=0.102,
         rain_gain=85000.0,
         storm_p=0.002,
-        storm_u0=0.09,
+        storm_u0=0.02,
         storm_span=0.03,
         r1=0.0005,
         r2=0.00025,
     ),
     # 256k3s (I101): the storm density of 64k3s (pools by circumference 3 -> 6, wider 44 x 22, seed rate 0.4
-    # for the same turnover), rain_gain from the early-weather procedure, friction 6 times the default
+    # for the same turnover), rain_gain from the early-weather procedure, friction 6 times the default;
+    # storm_u0 0.02, the hazard of I102 (storms 6.56 % of deaths from the founders)
     "stormsph256": dict(
         pools=(6, 44.0, 22.0, 1.0),
         seed_rate=0.4,
         rain_gain=71000.0,
         storm_p=0.002,
-        storm_u0=0.09,
+        storm_u0=0.02,
         storm_span=0.03,
         r1=0.0012,
         r2=0.0006,
     ),
     # 576k3s (I101): 9 pools per hemisphere 48 x 24 (a narrow window: 44 too weak, 50 breaks up),
-    # seed_rate 0.8, friction 8 times the default; storm_u0 0.08 (peak agent air speed 0.078)
+    # seed_rate 0.8, friction 8 times the default; storm_u0 0.015, the hazard of I102 (storms 6.09 % of
+    # deaths from the founders; 0.08 in I101, just above the peak agent air speed 0.078)
     "stormsph576": dict(
         pools=(9, 48.0, 24.0, 1.0),
         seed_rate=0.8,
         rain_gain=100000.0,
         storm_p=0.002,
-        storm_u0=0.08,
+        storm_u0=0.015,
         storm_span=0.03,
         r1=0.0016,
         r2=0.0008,
