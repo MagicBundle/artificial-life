@@ -45,6 +45,7 @@ def test_the_pools_of_every_overlay_are_the_builders_at_their_calibrated_sizes()
         ("tiny3s", "stormsph16", 36.0, 3, 18.0, 12.0),
         ("128k3s", "stormsph128", 128.6, 4, 40.0, 20.0),
         ("256k3s", "stormsph256", 180.0, 6, 44.0, 22.0),
+        ("576k3s", "stormsph576", 270.0, 9, 48.0, 24.0),
     ):
         cfg = ws.build_config(preset, [overlay])
         assert np.allclose(ws.make_pools(radius, per, sx, sy), cfg.weather.pools, atol=1e-5), overlay

@@ -233,6 +233,7 @@ import Testing
         try planet("mini_s0", radius: 48, height: 24, nside: 11, layers: 12)
         try planet("k128_s0", radius: 128.6, height: 40, nside: 30, layers: 18)
         try planet("k256_s0", radius: 180, height: 40, nside: 42, layers: 18)
+        try planet("k576_s0", radius: 270, height: 40, nside: 63, layers: 18)
         try planet("odd_s0", radius: 60, height: 30, nside: 14, layers: 14)
         try planet("mini_wet", radius: 48, height: 24, nside: 11, layers: 12, weather: true)
         let model = make(runs, launches: Launches())
@@ -243,7 +244,8 @@ import Testing
                                          ("64k_s0", "stormsph", PlanetShape(radius: 90, height: 40, nside: 21, layers: 18)),
                                          ("mini_s0", "stormsph22", PlanetShape(radius: 48, height: 24, nside: 11, layers: 12)),
                                          ("k128_s0", "stormsph128", PlanetShape(radius: 128.6, height: 40, nside: 30, layers: 18)),
-                                         ("k256_s0", "stormsph256", PlanetShape(radius: 180, height: 40, nside: 42, layers: 18))] {
+                                         ("k256_s0", "stormsph256", PlanetShape(radius: 180, height: 40, nside: 42, layers: 18)),
+                                         ("k576_s0", "stormsph576", PlanetShape(radius: 270, height: 40, nside: 63, layers: 18))] {
             model.selectSource(source)
             let spinup = try #require(PlanetSpec.sphereSpinups.first { $0.shape == shape }).steps
             #expect(model.planet.storm && model.weatherObstacle == nil && model.planetErrors.isEmpty, "\(source)")

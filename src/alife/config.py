@@ -599,6 +599,7 @@ WORLD_OVERLAYS: tuple[str, ...] = (
     "stormsph22h",  # stormsph22 with a hazard dial for the calls experiment (DESIGN §47.6), provisional
     "stormsph128",  # the same for the 128k3s planet (Nw 60, friction 2.5x; DESIGN §46.9, I101)
     "stormsph256",  # the same for the 256k3s planet (Nw 84, friction 6x; DESIGN §46.9, I101)
+    "stormsph576",  # the same for the 576k3s planet (Nw 126, friction 8x; DESIGN §46.9, I101)
 )
 ALL_OVERLAYS: tuple[str, ...] = OVERLAYS + WORLD_OVERLAYS  # what the loaders and the CLI accept
 DEFAULT_PRESET: Final = "64k"

@@ -48,6 +48,7 @@ SPHERE_SPINUP: dict[str, int] = {
     "mini3s": 8_000,
     "128k3s": 32_000,
     "256k3s": 17_000,
+    "576k3s": 35_000,
 }
 CACHE_VERSION = 1  # the format of a cache entry and of its key (bump it when either changes)
 CACHE_OFF_ENV = "ALIFE_SPINUP_CACHE"  # set to "0" to switch the cache of the command line off
