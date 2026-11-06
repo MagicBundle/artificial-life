@@ -48,7 +48,8 @@ extension MenuStabilityTests {
         var last = -1
         var quiet = 0
         let needed = Int(TestTime.scale.rounded(.up))
-        for _ in 0..<(50 * needed) {
+        let deadline = ContinuousClock.now + TestTime.limit(.seconds(20))  // (50 samples of 400 ms)
+        while ContinuousClock.now < deadline {
             let now = counts.byName.values.reduce(0, +)
             if now == last {
                 quiet += 1
@@ -206,7 +207,7 @@ struct ViewerKeyRoutingTests {
         #expect(model.note == nil)
         let scratch = try Scratch()
         defer { scratch.cleanup() }
-        let script = try scratch.script("slow", "sleep 5")
+        let script = try scratch.script("slow", "sleep \(Int(TestTime.limit(seconds: 5)))")
         stream.start(StreamSource(run: "w", follow: true), executable: script, directory: scratch.url, arguments: [])
         defer { stream.stop() }
         model.perform(.slower)

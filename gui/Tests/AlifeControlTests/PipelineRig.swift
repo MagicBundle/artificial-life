@@ -199,7 +199,7 @@ final class PipelineRig {
               exit 0;;
             silent)
               mkdir -p "$out"
-              exec sleep 30;;
+              exec sleep \(Int(TestTime.limit(seconds: 30)));;
             long)
               mkworld "$out" running 12000
               i=0

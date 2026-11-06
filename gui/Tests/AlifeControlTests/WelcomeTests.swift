@@ -338,7 +338,7 @@ struct WelcomeTests {
         let bad = try scratch.script("bad", "for i in 1 2 3 4 5 6 7 8 9 10; do echo \"line $i\"; done; echo 'Traceback' >&2; exit 3")
         guard case .failed(let trouble) = await EngineHealth.check(executable: bad, directory: scratch.url) else { Issue.record("passed"); return }
         #expect(trouble.summary.contains("exit code 3") && trouble.lines.last == "Traceback" && trouble.lines.count == 6)
-        let slow = try scratch.script("slow", "exec sleep 30")
+        let slow = try scratch.script("slow", "exec sleep \(Int(TestTime.limit(seconds: 30)))")
         let started = Date()
         guard case .failed(let late) = await EngineHealth.check(executable: slow, directory: scratch.url, deadline: 0.4) else { Issue.record("passed"); return }
         let took = Date().timeIntervalSince(started)

@@ -1,3 +1,4 @@
+import AlifeTestSupport
 import AppKit
 import Foundation
 import Testing
@@ -22,7 +23,7 @@ import Testing
     }
 
     @Test func aWorldThatSavesHoldsTheQuitUntilItHasGone() async {
-        let gate = TerminationGate(timeout: .seconds(20), poll: .milliseconds(10))
+        let gate = TerminationGate(timeout: TestTime.limit(.seconds(20)), poll: .milliseconds(10))
         let stub = Stub()
         let reply = gate.shouldTerminate(hasProcess: { stub.running }, stop: { stub.stops += 1 }, reply: { stub.replies += 1 })
         #expect(reply == .terminateLater && stub.stops == 1)
@@ -33,7 +34,7 @@ import Testing
     }
 
     @Test func aQuitAskedTwiceStopsOnceAndRepliesOnce() async {
-        let gate = TerminationGate(timeout: .seconds(20), poll: .milliseconds(10))
+        let gate = TerminationGate(timeout: TestTime.limit(.seconds(20)), poll: .milliseconds(10))
         let stub = Stub()
         _ = gate.shouldTerminate(hasProcess: { stub.running }, stop: { stub.stops += 1 }, reply: { stub.replies += 1 })
         let again = gate.shouldTerminate(hasProcess: { stub.running }, stop: { stub.stops += 1 }, reply: { stub.replies += 1 })

@@ -64,12 +64,19 @@ jobs:
         run: |
           xcodebuild -version
           swift --version
-      # What the tests run on (cores, memory, the displays): the first run failed 36 tests of the runner's environment, and the log is
-      # all there is to read them by (DESIGN §22.0, I91).
+      # What the tests run on (cores, memory, displays, and how long a fresh script takes to start: most of the tests that failed on the first
+      # run start a child process), because the log is all there is to read a runner by (DESIGN §22.0, I91).
       - name: Host
         run: |
           sysctl -n hw.ncpu hw.memsize machdep.cpu.brand_string
-          system_profiler SPDisplaysDataType | head -40
+          system_profiler SPDisplaysDataType | head -40 || true
+          d=$(mktemp -d)
+          for i in 1 2 3 4 5 6; do
+            printf '#!/bin/bash\nexit 0\n' > "$d/s$i"; chmod +x "$d/s$i"
+            start=$(python3 -c 'import time; print(time.time())')
+            "$d/s$i"
+            python3 -c "import time; print('fresh script $i started and ended in %.3f s' % (time.time() - $start))"
+          done
       - uses: actions/cache@v4
         with:
           path: gui/.build
@@ -80,21 +87,39 @@ jobs:
         run: swift build --build-tests
       # `ALIFE_TEST_TIME_SCALE` multiplies every wait and every wall-clock upper bound of the tests (`gui/Tests/AlifeTestSupport`; DESIGN §22.0,
       # I91): the full run here stalls the test process for tens of seconds at a time, which a person's Mac does not. 1 is the default
-      # and what a developer's run uses; nothing is skipped or made optional. While the tests run, a line every 30 s
-      # records the load and the test process's threads, so that a stall can be read afterwards.
+      # and what a developer's run uses; nothing is skipped or made optional. While the tests run, a line every 30 s records the load and
+      # the test process; when the run prints nothing for 4 minutes the watchdog samples the process once (a hang is then read from the
+      # log) and, a minute later, ends the run, which fails the step.
       - name: Tests
         working-directory: gui
+        timeout-minutes: 30
         env:
           ALIFE_TEST_TIME_SCALE: "4"
         run: |
-          ( while sleep 30; do
-              echo "[heartbeat] $(date +%T) $(uptime | sed 's/.*load/load/') test-process threads: $(ps -M -p "$(pgrep -f PackageTests | head -1)" 2>/dev/null | wc -l)"
-            done ) &
-          heartbeat=$!
-          swift test && status=0 || status=$?
-          kill "$heartbeat" 2>/dev/null || true
+          log="$RUNNER_TEMP/swift-test.log"
+          : > "$log"
+          (
+            last=-1; idle=0; sampled=0
+            while sleep 30; do
+              pid=$(pgrep -f swiftpm-testing-helper | head -1)
+              size=$(stat -f %z "$log")
+              if [ "$size" = "$last" ]; then idle=$((idle + 30)); else idle=0; last=$size; fi
+              echo "[heartbeat] $(date +%T) $(uptime | sed 's/.*load/load/') idle ${idle}s $(ps -o pid=,pcpu=,rss=,etime= -p "${pid:-0}" 2>/dev/null | tr -s ' ') threads $(ps -M -p "${pid:-0}" 2>/dev/null | wc -l | tr -d ' ')"
+              if [ "$idle" -ge 240 ] && [ "$sampled" = 0 ] && [ -n "$pid" ]; then
+                sampled=1
+                echo "[watchdog] no test output for ${idle} s: sampling process $pid"
+                sample "$pid" 5 -file "$RUNNER_TEMP/sample.txt" > /dev/null 2>&1 || true
+                sed -n '1,500p' "$RUNNER_TEMP/sample.txt" | cut -c1-200
+                ps -axo pid,ppid,pcpu,etime,command | grep -vE "grep|ps -axo" | cut -c1-160 | head -60
+              fi
+              if [ "$idle" -ge 300 ] && [ -n "$pid" ]; then echo "[watchdog] ending the run"; kill -9 "$pid"; fi
+            done
+          ) &
+          watchdog=$!
+          swift test 2>&1 | tee -a "$log"
+          status=${PIPESTATUS[0]}
+          kill "$watchdog" 2>/dev/null || true
           exit "$status"
-
   nightly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04  # pinned with the test job: the goldens depend on the image's g++

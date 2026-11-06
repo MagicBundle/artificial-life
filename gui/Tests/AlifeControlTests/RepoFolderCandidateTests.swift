@@ -1,3 +1,4 @@
+import AlifeTestSupport
 import Foundation
 import Testing
 
@@ -110,7 +111,7 @@ import Testing
     @Test func startSaysNothingWhileAJobRuns() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
-        let ready = try folder("ready", in: scratch, engine: true, body: "exec sleep 30")
+        let ready = try folder("ready", in: scratch, engine: true, body: "exec sleep \(Int(TestTime.limit(seconds: 30)))")
         let controller = make(stored: ready, candidates: [])
         controller.settings.name = "reason-job"
         controller.start()
