@@ -88,8 +88,9 @@ jobs:
       # `ALIFE_TEST_TIME_SCALE` multiplies every wait and every wall-clock upper bound of the tests (`gui/Tests/AlifeTestSupport`; DESIGN §22.0,
       # I91): the full run here stalls the test process for tens of seconds at a time, which a person's Mac does not. 1 is the default
       # and what a developer's run uses; nothing is skipped or made optional. While the tests run, a line every 30 s records the load and
-      # the test process; when the run prints nothing for 4 minutes the watchdog samples the process once (a hang is then read from the
-      # log) and, a minute later, ends the run, which fails the step.
+      # the test process; when the run prints nothing for 4 minutes (it does, for that long, while the main thread lays out the views the
+      # tests leave alive) the watchdog samples the process once, so that a hang can be read from the log. The step's own timeout ends a
+      # hang.
       - name: Tests
         working-directory: gui
         timeout-minutes: 30
@@ -112,7 +113,6 @@ jobs:
                 sed -n '1,500p' "$RUNNER_TEMP/sample.txt" | cut -c1-200
                 ps -axo pid,ppid,pcpu,etime,command | grep -vE "grep|ps -axo" | cut -c1-160 | head -60
               fi
-              if [ "$idle" -ge 300 ] && [ -n "$pid" ]; then echo "[watchdog] ending the run"; kill -9 "$pid"; fi
             done
           ) &
           watchdog=$!
